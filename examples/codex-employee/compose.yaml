@@ -1,0 +1,67 @@
+name: codex-verifier
+services:
+  employee:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?required}
+      ENDPOINT_BEARER_TOKEN: ${ENDPOINT_BEARER_TOKEN:?required}
+      PORT: "8080"
+      CODEX_TIMEOUT_MS: "240000"
+      MAX_PROMPT_CHARS: "20000"
+    secrets:
+      - codex_auth
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /workspace:size=16m,uid=1000,gid=1000,mode=0700
+      - /var/lib/codex:size=32m,uid=1000,gid=1000,mode=0700
+    networks: [verifier_internal]
+    pids_limit: 128
+    mem_limit: 1536m
+    cpus: 1.5
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health/live').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      EMPLOYEE_HOST: ${EMPLOYEE_HOST:?required}
+    ports:
+      - "80:80"
+      - "18443:18443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [verifier_internal]
+    depends_on:
+      employee:
+        condition: service_healthy
+
+networks:
+  verifier_internal:
+    name: codex-verifier-internal
+    driver: bridge
+
+volumes:
+  caddy_data:
+    name: codex-verifier-caddy-data
+  caddy_config:
+    name: codex-verifier-caddy-config
+
+secrets:
+  codex_auth:
+    file: ./secrets/codex_auth.json

@@ -1,0 +1,111 @@
+name: agent-router
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agent_router
+      POSTGRES_USER: agent_router
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U agent_router -d agent_router"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: agent_router
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?required}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks: [backend]
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  router:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?required}
+      WW_BASE_URL: ${WW_BASE_URL:?required}
+      AGENT_ADDRESS_DOMAIN: ${AGENT_ADDRESS_DOMAIN:-agents.welltop.cn}
+      DATABASE_URL: postgres://agent_router:${POSTGRES_PASSWORD}@postgres:5432/agent_router
+      RABBITMQ_URL: amqp://agent_router:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      MASTER_ENCRYPTION_KEY_BASE64: ${MASTER_ENCRYPTION_KEY_BASE64:?required}
+      PORT: "8080"
+      TRUST_PROXY: "1"
+      AUTH_CACHE_TTL_MS: "30000"
+      DELIVERY_CONCURRENCY: "4"
+      DELIVERY_TIMEOUT_MS: "300000"
+      DELIVERY_MAX_ATTEMPTS: "12"
+      DELIVERY_RETRY_BASE_MS: "5000"
+      ALLOW_HTTP_AGENT_ENDPOINTS: "false"
+      ALLOW_PRIVATE_AGENT_ENDPOINTS: "false"
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks: [backend, outbound]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health/ready').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      ROUTER_HOST: ${ROUTER_HOST:?required}
+    ports:
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [backend, edge]
+    depends_on:
+      router:
+        condition: service_healthy
+
+networks:
+  backend:
+    name: agent-router-backend
+    internal: true
+  outbound:
+    name: agent-router-outbound
+  edge:
+    name: agent-router-edge
+
+volumes:
+  postgres_data:
+    name: agent-router-postgres-data
+  rabbitmq_data:
+    name: agent-router-rabbitmq-data
+  caddy_data:
+    name: agent-router-caddy-data
+  caddy_config:
+    name: agent-router-caddy-config

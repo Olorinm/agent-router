@@ -1,0 +1,186 @@
+import { AgentCard, type AgentCard as AgentCardType } from "@a2a-js/sdk";
+import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
+import type { RouterConfig } from "./config.js";
+import { createMachineCredential, encryptSecret, hashCredential } from "./crypto.js";
+import { oneOrUndefined, withTransaction } from "./db.js";
+import { assertSafeEndpoint } from "./endpoint-policy.js";
+
+export interface RegisteredAgent {
+  id: string;
+  address: string;
+  displayName: string;
+  description: string;
+  sourceAgentCard: AgentCardType;
+  endpointAuthCiphertext?: string;
+  status: "active" | "disabled";
+  ownerPrincipalId: string;
+  updatedAt: string;
+}
+
+interface AgentRow {
+  id: string;
+  address: string;
+  display_name: string;
+  description: string;
+  source_agent_card: unknown;
+  endpoint_auth_ciphertext: string | null;
+  status: "active" | "disabled";
+  owner_principal_id: string;
+  updated_at: Date;
+}
+
+const registrationSchema = z.object({
+  address: z.string().min(1).max(180),
+  displayName: z.string().min(1).max(160),
+  description: z.string().min(1).max(2000),
+  agentCard: z.unknown(),
+  endpointBearerToken: z.string().min(16).max(4096).optional(),
+});
+
+export type RegisterAgentInput = z.infer<typeof registrationSchema>;
+
+export class AgentRegistry {
+  constructor(
+    private readonly pool: Pool,
+    private readonly config: RouterConfig,
+  ) {}
+
+  async list(search = ""): Promise<RegisteredAgent[]> {
+    const value = `%${search.trim().toLowerCase()}%`;
+    const result = await this.pool.query<AgentRow>(
+      `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+              status, owner_principal_id, updated_at
+         FROM agents
+        WHERE $1 = '%%' OR address LIKE $1 OR lower(display_name) LIKE $1 OR lower(description) LIKE $1
+        ORDER BY address ASC
+        LIMIT 200`,
+      [value],
+    );
+    return result.rows.map(mapAgentRow);
+  }
+
+  async getByAddress(address: string): Promise<RegisteredAgent | undefined> {
+    const row = await oneOrUndefined<AgentRow>(
+      this.pool,
+      `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+              status, owner_principal_id, updated_at
+         FROM agents WHERE address = $1`,
+      [normalizeAddress(address, this.config.agentAddressDomain)],
+    );
+    return row ? mapAgentRow(row) : undefined;
+  }
+
+  async getById(id: string): Promise<RegisteredAgent | undefined> {
+    const row = await oneOrUndefined<AgentRow>(
+      this.pool,
+      `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+              status, owner_principal_id, updated_at
+         FROM agents WHERE id = $1`,
+      [id],
+    );
+    return row ? mapAgentRow(row) : undefined;
+  }
+
+  async register(
+    rawInput: unknown,
+    owner: { id: string; displayName: string; email?: string },
+  ): Promise<{ agent: RegisteredAgent; machineCredential: string }> {
+    const input = registrationSchema.parse(rawInput);
+    const address = normalizeAddress(input.address, this.config.agentAddressDomain);
+    const sourceAgentCard = AgentCard.fromJSON(input.agentCard);
+    assertAgentCard(sourceAgentCard);
+    await Promise.all(
+      sourceAgentCard.supportedInterfaces.map((entry) =>
+        assertSafeEndpoint(entry.url, {
+          allowHttp: this.config.allowHttpAgentEndpoints,
+          allowPrivate: this.config.allowPrivateAgentEndpoints,
+        }),
+      ),
+    );
+    const token = createMachineCredential();
+    const endpointAuthCiphertext = input.endpointBearerToken
+      ? encryptSecret(input.endpointBearerToken, this.config.encryptionKey)
+      : undefined;
+
+    const agent = await withTransaction(this.pool, async (client) => {
+      await upsertPrincipal(client, { ...owner, kind: "human" });
+      const row = await oneOrUndefined<AgentRow>(
+        client,
+        `INSERT INTO agents(
+           address, display_name, description, source_agent_card, endpoint_auth_ciphertext, owner_principal_id
+         ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+         RETURNING id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+                   status, owner_principal_id, updated_at`,
+        [
+          address,
+          input.displayName,
+          input.description,
+          JSON.stringify(sourceAgentCard),
+          endpointAuthCiphertext ?? null,
+          owner.id,
+        ],
+      );
+      if (!row) throw new Error("agent_registration_failed");
+      const principalId = `agent:${row.id}`;
+      await upsertPrincipal(client, { id: principalId, kind: "agent", displayName: input.displayName });
+      await client.query(
+        `INSERT INTO credentials(principal_id, token_hash, token_prefix)
+         VALUES ($1, $2, $3)`,
+        [principalId, hashCredential(token), token.slice(0, 12)],
+      );
+      await client.query(
+        `INSERT INTO audit_logs(principal_id, action, target, outcome, facts)
+         VALUES ($1, 'agent.register', $2, 'success', $3::jsonb)`,
+        [owner.id, address, JSON.stringify({ agentId: row.id })],
+      );
+      return mapAgentRow(row);
+    });
+    return { agent, machineCredential: token };
+  }
+}
+
+export async function upsertPrincipal(
+  client: Pick<PoolClient, "query"> | Pick<Pool, "query">,
+  input: { id: string; kind: "human" | "agent" | "operator"; displayName: string; email?: string },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO principals(id, kind, display_name, email)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (id) DO UPDATE SET
+       display_name = EXCLUDED.display_name,
+       email = COALESCE(EXCLUDED.email, principals.email),
+       updated_at = now()`,
+    [input.id, input.kind, input.displayName, input.email ?? null],
+  );
+}
+
+export function normalizeAddress(value: string, domain: string): string {
+  const normalized = value.trim().toLowerCase();
+  const full = normalized.includes("@") ? normalized : `${normalized}@${domain}`;
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}@[a-z0-9.-]+$/.test(full)) throw new Error("agent_address_invalid");
+  if (!full.endsWith(`@${domain}`)) throw new Error("agent_address_domain_invalid");
+  return full;
+}
+
+function assertAgentCard(card: AgentCardType): void {
+  if (!card.name.trim() || !card.description.trim() || !card.version.trim()) throw new Error("agent_card_invalid");
+  if (!card.supportedInterfaces.length) throw new Error("agent_card_interface_required");
+  if (!card.supportedInterfaces.some((entry) => entry.protocolVersion === "1.0")) {
+    throw new Error("agent_card_v1_interface_required");
+  }
+}
+
+function mapAgentRow(row: AgentRow): RegisteredAgent {
+  return {
+    id: row.id,
+    address: row.address,
+    displayName: row.display_name,
+    description: row.description,
+    sourceAgentCard: AgentCard.fromJSON(row.source_agent_card),
+    ...(row.endpoint_auth_ciphertext ? { endpointAuthCiphertext: row.endpoint_auth_ciphertext } : {}),
+    status: row.status,
+    ownerPrincipalId: row.owner_principal_id,
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
