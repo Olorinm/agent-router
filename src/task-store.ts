@@ -239,7 +239,7 @@ function readEnvelope(task: Task): DeliveryEnvelope | undefined {
 }
 
 function scopeLockKey(scope: TaskScope, taskId: string): string {
-  return `${scope.tenant}\u0000${scope.ownerPrincipalId}\u0000${taskId}`;
+  return JSON.stringify([scope.tenant, scope.ownerPrincipalId, taskId]);
 }
 
 function scopeKey(envelope: DeliveryEnvelope): string {

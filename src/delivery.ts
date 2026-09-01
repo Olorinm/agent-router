@@ -239,7 +239,7 @@ export class DeliveryRuntime {
           message: withoutRouterTaskIdentity(envelope.message),
           configuration: {
             acceptedOutputModes: [],
-            returnImmediately: false,
+            returnImmediately: true,
             historyLength: 20,
             taskPushNotificationConfig: undefined,
           },

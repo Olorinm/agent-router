@@ -1,7 +1,7 @@
 name: codex-verifier
 services:
   employee:
-    build: .
+    image: codex-verifier-employee:latest
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -31,21 +31,16 @@ services:
       retries: 5
       start_period: 20s
 
-  caddy:
-    image: caddy:2.10.2-alpine
+  tunnel:
+    image: cloudflare/cloudflared@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339
     restart: unless-stopped
+    read_only: true
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
     security_opt:
       - no-new-privileges:true
-    environment:
-      EMPLOYEE_HOST: ${EMPLOYEE_HOST:?required}
-    ports:
-      - "18443:18443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+    command: [tunnel, --no-autoupdate, --url, http://employee:8080]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     networks: [verifier_internal]
     depends_on:
       employee:
@@ -55,12 +50,6 @@ networks:
   verifier_internal:
     name: codex-verifier-internal
     driver: bridge
-
-volumes:
-  caddy_data:
-    name: codex-verifier-caddy-data
-  caddy_config:
-    name: codex-verifier-caddy-config
 
 secrets:
   codex_auth:

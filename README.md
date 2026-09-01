@@ -28,4 +28,6 @@ npm run build
 
 Create `/opt/agent-router/.env` with mode `0600`, then enable `deploy/agent-router.service`. Secrets must be generated independently for Postgres, RabbitMQ, and `MASTER_ENCRYPTION_KEY_BASE64`.
 
-The verifier under `examples/codex-employee` is intentionally a separate Compose project and network. Its container is non-root, read-only, capability-free, and mounts only a Codex authentication secret; its workspace and Codex home are private `tmpfs` mounts.
+The verifier under `examples/codex-employee` is intentionally a separate Compose project and network. Its container is non-root, read-only, capability-free, and mounts only a Codex authentication secret; its workspace and Codex home are private `tmpfs` mounts. Keep the host authentication file owned by `root:root` with mode `0640`; the container's non-root process receives supplemental group `0` solely to read that file and immediately copies it to its private Codex home with mode `0600`.
+
+For a verifier behind an inbound firewall, `compose.quick-tunnel.yaml` uses a digest-pinned Cloudflare `cloudflared` sidecar. The sidecar initiates an outbound tunnel and can reach only the employee on the verifier's dedicated Docker network. Quick Tunnel hostnames are ephemeral and are intended for this verification scenario, not a permanent production employee address.

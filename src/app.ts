@@ -98,7 +98,7 @@ export function createApp(dependencies: AppDependencies) {
     });
   });
 
-  app.get(
+  app.use(
     "/agents/:address/.well-known/agent-card.json",
     dynamicProxyHandler(dependencies.proxyHandlers, "card"),
   );

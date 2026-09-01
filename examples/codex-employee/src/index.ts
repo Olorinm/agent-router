@@ -27,6 +27,7 @@ const publicBaseUrl = requiredEnv("PUBLIC_BASE_URL").replace(/\/+$/, "");
 const endpointToken = requiredEnv("ENDPOINT_BEARER_TOKEN");
 const timeoutMs = integerEnv("CODEX_TIMEOUT_MS", 240_000);
 const maxPromptChars = integerEnv("MAX_PROMPT_CHARS", 20_000);
+const codexBinary = process.env.CODEX_BIN?.trim() || "/app/node_modules/.bin/codex";
 
 const card: AgentCard = {
   name: "Isolated Codex Verifier",
@@ -165,7 +166,7 @@ class CodexExecutor implements AgentExecutor {
   private async runCodex(taskId: string, prompt: string): Promise<string> {
     const outputPath = `/tmp/codex-${taskId.replace(/[^a-zA-Z0-9_-]/g, "_")}.txt`;
     const child = spawn(
-      "codex",
+      codexBinary,
       [
         "exec",
         "--ephemeral",
