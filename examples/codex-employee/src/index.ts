@@ -213,7 +213,11 @@ const requestHandler = new DefaultRequestHandler(card, new InMemoryTaskStore(), 
 const app = express();
 app.disable("x-powered-by");
 app.get("/health/live", (_request, response) => response.json({ status: "ok" }));
-app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: requestHandler, cache: { maxAge: 60 } }));
+app.use(
+  `/${AGENT_CARD_PATH}`,
+  requireBearer(endpointToken),
+  agentCardHandler({ agentCardProvider: requestHandler, cache: { maxAge: 0 } }),
+);
 app.use("/a2a/rest", requireBearer(endpointToken), restHandler({ requestHandler, userBuilder: UserBuilder.noAuthentication }));
 app.use("/a2a/jsonrpc", requireBearer(endpointToken), jsonRpcHandler({ requestHandler, userBuilder: UserBuilder.noAuthentication }));
 app.use((_request, response) => response.status(404).json({ error: "not_found" }));
