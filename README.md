@@ -26,7 +26,7 @@ The complete decisions and security invariants are in [ADR 0001](docs/architectu
 To enable a production node:
 
 1. Make `https://$AGENT_ADDRESS_DOMAIN/.well-known/opengrove-router` reach this Router. The common single-host setup uses the same hostname for `AGENT_ADDRESS_DOMAIN`, `PUBLIC_BASE_URL`, and `ROUTER_HOST`; a split-host setup may publish or proxy only the well-known document from the address domain.
-2. Build once, then run `npm run federation:keygen` to create `secrets/federation-private-key.pem`. The key is ignored by Git and written with mode `0600`.
+2. Build once, then run `npm run federation:keygen` to create `secrets/federation-private-key.pem`. The key is ignored by Git and written with mode `0600`. On Linux Docker hosts, make the `secrets` directory and its files owned by UID/GID `1000:1000`; that is the non-root `node` user running the Router image.
 3. Set `FEDERATION_ENABLED=true` and start the common Compose deployment.
 4. Allow each trusted peer explicitly with the admin API:
 
