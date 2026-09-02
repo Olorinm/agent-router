@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg, { type Pool, type PoolClient, type QueryResultRow } from "pg";
@@ -42,26 +42,34 @@ export async function oneOrUndefined<T extends QueryResultRow>(
 
 export async function migrate(pool: Pool): Promise<void> {
   const sourceDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(sourceDir, "..", "migrations", "001_initial.sql"),
-    join(sourceDir, "..", "..", "migrations", "001_initial.sql"),
-  ];
-  let sql: string | undefined;
+  const candidates = [join(sourceDir, "..", "migrations"), join(sourceDir, "..", "..", "migrations")];
+  let migrationDir: string | undefined;
+  let migrationFiles: string[] = [];
   for (const path of candidates) {
     try {
-      sql = await readFile(path, "utf8");
+      migrationFiles = (await readdir(path)).filter((entry) => /^\d+_[a-z0-9_-]+\.sql$/.test(entry)).sort();
+      migrationDir = path;
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  if (!sql) throw new Error("migration_file_not_found");
+  if (!migrationDir || migrationFiles.length === 0) throw new Error("migration_file_not_found");
   await withTransaction(pool, async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('agent-router-migrations'))");
-    await client.query(sql);
     await client.query(
-      "INSERT INTO schema_migrations(version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
-      ["001_initial"],
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+         version text PRIMARY KEY,
+         applied_at timestamptz NOT NULL DEFAULT now()
+       )`,
     );
+    const applied = await client.query<{ version: string }>("SELECT version FROM schema_migrations");
+    const appliedVersions = new Set(applied.rows.map((row) => row.version));
+    for (const file of migrationFiles) {
+      const version = file.replace(/\.sql$/, "");
+      if (appliedVersions.has(version)) continue;
+      await client.query(await readFile(join(migrationDir, file), "utf8"));
+      await client.query("INSERT INTO schema_migrations(version) VALUES ($1)", [version]);
+    }
   });
 }

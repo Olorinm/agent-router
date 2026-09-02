@@ -2,13 +2,16 @@
 
 The Agent Router is an independent A2A v1 delivery service. It exposes each registered employee as a router-owned A2A Agent Card, durably accepts tasks, and forwards them to the employee's private A2A endpoint.
 
-The official `@a2a-js/sdk` owns protocol parsing, REST and JSON-RPC bindings, task semantics, cancellation, and client transport selection. Router-specific code owns:
+The official `@a2a-js/sdk` (currently locked to the latest stable release, 1.1.0) owns protocol objects and serialization, Agent Cards, REST and JSON-RPC bindings, task semantics, SSE, cancellation, push-notification delivery, protocol-version handling, standard errors, and client transport selection. Router-specific code owns:
 
 - WW `/v1/users/me` authentication for OpenGrove administrators;
 - independent one-time machine credentials for agent callers;
 - agent address and Agent Card registration;
-- Postgres task state, task bindings, audit records, and transactional Outbox;
+- name/description/skill discovery plus endpoint, Card, and status updates;
+- Postgres implementations of the official TaskStore and PushNotificationStore interfaces;
+- encrypted push-notification configurations, task bindings, audit records, and transactional Outbox;
 - RabbitMQ per-agent durable queues, retries, and dead-letter queues;
+- Router task to remote task mappings;
 - encrypted employee endpoint bearer credentials.
 
 The Router does not receive employee production data or general-purpose provider keys.
@@ -21,6 +24,26 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+`npm run check:integration` is deliberately guarded: it runs only when
+`INTEGRATION_CHECK_CONFIRM=disposable-database` and the PostgreSQL database
+name ends in `_integration`. It validates migrations, registry skill search,
+agent updates, PostgreSQL task persistence, encrypted push configuration,
+delivery through the SDK's `DefaultPushNotificationSender`, the durable
+PostgreSQL Outbox and RabbitMQ path, `ClientFactory`, SSE events, Router/remote
+task mapping, and remote cancellation. Its disposable RabbitMQ queues are
+removed after each run.
+
+## API boundary
+
+Administrative registry endpoints are the only Router-owned HTTP API:
+
+- `GET /v1/agents?q=<name-or-skill>` lists and searches employees;
+- `POST /v1/agents` registers an official Agent Card and returns a one-time machine credential;
+- `GET /v1/agents/:address` reads a registration;
+- `PATCH /v1/agents/:address` updates its Card, endpoint credential, display fields, or active status.
+
+Messages, task reads and listings, cancellation, SSE streaming, and push-notification configuration use the official A2A v1 REST or JSON-RPC routes below each virtual employee address. The Router does not define private `/v1/messages` or `/v1/tasks` protocol endpoints.
 
 ## Production layout
 

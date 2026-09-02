@@ -38,6 +38,16 @@ const registrationSchema = z.object({
   endpointBearerToken: z.string().min(16).max(4096).optional(),
 });
 
+const updateSchema = z
+  .object({
+    displayName: z.string().min(1).max(160).optional(),
+    description: z.string().min(1).max(2000).optional(),
+    agentCard: z.unknown().optional(),
+    endpointBearerToken: z.union([z.string().min(16).max(4096), z.null()]).optional(),
+    status: z.enum(["active", "disabled"]).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, "agent_update_empty");
+
 export type RegisterAgentInput = z.infer<typeof registrationSchema>;
 
 export class AgentRegistry {
@@ -52,7 +62,21 @@ export class AgentRegistry {
       `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
               status, owner_principal_id, updated_at
          FROM agents
-        WHERE $1 = '%%' OR address LIKE $1 OR lower(display_name) LIKE $1 OR lower(description) LIKE $1
+        WHERE $1 = '%%'
+           OR address LIKE $1
+           OR lower(display_name) LIKE $1
+           OR lower(description) LIKE $1
+           OR EXISTS (
+             SELECT 1
+               FROM jsonb_array_elements(COALESCE(source_agent_card->'skills', '[]'::jsonb)) AS skill
+              WHERE lower(COALESCE(skill->>'id', '')) LIKE $1
+                 OR lower(COALESCE(skill->>'name', '')) LIKE $1
+                 OR lower(COALESCE(skill->>'description', '')) LIKE $1
+                 OR EXISTS (
+                   SELECT 1 FROM jsonb_array_elements_text(COALESCE(skill->'tags', '[]'::jsonb)) AS tag(value)
+                    WHERE lower(value) LIKE $1
+                 )
+           )
         ORDER BY address ASC
         LIMIT 200`,
       [value],
@@ -137,6 +161,66 @@ export class AgentRegistry {
       return mapAgentRow(row);
     });
     return { agent, machineCredential: token };
+  }
+
+  async update(
+    addressValue: string,
+    rawInput: unknown,
+    actorPrincipalId: string,
+  ): Promise<RegisteredAgent | undefined> {
+    const input = updateSchema.parse(rawInput);
+    const address = normalizeAddress(addressValue, this.config.agentAddressDomain);
+    const existing = await this.getByAddress(address);
+    if (!existing) return undefined;
+
+    const sourceAgentCard = input.agentCard === undefined
+      ? existing.sourceAgentCard
+      : AgentCard.fromJSON(input.agentCard);
+    assertAgentCard(sourceAgentCard);
+    await Promise.all(
+      sourceAgentCard.supportedInterfaces.map((entry) =>
+        assertSafeEndpoint(entry.url, {
+          allowHttp: this.config.allowHttpAgentEndpoints,
+          allowPrivate: this.config.allowPrivateAgentEndpoints,
+        }),
+      ),
+    );
+    const endpointAuthCiphertext = input.endpointBearerToken === undefined
+      ? existing.endpointAuthCiphertext
+      : input.endpointBearerToken === null
+        ? undefined
+        : encryptSecret(input.endpointBearerToken, this.config.encryptionKey);
+
+    return withTransaction(this.pool, async (client) => {
+      const row = await oneOrUndefined<AgentRow>(
+        client,
+        `UPDATE agents SET
+           display_name = $2,
+           description = $3,
+           source_agent_card = $4::jsonb,
+           endpoint_auth_ciphertext = $5,
+           status = $6,
+           updated_at = now()
+         WHERE address = $1
+         RETURNING id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+                   status, owner_principal_id, updated_at`,
+        [
+          address,
+          input.displayName ?? existing.displayName,
+          input.description ?? existing.description,
+          JSON.stringify(sourceAgentCard),
+          endpointAuthCiphertext ?? null,
+          input.status ?? existing.status,
+        ],
+      );
+      if (!row) return undefined;
+      await client.query(
+        `INSERT INTO audit_logs(principal_id, action, target, outcome, facts)
+         VALUES ($1, 'agent.update', $2, 'success', $3::jsonb)`,
+        [actorPrincipalId, address, JSON.stringify({ fields: Object.keys(input).sort() })],
+      );
+      return mapAgentRow(row);
+    });
   }
 }
 

@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { DefaultPushNotificationSender } from "@a2a-js/sdk/server";
 import { createApp } from "./app.js";
 import { AuthService } from "./auth.js";
 import { loadConfig } from "./config.js";
@@ -6,19 +7,31 @@ import { createPool, migrate } from "./db.js";
 import { DeliveryRuntime } from "./delivery.js";
 import { logError, logInfo } from "./log.js";
 import { ProxyHandlerCache } from "./proxy-agent.js";
+import { PostgresPushNotificationStore } from "./push-notifications.js";
 import { AgentRegistry } from "./registry.js";
 import { PostgresTaskStore } from "./task-store.js";
+import { TaskEventHub } from "./task-events.js";
 
 const config = loadConfig();
 const pool = createPool(config.databaseUrl);
 await migrate(pool);
 
 const registry = new AgentRegistry(pool, config);
-const taskStore = new PostgresTaskStore(pool);
+const pushNotificationStore = new PostgresPushNotificationStore(pool, config);
+const pushNotificationSender = new DefaultPushNotificationSender(pushNotificationStore);
+const taskStore = new PostgresTaskStore(pool, pushNotificationSender);
+const taskEvents = new TaskEventHub();
 const auth = new AuthService(pool, config.wwBaseUrl, config.authCacheTtlMs);
-const delivery = new DeliveryRuntime(pool, registry, taskStore, config);
+const delivery = new DeliveryRuntime(pool, registry, taskStore, taskEvents, config);
 await delivery.start();
-const proxyHandlers = new ProxyHandlerCache(registry, taskStore, auth.userBuilder, config.publicBaseUrl);
+const proxyHandlers = new ProxyHandlerCache(
+  registry,
+  taskStore,
+  taskEvents,
+  pushNotificationStore,
+  auth.userBuilder,
+  config.publicBaseUrl,
+);
 const app = createApp({
   pool,
   registry,

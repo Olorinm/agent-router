@@ -4,7 +4,7 @@ import { buildProxyAgentCard } from "../src/proxy-agent.js";
 import type { RegisteredAgent } from "../src/registry.js";
 
 describe("proxy agent card", () => {
-  it("advertises only router-owned, non-streaming interfaces", () => {
+  it("advertises router-owned streaming and push-capable interfaces", () => {
     const sourceAgentCard = AgentCard.fromJSON({
       name: "Worker",
       description: "Test worker",
@@ -38,8 +38,8 @@ describe("proxy agent card", () => {
       "https://router.example/agents/worker%40agents.welltop.cn/a2a/rest",
       "https://router.example/agents/worker%40agents.welltop.cn/a2a/jsonrpc",
     ]);
-    expect(card.capabilities.streaming).toBe(false);
-    expect(card.capabilities.pushNotifications).toBe(false);
+    expect(card.capabilities.streaming).toBe(true);
+    expect(card.capabilities.pushNotifications).toBe(true);
     expect(card.securityRequirements).toHaveLength(1);
   });
 });

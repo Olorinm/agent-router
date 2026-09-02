@@ -98,6 +98,31 @@ export function createApp(dependencies: AppDependencies) {
     });
   });
 
+  app.patch("/v1/agents/:address", dependencies.auth.requireAdmin, async (request, response) => {
+    const actor = dependencies.auth.currentUser(request);
+    const agent = await dependencies.registry.update(
+      routeParam(request.params.address),
+      request.body,
+      actor.userName,
+    );
+    if (!agent) {
+      response.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    response.json({
+      data: {
+        id: agent.id,
+        address: agent.address,
+        displayName: agent.displayName,
+        description: agent.description,
+        status: agent.status,
+        ownerPrincipalId: agent.ownerPrincipalId,
+        updatedAt: agent.updatedAt,
+        agentCard: buildProxyAgentCard(agent, dependencies.publicBaseUrl),
+      },
+    });
+  });
+
   app.use(
     "/agents/:address/.well-known/agent-card.json",
     dynamicProxyHandler(dependencies.proxyHandlers, "card"),

@@ -10,6 +10,8 @@ import {
   DefaultRequestHandler,
   type AgentExecutor,
   type ExecutionEventBus,
+  type PushNotificationSender,
+  type PushNotificationStore,
   type RequestContext,
 } from "@a2a-js/sdk/server";
 import {
@@ -22,6 +24,9 @@ import type { RequestHandler } from "express";
 import type { AgentRegistry, RegisteredAgent } from "./registry.js";
 import { ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
 import type { PostgresTaskStore } from "./task-store.js";
+import type { TaskEventHub } from "./task-events.js";
+
+const taskStorePushSender: PushNotificationSender = { send: async () => undefined };
 
 export interface ProxyHandlerSuite {
   card: RequestHandler;
@@ -36,6 +41,8 @@ export class ProxyHandlerCache {
   constructor(
     private readonly registry: AgentRegistry,
     private readonly taskStore: PostgresTaskStore,
+    private readonly taskEvents: TaskEventHub,
+    private readonly pushNotificationStore: PushNotificationStore,
     private readonly userBuilder: UserBuilder,
     private readonly publicBaseUrl: string,
   ) {}
@@ -46,8 +53,24 @@ export class ProxyHandlerCache {
     const cached = this.suites.get(agent.address);
     if (cached?.updatedAt === agent.updatedAt) return cached;
     const card = buildProxyAgentCard(agent, this.publicBaseUrl);
-    const executor = new QueuedProxyExecutor(agent);
-    const handler = new DefaultRequestHandler(card, this.taskStore, executor);
+    const executor = new QueuedProxyExecutor(agent, this.taskEvents);
+    const handler = new DefaultRequestHandler(
+      card,
+      this.taskStore,
+      executor,
+      this.taskEvents.manager,
+      this.pushNotificationStore,
+      taskStorePushSender,
+      undefined,
+      undefined,
+      {
+        keepBusAliveStates: [
+          TaskState.TASK_STATE_SUBMITTED,
+          TaskState.TASK_STATE_INPUT_REQUIRED,
+          TaskState.TASK_STATE_AUTH_REQUIRED,
+        ],
+      },
+    );
     const suite: ProxyHandlerSuite = {
       card: agentCardHandler({ agentCardProvider: handler, cache: { maxAge: 60 } }),
       rest: restHandler({ requestHandler: handler, userBuilder: this.userBuilder }),
@@ -60,7 +83,10 @@ export class ProxyHandlerCache {
 }
 
 export class QueuedProxyExecutor implements AgentExecutor {
-  constructor(private readonly agent: RegisteredAgent) {}
+  constructor(
+    private readonly agent: RegisteredAgent,
+    private readonly taskEvents: TaskEventHub,
+  ) {}
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
     const user = requestContext.context.user;
@@ -114,6 +140,7 @@ export class QueuedProxyExecutor implements AgentExecutor {
         metadata: {},
       }),
     );
+    this.taskEvents.finish(taskId, eventBus);
   }
 }
 
@@ -141,8 +168,8 @@ export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: strin
     version: agent.sourceAgentCard.version || "1.0.0",
     documentationUrl: agent.sourceAgentCard.documentationUrl,
     capabilities: {
-      streaming: false,
-      pushNotifications: false,
+      streaming: true,
+      pushNotifications: true,
       extensions: [],
       extendedAgentCard: false,
     },

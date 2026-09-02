@@ -23,6 +23,7 @@ import type { AgentRegistry, RegisteredAgent } from "./registry.js";
 import { parseDeliveryEnvelope, ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
 import { RouterUser } from "./auth.js";
 import { insertOutbox, type PostgresTaskStore } from "./task-store.js";
+import type { TaskEventHub } from "./task-events.js";
 
 const DELIVERY_EXCHANGE = "agent-router.inbound";
 const DEAD_EXCHANGE = "agent-router.dead";
@@ -61,13 +62,17 @@ export class DeliveryRuntime {
     private readonly pool: Pool,
     private readonly registry: AgentRegistry,
     private readonly taskStore: PostgresTaskStore,
+    private readonly taskEvents: TaskEventHub,
     private readonly config: RouterConfig,
   ) {}
 
   async start(): Promise<void> {
+    await this.taskEvents.recoverNonTerminal(this.pool);
     this.connection = await amqp.connect(this.config.rabbitmqUrl);
     this.connection.on("error", (error) => logError("rabbitmq.connection.error", error));
-    this.connection.on("close", () => logError("rabbitmq.connection.closed", new Error("connection_closed")));
+    this.connection.on("close", () => {
+      if (!this.stopped) logError("rabbitmq.connection.closed", new Error("connection_closed"));
+    });
     this.publisher = await this.connection.createConfirmChannel();
     this.consumer = await this.connection.createChannel();
     await Promise.all([this.publisher.assertExchange(DELIVERY_EXCHANGE, "direct", { durable: true }), this.publisher.assertExchange(DEAD_EXCHANGE, "direct", { durable: true })]);
@@ -196,12 +201,33 @@ export class DeliveryRuntime {
       message: statusMessage(current, `Delivering to ${agent.displayName}.`),
     };
     await this.taskStore.save(current, context);
+    this.taskEvents.publishStatus(current);
 
     try {
       const result = await this.callRemoteAgent(agent, envelope);
+      if (!("messageId" in result)) {
+        await setRemoteBinding(this.pool, envelope, result.id, result.contextId);
+        const latest = await this.taskStore.load(envelope.routerTaskId, context);
+        if (latest?.status?.state === TaskState.TASK_STATE_CANCELED) {
+          await this.cancelRemoteTask(agent, result.id).catch((error) =>
+            logError("delivery.remote_cancel_after_race_failed", error, { taskId: envelope.routerTaskId }),
+          );
+          await setBindingCanceled(this.pool, envelope);
+          return;
+        }
+      }
       const finalResult = await this.waitForTerminalResult(agent, result);
-      const mapped = mapRemoteResult(current, finalResult);
+      const latest = (await this.taskStore.load(envelope.routerTaskId, context)) ?? current;
+      if (latest.status?.state === TaskState.TASK_STATE_CANCELED) {
+        if (!("messageId" in finalResult)) {
+          await this.cancelRemoteTask(agent, finalResult.id).catch(() => undefined);
+        }
+        await setBindingCanceled(this.pool, envelope);
+        return;
+      }
+      const mapped = mapRemoteResult(latest, finalResult);
       await this.taskStore.save(mapped.task, context);
+      this.taskEvents.publishFinal(mapped.task);
       await withTransaction(this.pool, async (client) => {
         await client.query(
           `UPDATE task_bindings SET
@@ -288,6 +314,7 @@ export class DeliveryRuntime {
         message: statusMessage(task, `Delivery delayed; retry ${nextAttempt} scheduled.`),
       };
       await this.taskStore.save(task, context);
+      this.taskEvents.publishStatus(task);
       await withTransaction(this.pool, async (client) => {
         await insertOutbox(
           client,
@@ -313,6 +340,7 @@ export class DeliveryRuntime {
       message: statusMessage(task, "Delivery failed after the retry limit."),
     };
     await this.taskStore.save(task, context);
+    this.taskEvents.publishStatus(task);
     await withTransaction(this.pool, async (client) => {
       await client.query(
         `UPDATE task_bindings SET delivery_state = 'failed', updated_at = now()
@@ -327,17 +355,21 @@ export class DeliveryRuntime {
   private async cancel(envelope: CancelEnvelope): Promise<void> {
     const agent = await this.registry.getById(envelope.agentId);
     if (!agent || agent.status !== "active") throw new Error("cancel_target_agent_unavailable");
-    const client = await new ClientFactory().createFromAgentCard(agent.sourceAgentCard);
-    const serviceParameters: Record<string, string> = {};
-    if (agent.endpointAuthCiphertext) {
-      serviceParameters.Authorization = `Bearer ${decryptSecret(agent.endpointAuthCiphertext, this.config.encryptionKey)}`;
-    }
-    await client.cancelTask({ id: envelope.remoteTaskId, tenant: "", metadata: {} }, { serviceParameters });
+    await this.cancelRemoteTask(agent, envelope.remoteTaskId);
     await this.pool.query(
       `UPDATE task_bindings SET delivery_state = 'canceled', updated_at = now()
         WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
       [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
     );
+  }
+
+  private async cancelRemoteTask(agent: RegisteredAgent, remoteTaskId: string): Promise<void> {
+    const client = await new ClientFactory().createFromAgentCard(agent.sourceAgentCard);
+    const serviceParameters: Record<string, string> = {};
+    if (agent.endpointAuthCiphertext) {
+      serviceParameters.Authorization = `Bearer ${decryptSecret(agent.endpointAuthCiphertext, this.config.encryptionKey)}`;
+    }
+    await client.cancelTask({ id: remoteTaskId, tenant: "", metadata: {} }, { serviceParameters });
   }
 }
 
@@ -373,11 +405,14 @@ function parseBrokerEnvelope(buffer: Buffer): BrokerEnvelope {
   return value as BrokerEnvelope;
 }
 
-function parseCancelEnvelope(value: unknown): CancelEnvelope {
+export function parseCancelEnvelope(value: unknown): CancelEnvelope {
   if (typeof value !== "object" || value === null) throw new Error("cancel_envelope_invalid");
   const object = value as Record<string, unknown>;
   const required = ["tenant", "ownerPrincipalId", "routerTaskId", "agentId", "remoteTaskId"] as const;
-  for (const field of required) if (typeof object[field] !== "string" || !object[field]) throw new Error("cancel_envelope_invalid");
+  for (const field of required) if (typeof object[field] !== "string") throw new Error("cancel_envelope_invalid");
+  for (const field of required.filter((entry) => entry !== "tenant")) {
+    if (!object[field]) throw new Error("cancel_envelope_invalid");
+  }
   return {
     tenant: object.tenant as string,
     ownerPrincipalId: object.ownerPrincipalId as string,
@@ -421,18 +456,19 @@ function mapRemoteResult(routerTask: Task, result: SendMessageResult): {
       task: {
         ...routerTask,
         status: { state: TaskState.TASK_STATE_COMPLETED, timestamp: new Date().toISOString(), message },
-        history: [...(routerTask.history ?? []), message],
+        history: mergeHistory(routerTask.history ?? [], [message]),
       },
     };
   }
   const status = structuredClone(result.status);
   if (status?.message) status.message = remapMessage(status.message, routerTask);
+  const remoteHistory = (result.history ?? []).map((message) => remapMessage(message, routerTask));
   return {
     task: {
       ...routerTask,
       status,
       artifacts: structuredClone(result.artifacts ?? []),
-      history: (result.history ?? []).map((message) => remapMessage(message, routerTask)),
+      history: mergeHistory(routerTask.history ?? [], remoteHistory, status?.message ? [status.message] : []),
       metadata: {
         ...(routerTask.metadata ?? {}),
         remoteTaskId: result.id,
@@ -442,6 +478,14 @@ function mapRemoteResult(routerTask: Task, result: SendMessageResult): {
     remoteTaskId: result.id,
     remoteContextId: result.contextId,
   };
+}
+
+function mergeHistory(...groups: Message[][]): Message[] {
+  const messages = new Map<string, Message>();
+  for (const group of groups) {
+    for (const message of group) messages.set(message.messageId, structuredClone(message));
+  }
+  return [...messages.values()];
 }
 
 function remapMessage(message: Message, routerTask: Task): Message {
@@ -484,6 +528,27 @@ async function setBindingState(pool: Pool, envelope: DeliveryEnvelope, state: "d
     `UPDATE task_bindings SET delivery_state = $4, updated_at = now()
       WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
     [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId, state],
+  );
+}
+
+async function setRemoteBinding(
+  pool: Pool,
+  envelope: DeliveryEnvelope,
+  remoteTaskId: string,
+  remoteContextId: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE task_bindings SET remote_task_id = $4, remote_context_id = $5, updated_at = now()
+      WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
+    [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId, remoteTaskId, remoteContextId],
+  );
+}
+
+async function setBindingCanceled(pool: Pool, envelope: DeliveryEnvelope): Promise<void> {
+  await pool.query(
+    `UPDATE task_bindings SET delivery_state = 'canceled', updated_at = now()
+      WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
+    [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
   );
 }
 

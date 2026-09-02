@@ -1,12 +1,14 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   TaskState,
   type ListTasksRequest,
   type ListTasksResponse,
   type Task,
 } from "@a2a-js/sdk";
-import type { ServerCallContext, TaskStore } from "@a2a-js/sdk/server";
+import type { PushNotificationSender, ServerCallContext, TaskStore } from "@a2a-js/sdk/server";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "./db.js";
+import { logError } from "./log.js";
 import { parseDeliveryEnvelope, ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
 
 interface TaskRow {
@@ -24,15 +26,19 @@ const terminalStates = new Set<TaskState>([
 ]);
 
 export class PostgresTaskStore implements TaskStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly pushNotificationSender?: PushNotificationSender,
+  ) {}
 
   async save(task: Task, context: ServerCallContext): Promise<void> {
     const scope = scopeFromContext(context);
-    await withTransaction(this.pool, async (client) => {
+    const changed = await withTransaction(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [scopeLockKey(scope, task.id)]);
       const existing = await loadTaskRow(client, scope, task.id, true);
       const nextState = task.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED;
-      if (existing && terminalStates.has(existing.state) && existing.state !== nextState) return;
+      if (existing && terminalStates.has(existing.state) && existing.state !== nextState) return false;
+      if (existing && isDeepStrictEqual(existing.task, task)) return false;
 
       const envelope = readEnvelope(task);
       if (!existing && !envelope) throw new Error("router_task_metadata_missing");
@@ -62,7 +68,13 @@ export class PostgresTaskStore implements TaskStore {
       if (existing && nextState === TaskState.TASK_STATE_CANCELED && existing.state !== nextState) {
         await enqueueCancellation(client, scope, task.id, agentId);
       }
+      return true;
     });
+    if (changed && this.pushNotificationSender) {
+      void this.pushNotificationSender
+        .send({ payload: { $case: "task", value: structuredClone(task) } }, context, structuredClone(task))
+        .catch((error) => logError("push_notification.dispatch_failed", error, { taskId: task.id }));
+    }
   }
 
   async load(taskId: string, context: ServerCallContext): Promise<Task | undefined> {
