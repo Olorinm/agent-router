@@ -13,6 +13,9 @@ export interface RegisteredAgent {
   description: string;
   sourceAgentCard: AgentCardType;
   endpointAuthCiphertext?: string;
+  targetKind: "local" | "federated";
+  originDomain?: string;
+  remoteCardExpiresAt?: string;
   status: "active" | "disabled";
   ownerPrincipalId: string;
   updatedAt: string;
@@ -25,6 +28,9 @@ interface AgentRow {
   description: string;
   source_agent_card: unknown;
   endpoint_auth_ciphertext: string | null;
+  target_kind: "local" | "federated";
+  origin_domain: string | null;
+  remote_card_expires_at: Date | null;
   status: "active" | "disabled";
   owner_principal_id: string;
   updated_at: Date;
@@ -60,9 +66,10 @@ export class AgentRegistry {
     const value = `%${search.trim().toLowerCase()}%`;
     const result = await this.pool.query<AgentRow>(
       `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
-              status, owner_principal_id, updated_at
+              target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at
          FROM agents
-        WHERE $1 = '%%'
+        WHERE target_kind = 'local' AND (
+              $1 = '%%'
            OR address LIKE $1
            OR lower(display_name) LIKE $1
            OR lower(description) LIKE $1
@@ -76,10 +83,21 @@ export class AgentRegistry {
                    SELECT 1 FROM jsonb_array_elements_text(COALESCE(skill->'tags', '[]'::jsonb)) AS tag(value)
                     WHERE lower(value) LIKE $1
                  )
-           )
+           ))
         ORDER BY address ASC
         LIMIT 200`,
       [value],
+    );
+    return result.rows.map(mapAgentRow);
+  }
+
+  async listDeliveryTargets(): Promise<RegisteredAgent[]> {
+    const result = await this.pool.query<AgentRow>(
+      `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+              target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at
+         FROM agents
+        WHERE status = 'active'
+        ORDER BY address`,
     );
     return result.rows.map(mapAgentRow);
   }
@@ -88,9 +106,9 @@ export class AgentRegistry {
     const row = await oneOrUndefined<AgentRow>(
       this.pool,
       `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
-              status, owner_principal_id, updated_at
+              target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at
          FROM agents WHERE address = $1`,
-      [normalizeAddress(address, this.config.agentAddressDomain)],
+      [normalizeAnyAddress(address)],
     );
     return row ? mapAgentRow(row) : undefined;
   }
@@ -99,7 +117,7 @@ export class AgentRegistry {
     const row = await oneOrUndefined<AgentRow>(
       this.pool,
       `SELECT id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
-              status, owner_principal_id, updated_at
+              target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at
          FROM agents WHERE id = $1`,
       [id],
     );
@@ -135,7 +153,7 @@ export class AgentRegistry {
            address, display_name, description, source_agent_card, endpoint_auth_ciphertext, owner_principal_id
          ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
          RETURNING id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
-                   status, owner_principal_id, updated_at`,
+                   target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at`,
         [
           address,
           input.displayName,
@@ -203,7 +221,7 @@ export class AgentRegistry {
            updated_at = now()
          WHERE address = $1
          RETURNING id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
-                   status, owner_principal_id, updated_at`,
+                   target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at`,
         [
           address,
           input.displayName ?? existing.displayName,
@@ -222,11 +240,56 @@ export class AgentRegistry {
       return mapAgentRow(row);
     });
   }
+
+  async upsertFederated(
+    addressValue: string,
+    originDomain: string,
+    sourceAgentCard: AgentCardType,
+  ): Promise<RegisteredAgent> {
+    const address = normalizeAnyAddress(addressValue);
+    if (address.endsWith(`@${this.config.agentAddressDomain}`)) throw new Error("federation_remote_address_required");
+    assertAgentCard(sourceAgentCard);
+    return withTransaction(this.pool, async (client) => {
+      await upsertPrincipal(client, {
+        id: "operator:federation-cache",
+        kind: "operator",
+        displayName: "Federation cache",
+      });
+      const row = await oneOrUndefined<AgentRow>(
+        client,
+        `INSERT INTO agents(
+           address, display_name, description, source_agent_card, owner_principal_id,
+           target_kind, origin_domain, remote_card_expires_at
+         ) VALUES ($1, $2, $3, $4::jsonb, 'operator:federation-cache', 'federated', $5, $6)
+         ON CONFLICT (address) DO UPDATE SET
+           display_name = EXCLUDED.display_name,
+           description = EXCLUDED.description,
+           source_agent_card = EXCLUDED.source_agent_card,
+           origin_domain = EXCLUDED.origin_domain,
+           remote_card_expires_at = EXCLUDED.remote_card_expires_at,
+           status = 'active',
+           updated_at = now()
+         WHERE agents.target_kind = 'federated'
+         RETURNING id, address, display_name, description, source_agent_card, endpoint_auth_ciphertext,
+                   target_kind, origin_domain, remote_card_expires_at, status, owner_principal_id, updated_at`,
+        [
+          address,
+          sourceAgentCard.name,
+          sourceAgentCard.description,
+          JSON.stringify(sourceAgentCard),
+          originDomain,
+          new Date(Date.now() + this.config.federationRemoteCardCacheMs),
+        ],
+      );
+      if (!row) throw new Error("federated_agent_conflicts_with_local_agent");
+      return mapAgentRow(row);
+    });
+  }
 }
 
 export async function upsertPrincipal(
   client: Pick<PoolClient, "query"> | Pick<Pool, "query">,
-  input: { id: string; kind: "human" | "agent" | "operator"; displayName: string; email?: string },
+  input: { id: string; kind: "human" | "agent" | "operator" | "federation"; displayName: string; email?: string },
 ): Promise<void> {
   await client.query(
     `INSERT INTO principals(id, kind, display_name, email)
@@ -241,10 +304,17 @@ export async function upsertPrincipal(
 
 export function normalizeAddress(value: string, domain: string): string {
   const normalized = value.trim().toLowerCase();
-  const full = normalized.includes("@") ? normalized : `${normalized}@${domain}`;
-  if (!/^[a-z0-9][a-z0-9._-]{0,63}@[a-z0-9.-]+$/.test(full)) throw new Error("agent_address_invalid");
+  const full = normalizeAnyAddress(normalized.includes("@") ? normalized : `${normalized}@${domain}`);
   if (!full.endsWith(`@${domain}`)) throw new Error("agent_address_domain_invalid");
   return full;
+}
+
+export function normalizeAnyAddress(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}@[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(normalized)) {
+    throw new Error("agent_address_invalid");
+  }
+  return normalized;
 }
 
 function assertAgentCard(card: AgentCardType): void {
@@ -263,6 +333,9 @@ function mapAgentRow(row: AgentRow): RegisteredAgent {
     description: row.description,
     sourceAgentCard: AgentCard.fromJSON(row.source_agent_card),
     ...(row.endpoint_auth_ciphertext ? { endpointAuthCiphertext: row.endpoint_auth_ciphertext } : {}),
+    targetKind: row.target_kind,
+    ...(row.origin_domain ? { originDomain: row.origin_domain } : {}),
+    ...(row.remote_card_expires_at ? { remoteCardExpiresAt: row.remote_card_expires_at.toISOString() } : {}),
     status: row.status,
     ownerPrincipalId: row.owner_principal_id,
     updatedAt: row.updated_at.toISOString(),

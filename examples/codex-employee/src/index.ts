@@ -31,7 +31,7 @@ const codexBinary = process.env.CODEX_BIN?.trim() || "/app/node_modules/.bin/cod
 
 const card: AgentCard = {
   name: "Isolated Codex Verifier",
-  description: "A minimal, isolated Codex employee used to verify durable OpenGrove Agent Router delivery.",
+  description: "A minimal, isolated Codex employee used to verify durable Agent Router delivery.",
   supportedInterfaces: [
     {
       url: `${publicBaseUrl}/a2a/rest`,
@@ -46,7 +46,7 @@ const card: AgentCard = {
       protocolVersion: A2A_PROTOCOL_VERSION,
     },
   ],
-  provider: { organization: "OpenGrove", url: "https://opengrove.creativefitting.cn" },
+  provider: { organization: "Example operator", url: publicBaseUrl },
   version: "1.0.0",
   documentationUrl: "",
   capabilities: { streaming: false, pushNotifications: false, extensions: [], extendedAgentCard: false },

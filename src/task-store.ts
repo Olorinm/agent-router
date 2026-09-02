@@ -8,6 +8,7 @@ import {
 import type { PushNotificationSender, ServerCallContext, TaskStore } from "@a2a-js/sdk/server";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "./db.js";
+import { parseFederationPrincipalId } from "./federation.js";
 import { logError } from "./log.js";
 import { parseDeliveryEnvelope, ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
 
@@ -47,13 +48,24 @@ export class PostgresTaskStore implements TaskStore {
       if (!agentId || !messageId) throw new Error("router_task_scope_missing");
 
       await client.query(
-        `INSERT INTO tasks(tenant, owner_principal_id, task_id, agent_id, message_id, state, task)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        `INSERT INTO tasks(
+           tenant, owner_principal_id, task_id, agent_id, message_id, idempotency_scope, state, task
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
          ON CONFLICT (tenant, owner_principal_id, task_id) DO UPDATE SET
            state = EXCLUDED.state,
            task = EXCLUDED.task,
            updated_at = now()`,
-        [scope.tenant, scope.ownerPrincipalId, task.id, agentId, messageId, nextState, JSON.stringify(task)],
+        [
+          scope.tenant,
+          scope.ownerPrincipalId,
+          task.id,
+          agentId,
+          messageId,
+          messageIdempotencyScope(scope, agentId),
+          nextState,
+          JSON.stringify(task),
+        ],
       );
 
       if (!existing || existing.state !== nextState) {
@@ -80,6 +92,40 @@ export class PostgresTaskStore implements TaskStore {
   async load(taskId: string, context: ServerCallContext): Promise<Task | undefined> {
     const row = await loadTaskRow(this.pool, scopeFromContext(context), taskId, false);
     return row ? structuredClone(row.task) : undefined;
+  }
+
+  async findByMessage(agentId: string, messageId: string, context: ServerCallContext): Promise<Task | undefined> {
+    const scope = scopeFromContext(context);
+    const result = await this.pool.query<{ task: Task }>(
+      `SELECT task
+         FROM tasks
+        WHERE idempotency_scope = $1 AND message_id = $2
+        LIMIT 1`,
+      [messageIdempotencyScope(scope, agentId), messageId],
+    );
+    return result.rows[0]?.task ? structuredClone(result.rows[0].task) : undefined;
+  }
+
+  async acquireMessageLock(agentId: string, messageId: string, context: ServerCallContext): Promise<() => Promise<void>> {
+    const scope = scopeFromContext(context);
+    const key = JSON.stringify([messageIdempotencyScope(scope, agentId), messageId]);
+    const client = await this.pool.connect();
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [key]);
+    } catch (error) {
+      client.release();
+      throw error;
+    }
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      try {
+        await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+      } finally {
+        client.release();
+      }
+    };
   }
 
   async list(params: ListTasksRequest, context: ServerCallContext): Promise<ListTasksResponse> {
@@ -182,10 +228,17 @@ async function enqueueInitialDelivery(client: PoolClient, envelope: DeliveryEnve
   );
   await client.query(
     `INSERT INTO task_bindings(
-       tenant, owner_principal_id, router_task_id, agent_id, delivery_state
-     ) VALUES ($1, $2, $3, $4, 'queued')
+       tenant, owner_principal_id, router_task_id, agent_id, remote_domain, remote_subject, delivery_state
+     ) VALUES ($1, $2, $3, $4, $5, $6, 'queued')
      ON CONFLICT (tenant, owner_principal_id, router_task_id) DO NOTHING`,
-    [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId, envelope.agentId],
+    [
+      envelope.tenant,
+      envelope.ownerPrincipalId,
+      envelope.routerTaskId,
+      envelope.agentId,
+      envelope.targetDomain ?? null,
+      envelope.targetKind === "federated" ? envelope.senderAddress : null,
+    ],
   );
   await insertOutbox(client, "deliver", envelope, `deliver:${scopeKey(envelope)}:${envelope.attempt}`);
   await client.query(
@@ -201,8 +254,12 @@ async function enqueueCancellation(
   taskId: string,
   agentId: string,
 ): Promise<void> {
-  const binding = await client.query<{ remote_task_id: string | null }>(
-    `SELECT remote_task_id FROM task_bindings
+  const binding = await client.query<{
+    remote_task_id: string | null;
+    remote_domain: string | null;
+    remote_subject: string | null;
+  }>(
+    `SELECT remote_task_id, remote_domain, remote_subject FROM task_bindings
       WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
     [scope.tenant, scope.ownerPrincipalId, taskId],
   );
@@ -215,7 +272,16 @@ async function enqueueCancellation(
     );
     return;
   }
-  const payload = { ...scope, routerTaskId: taskId, agentId, remoteTaskId, attempt: 0 };
+  const row = binding.rows[0];
+  const payload = {
+    ...scope,
+    routerTaskId: taskId,
+    agentId,
+    remoteTaskId,
+    ...(row?.remote_domain ? { remoteDomain: row.remote_domain } : {}),
+    ...(row?.remote_subject ? { remoteSubject: row.remote_subject } : {}),
+    attempt: 0,
+  };
   await insertOutbox(client, "cancel", payload, `cancel:${scope.tenant}:${scope.ownerPrincipalId}:${taskId}`);
 }
 
@@ -252,6 +318,13 @@ function readEnvelope(task: Task): DeliveryEnvelope | undefined {
 
 function scopeLockKey(scope: TaskScope, taskId: string): string {
   return JSON.stringify([scope.tenant, scope.ownerPrincipalId, taskId]);
+}
+
+function messageIdempotencyScope(scope: TaskScope, agentId: string): string {
+  const federation = parseFederationPrincipalId(scope.ownerPrincipalId);
+  return federation
+    ? JSON.stringify(["federation", federation.issuer])
+    : JSON.stringify(["local", scope.tenant, scope.ownerPrincipalId, agentId]);
 }
 
 function scopeKey(envelope: DeliveryEnvelope): string {

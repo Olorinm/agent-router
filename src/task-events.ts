@@ -1,4 +1,9 @@
-import { TaskState, type Task } from "@a2a-js/sdk";
+import {
+  TaskState,
+  type Message,
+  type Task,
+  type TaskArtifactUpdateEvent,
+} from "@a2a-js/sdk";
 import {
   AgentEvent,
   DefaultExecutionEventBusManager,
@@ -64,6 +69,16 @@ export class TaskEventHub {
       );
     }
     if (task.status && terminalStates.has(task.status.state)) this.finish(task.id, bus);
+  }
+
+  publishArtifact(event: TaskArtifactUpdateEvent): void {
+    const bus = this.manager.createOrGetByTaskId(event.taskId);
+    bus.publish(AgentEvent.artifactUpdate(structuredClone(event)));
+  }
+
+  publishMessage(message: Message): void {
+    const bus = this.manager.createOrGetByTaskId(message.taskId);
+    bus.publish(AgentEvent.message(structuredClone(message)));
   }
 
   finish(taskId: string, bus = this.manager.getByTaskId(taskId)): void {

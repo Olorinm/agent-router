@@ -3,16 +3,20 @@ import {
   Role,
   TaskState,
   type AgentCard,
+  type SendMessageRequest,
+  type StreamResponse,
   type Task,
 } from "@a2a-js/sdk";
 import {
   AgentEvent,
   DefaultRequestHandler,
+  type A2ARequestHandler,
   type AgentExecutor,
   type ExecutionEventBus,
   type PushNotificationSender,
   type PushNotificationStore,
   type RequestContext,
+  type ServerCallContext,
 } from "@a2a-js/sdk/server";
 import {
   agentCardHandler,
@@ -22,6 +26,7 @@ import {
 } from "@a2a-js/sdk/server/express";
 import type { RequestHandler } from "express";
 import type { AgentRegistry, RegisteredAgent } from "./registry.js";
+import type { AgentTargetResolver } from "./target-resolver.js";
 import { ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
 import type { PostgresTaskStore } from "./task-store.js";
 import type { TaskEventHub } from "./task-events.js";
@@ -39,22 +44,23 @@ export class ProxyHandlerCache {
   private readonly suites = new Map<string, ProxyHandlerSuite>();
 
   constructor(
-    private readonly registry: AgentRegistry,
+    private readonly targets: AgentTargetResolver,
     private readonly taskStore: PostgresTaskStore,
     private readonly taskEvents: TaskEventHub,
     private readonly pushNotificationStore: PushNotificationStore,
     private readonly userBuilder: UserBuilder,
     private readonly publicBaseUrl: string,
+    private readonly localDomain: string,
   ) {}
 
   async get(address: string): Promise<ProxyHandlerSuite | undefined> {
-    const agent = await this.registry.getByAddress(address);
+    const agent = await this.targets.resolve(address);
     if (!agent || agent.status !== "active") return undefined;
     const cached = this.suites.get(agent.address);
     if (cached?.updatedAt === agent.updatedAt) return cached;
     const card = buildProxyAgentCard(agent, this.publicBaseUrl);
-    const executor = new QueuedProxyExecutor(agent, this.taskEvents);
-    const handler = new DefaultRequestHandler(
+    const executor = new QueuedProxyExecutor(agent, this.taskEvents, this.localDomain);
+    const baseHandler = new DefaultRequestHandler(
       card,
       this.taskStore,
       executor,
@@ -71,8 +77,11 @@ export class ProxyHandlerCache {
         ],
       },
     );
+    const handler = withMessageIdempotency(baseHandler, this.taskStore, agent);
     const suite: ProxyHandlerSuite = {
-      card: agentCardHandler({ agentCardProvider: handler, cache: { maxAge: 60 } }),
+      // Cards are authenticated and subject to domain ACLs. They must be
+      // revalidated instead of being reusable from a shared public cache.
+      card: agentCardHandler({ agentCardProvider: handler, cache: { maxAge: 0 } }),
       rest: restHandler({ requestHandler: handler, userBuilder: this.userBuilder }),
       jsonRpc: jsonRpcHandler({ requestHandler: handler, userBuilder: this.userBuilder }),
       updatedAt: agent.updatedAt,
@@ -86,6 +95,7 @@ export class QueuedProxyExecutor implements AgentExecutor {
   constructor(
     private readonly agent: RegisteredAgent,
     private readonly taskEvents: TaskEventHub,
+    private readonly localDomain: string,
   ) {}
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
@@ -100,6 +110,11 @@ export class QueuedProxyExecutor implements AgentExecutor {
       routerTaskId: requestContext.taskId,
       routerContextId: requestContext.contextId,
       messageId: message.messageId,
+      senderAddress: user instanceof Object && "address" in user && typeof user.address === "string"
+        ? user.address
+        : `router@${this.localDomain}`,
+      targetKind: this.agent.targetKind,
+      ...(this.agent.originDomain ? { targetDomain: this.agent.originDomain } : {}),
       message,
       attempt: 0,
     };
@@ -144,9 +159,118 @@ export class QueuedProxyExecutor implements AgentExecutor {
   }
 }
 
+export function withMessageIdempotency(
+  handler: A2ARequestHandler,
+  taskStore: Pick<PostgresTaskStore, "findByMessage" | "acquireMessageLock">,
+  agent: RegisteredAgent,
+): A2ARequestHandler {
+  const locks = new Map<string, Promise<void>>();
+  return new Proxy(handler, {
+    get(target, property) {
+      if (property === "sendMessage") {
+        return async (params: SendMessageRequest, context: ServerCallContext) => {
+          if (params.message?.taskId) return target.sendMessage(params, context);
+          const key = messageScopeKey(params, context, agent);
+          return runExclusive(locks, key, async () => {
+            const releaseDatabase = await taskStore.acquireMessageLock(agent.id, params.message!.messageId, context);
+            try {
+              const existing = await findExistingTask(params, context, taskStore, agent);
+              if (existing) return existing;
+              const result = await target.sendMessage(params, context);
+              return (await findExistingTask(params, context, taskStore, agent)) ?? result;
+            } finally {
+              await releaseDatabase();
+            }
+          });
+        };
+      }
+      if (property === "sendMessageStream") {
+        return async function* (params: SendMessageRequest, context: ServerCallContext): AsyncGenerator<StreamResponse> {
+          if (params.message?.taskId) {
+            yield* target.sendMessageStream(params, context);
+            return;
+          }
+          const key = messageScopeKey(params, context, agent);
+          const release = await acquire(locks, key);
+          const releaseDatabase = await taskStore.acquireMessageLock(agent.id, params.message!.messageId, context);
+          try {
+            const existing = await findExistingTask(params, context, taskStore, agent);
+            if (existing) {
+              yield { payload: { $case: "task", value: existing } };
+              return;
+            }
+            let first = true;
+            for await (const event of target.sendMessageStream(params, context)) {
+              if (first) {
+                first = false;
+                await releaseDatabase();
+                release();
+              }
+              yield event;
+            }
+          } finally {
+            await releaseDatabase();
+            release();
+          }
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function findExistingTask(
+  params: SendMessageRequest,
+  context: ServerCallContext,
+  taskStore: Pick<PostgresTaskStore, "findByMessage">,
+  agent: RegisteredAgent,
+): Promise<Task | undefined> {
+  const message = params.message;
+  if (!message) throw new Error("message_required");
+  return taskStore.findByMessage(agent.id, message.messageId, context);
+}
+
+function messageScopeKey(params: SendMessageRequest, context: ServerCallContext, agent: RegisteredAgent): string {
+  const owner = context.user?.userName;
+  const messageId = params.message?.messageId;
+  if (!owner || !messageId) throw new Error("idempotency_scope_missing");
+  return JSON.stringify([context.tenant ?? "", owner, agent.id, messageId]);
+}
+
+async function runExclusive<T>(
+  locks: Map<string, Promise<void>>,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const release = await acquire(locks, key);
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
+async function acquire(locks: Map<string, Promise<void>>, key: string): Promise<() => void> {
+  const previous = locks.get(key) ?? Promise.resolve();
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const current = previous.then(() => gate);
+  locks.set(key, current);
+  await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseGate();
+    if (locks.get(key) === current) locks.delete(key);
+  };
+}
+
 export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: string): AgentCard {
   const encodedAddress = encodeURIComponent(agent.address);
   const base = `${publicBaseUrl}/agents/${encodedAddress}/a2a`;
+  const addressDomain = agent.address.slice(agent.address.lastIndexOf("@") + 1);
   return {
     name: agent.displayName,
     description: agent.description,
@@ -164,7 +288,7 @@ export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: strin
         protocolVersion: A2A_PROTOCOL_VERSION,
       },
     ],
-    provider: agent.sourceAgentCard.provider ?? { organization: "OpenGrove", url: publicBaseUrl },
+    provider: agent.sourceAgentCard.provider ?? { organization: addressDomain, url: publicBaseUrl },
     version: agent.sourceAgentCard.version || "1.0.0",
     documentationUrl: agent.sourceAgentCard.documentationUrl,
     capabilities: {
@@ -174,18 +298,31 @@ export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: strin
       extendedAgentCard: false,
     },
     securitySchemes: {
-      Bearer: {
+      RouterCredential: {
         scheme: {
           $case: "httpAuthSecurityScheme",
           value: {
-            description: "WW admin access token or an OpenGrove Agent Router machine credential.",
+            description: "An administrator access token accepted by this Router or a Router-issued machine credential.",
             scheme: "bearer",
             bearerFormat: "opaque",
           },
         },
       },
+      FederationJwt: {
+        scheme: {
+          $case: "httpAuthSecurityScheme",
+          value: {
+            description: "A short-lived JWT issued by an allowed federated Router and verifiable through its JWKS.",
+            scheme: "bearer",
+            bearerFormat: "JWT",
+          },
+        },
+      },
     },
-    securityRequirements: [{ schemes: { Bearer: { list: [] } } }],
+    securityRequirements: [
+      { schemes: { RouterCredential: { list: [] } } },
+      { schemes: { FederationJwt: { list: [] } } },
+    ],
     defaultInputModes: agent.sourceAgentCard.defaultInputModes.length
       ? agent.sourceAgentCard.defaultInputModes
       : ["text/plain"],
@@ -194,7 +331,10 @@ export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: strin
       : ["text/plain", "task-status"],
     skills: agent.sourceAgentCard.skills.map((skill) => ({
       ...skill,
-      securityRequirements: [{ schemes: { Bearer: { list: [] } } }],
+      securityRequirements: [
+        { schemes: { RouterCredential: { list: [] } } },
+        { schemes: { FederationJwt: { list: [] } } },
+      ],
     })),
     signatures: [],
     iconUrl: agent.sourceAgentCard.iconUrl,

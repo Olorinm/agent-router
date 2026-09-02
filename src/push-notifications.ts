@@ -9,8 +9,10 @@ import type {
 } from "@a2a-js/sdk/server";
 import type { Pool } from "pg";
 import type { RouterConfig } from "./config.js";
+import type { RouterUser } from "./auth.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import { assertSafeEndpoint } from "./endpoint-policy.js";
+import type { FederationService } from "./federation.js";
 
 interface ConfigRow {
   config_ciphertext: string;
@@ -21,6 +23,7 @@ export class PostgresPushNotificationStore implements PushNotificationStore {
   constructor(
     private readonly pool: Pool,
     private readonly config: RouterConfig,
+    private readonly federation?: FederationService,
   ) {}
 
   async save(
@@ -28,12 +31,21 @@ export class PostgresPushNotificationStore implements PushNotificationStore {
     context: ServerCallContext,
     pushNotificationConfig: TaskPushNotificationConfigType,
   ): Promise<void> {
-    if (!taskId || pushNotificationConfig.taskId !== taskId) throw new Error("push_task_id_mismatch");
+    if (!taskId || (pushNotificationConfig.taskId && pushNotificationConfig.taskId !== taskId)) {
+      throw new Error("push_task_id_mismatch");
+    }
+    pushNotificationConfig.taskId = taskId;
     if (!pushNotificationConfig.id) pushNotificationConfig.id = crypto.randomUUID();
-    await assertSafeEndpoint(pushNotificationConfig.url, {
-      allowHttp: this.config.allowHttpAgentEndpoints,
-      allowPrivate: this.config.allowPrivateAgentEndpoints,
-    });
+    const user = context.user as RouterUser | undefined;
+    if (user?.federationIdentity) {
+      if (!this.federation) throw new Error("federation_service_required");
+      await this.federation.assertCallbackUrl(user.federationIdentity, pushNotificationConfig.url);
+    } else {
+      await assertSafeEndpoint(pushNotificationConfig.url, {
+        allowHttp: this.config.allowHttpAgentEndpoints,
+        allowPrivate: this.config.allowPrivateAgentEndpoints,
+      });
+    }
     const scope = scopeFromContext(context);
     const canonical = TaskPushNotificationConfig.fromJSON(pushNotificationConfig);
     const encrypted = encryptSecret(JSON.stringify(TaskPushNotificationConfig.toJSON(canonical)), this.config.encryptionKey);

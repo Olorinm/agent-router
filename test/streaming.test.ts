@@ -10,7 +10,12 @@ import {
 import { DefaultRequestHandler, InMemoryTaskStore, ServerCallContext } from "@a2a-js/sdk/server";
 import { describe, expect, it } from "vitest";
 import { RouterUser } from "../src/auth.js";
-import { buildProxyAgentCard, QueuedProxyExecutor, textPart } from "../src/proxy-agent.js";
+import {
+  buildProxyAgentCard,
+  QueuedProxyExecutor,
+  textPart,
+  withMessageIdempotency,
+} from "../src/proxy-agent.js";
 import type { RegisteredAgent } from "../src/registry.js";
 import { TaskEventHub } from "../src/task-events.js";
 
@@ -22,7 +27,7 @@ describe("queued proxy streaming", () => {
     const handler = new DefaultRequestHandler(
       buildProxyAgentCard(agent, "https://router.example"),
       store,
-      new QueuedProxyExecutor(agent, events),
+      new QueuedProxyExecutor(agent, events, "agents.example"),
       events.manager,
       undefined,
       undefined,
@@ -103,7 +108,7 @@ describe("queued proxy streaming", () => {
     const handler = new DefaultRequestHandler(
       buildProxyAgentCard(agent, "https://router.example"),
       store,
-      new QueuedProxyExecutor(agent, events),
+      new QueuedProxyExecutor(agent, events, "agents.example"),
       events.manager,
       undefined,
       undefined,
@@ -134,12 +139,69 @@ describe("queued proxy streaming", () => {
     expect(canceled.status.state).toBe(TaskState.TASK_STATE_CANCELED);
     expect((await store.load(result.id, context))?.status.state).toBe(TaskState.TASK_STATE_CANCELED);
   });
+
+  it("returns the original server task when the same messageId is retried", async () => {
+    const agent = testAgent();
+    const events = new TaskEventHub();
+    const store = new InMemoryTaskStore();
+    const base = new DefaultRequestHandler(
+      buildProxyAgentCard(agent, "https://router.example"),
+      store,
+      new QueuedProxyExecutor(agent, events, "agents.example"),
+      events.manager,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { keepBusAliveStates: [TaskState.TASK_STATE_SUBMITTED] },
+    );
+    const handler = withMessageIdempotency(base, {
+      acquireMessageLock: async () => async () => undefined,
+      findByMessage: async (_agentId, messageId, currentContext) => {
+        const listed = await store.list(
+          {
+            tenant: "",
+            contextId: "",
+            status: TaskState.TASK_STATE_UNSPECIFIED,
+            pageSize: 100,
+            pageToken: "",
+            historyLength: 20,
+            statusTimestampAfter: undefined,
+            includeArtifacts: true,
+          },
+          currentContext,
+        );
+        return listed.tasks.find((task) => task.history?.some((entry) => entry.messageId === messageId));
+      },
+    }, agent);
+    const context = new ServerCallContext({
+      user: new RouterUser("agent:sender", "Sender", "agent", [], undefined, "sender@agents.example"),
+      requestedVersion: "1.0",
+    });
+    const message = userMessage("retry exactly once");
+    const request = {
+      message,
+      configuration: {
+        acceptedOutputModes: ["text/plain"],
+        returnImmediately: true,
+        historyLength: 20,
+        taskPushNotificationConfig: undefined,
+      },
+      metadata: {},
+      tenant: "",
+    };
+    const first = await handler.sendMessage(request, context);
+    const second = await handler.sendMessage(structuredClone(request), context);
+    if (!("id" in first) || !("id" in second)) throw new Error("idempotent_task_missing");
+    expect(second.id).toBe(first.id);
+    expect(first.id).toMatch(/^[0-9a-f-]{36}$/);
+  });
 });
 
 function testAgent(): RegisteredAgent {
   return {
     id: "00000000-0000-4000-8000-000000000001",
-    address: "worker@agents.welltop.cn",
+    address: "worker@agents.example",
     displayName: "Worker",
     description: "Streaming test worker",
     sourceAgentCard: AgentCard.fromJSON({
@@ -165,6 +227,7 @@ function testAgent(): RegisteredAgent {
       signatures: [],
       iconUrl: "",
     }),
+    targetKind: "local",
     status: "active",
     ownerPrincipalId: "ww:test",
     updatedAt: new Date(0).toISOString(),

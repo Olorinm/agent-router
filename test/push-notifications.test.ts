@@ -51,6 +51,7 @@ describe("push notifications", () => {
     const config = loadConfig({
       PUBLIC_BASE_URL: "https://router.example",
       WW_BASE_URL: "https://ww.example",
+      AGENT_ADDRESS_DOMAIN: "agents.example",
       DATABASE_URL: "postgres://unused",
       RABBITMQ_URL: "amqp://unused",
       MASTER_ENCRYPTION_KEY_BASE64: randomBytes(32).toString("base64"),

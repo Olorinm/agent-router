@@ -8,7 +8,7 @@ const booleanString = z
 const configSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().transform((value) => value.replace(/\/+$/, "")),
   WW_BASE_URL: z.string().url().transform((value) => value.replace(/\/+$/, "")),
-  AGENT_ADDRESS_DOMAIN: z.string().min(3).default("agents.welltop.cn"),
+  AGENT_ADDRESS_DOMAIN: z.string().min(3),
   DATABASE_URL: z.string().min(1),
   RABBITMQ_URL: z.string().min(1),
   MASTER_ENCRYPTION_KEY_BASE64: z.string().min(1),
@@ -21,6 +21,15 @@ const configSchema = z.object({
   DELIVERY_RETRY_BASE_MS: z.coerce.number().int().min(100).max(3_600_000).default(5000),
   ALLOW_HTTP_AGENT_ENDPOINTS: booleanString,
   ALLOW_PRIVATE_AGENT_ENDPOINTS: booleanString,
+  FEDERATION_ENABLED: booleanString,
+  FEDERATION_PRIVATE_KEY_FILE: z.string().min(1).default("/run/secrets/federation-private-key.pem"),
+  FEDERATION_ADDITIONAL_JWKS_FILE: z.string().default(""),
+  FEDERATION_TOKEN_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(300),
+  FEDERATION_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().min(0).max(60).default(15),
+  FEDERATION_DISCOVERY_CACHE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(300_000),
+  FEDERATION_REMOTE_CARD_CACHE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(60_000),
+  FEDERATION_PUSH_RECOVERY_MS: z.coerce.number().int().min(5000).max(3_600_000).default(30_000),
+  FEDERATION_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(120),
 });
 
 export type RouterConfig = ReturnType<typeof loadConfig>;
@@ -47,5 +56,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     deliveryRetryBaseMs: parsed.DELIVERY_RETRY_BASE_MS,
     allowHttpAgentEndpoints: parsed.ALLOW_HTTP_AGENT_ENDPOINTS,
     allowPrivateAgentEndpoints: parsed.ALLOW_PRIVATE_AGENT_ENDPOINTS,
+    federationEnabled: parsed.FEDERATION_ENABLED,
+    federationPrivateKeyFile: parsed.FEDERATION_PRIVATE_KEY_FILE,
+    federationAdditionalJwksFile: parsed.FEDERATION_ADDITIONAL_JWKS_FILE || undefined,
+    federationTokenTtlSeconds: parsed.FEDERATION_TOKEN_TTL_SECONDS,
+    federationClockToleranceSeconds: parsed.FEDERATION_CLOCK_TOLERANCE_SECONDS,
+    federationDiscoveryCacheMs: parsed.FEDERATION_DISCOVERY_CACHE_MS,
+    federationRemoteCardCacheMs: parsed.FEDERATION_REMOTE_CARD_CACHE_MS,
+    federationPushRecoveryMs: parsed.FEDERATION_PUSH_RECOVERY_MS,
+    federationRequestsPerMinute: parsed.FEDERATION_REQUESTS_PER_MINUTE,
   };
 }

@@ -12,9 +12,35 @@ The official `@a2a-js/sdk` (currently locked to the latest stable release, 1.1.0
 - encrypted push-notification configurations, task bindings, audit records, and transactional Outbox;
 - RabbitMQ per-agent durable queues, retries, and dead-letter queues;
 - Router task to remote task mappings;
-- encrypted employee endpoint bearer credentials.
+- encrypted employee endpoint bearer credentials;
+- domain allow/deny policy and a thin JWKS/JWT federation profile for Router-to-Router authentication.
 
 The Router does not receive employee production data or general-purpose provider keys.
+
+## Federation v1
+
+Federation is an optional, default-deny server profile layered on the official A2A v1 transport. It provides Matrix-like independent domain operation without using the Matrix wire protocol: `worker@company-b.example` is discovered through that domain, its private Card is fetched with a short-lived JWT, and the task is sent with the official A2A client. Results normally return through official A2A push notifications; polling is recovery only.
+
+The complete decisions and security invariants are in [ADR 0001](docs/architecture/decisions/0001-federation-v1.md).
+
+To enable a production node:
+
+1. Make `https://$AGENT_ADDRESS_DOMAIN/.well-known/opengrove-router` reach this Router. The common single-host setup uses the same hostname for `AGENT_ADDRESS_DOMAIN`, `PUBLIC_BASE_URL`, and `ROUTER_HOST`; a split-host setup may publish or proxy only the well-known document from the address domain.
+2. Build once, then run `npm run federation:keygen` to create `secrets/federation-private-key.pem`. The key is ignored by Git and written with mode `0600`.
+3. Set `FEDERATION_ENABLED=true` and start the common Compose deployment.
+4. Allow each trusted peer explicitly with the admin API:
+
+```sh
+curl -X PUT \
+  -H "Authorization: Bearer $WW_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"allowed"}' \
+  https://agents.example.com/v1/federation/domains/company-b.example
+```
+
+Both Routers must allow each other. No remote Agent is copied into the public/local directory; it is resolved and cached only when an authenticated local caller addresses it explicitly.
+
+For zero-downtime key rotation, generate the next private key, export its public JWKS with `npm run federation:jwks -- <next-private-key>`, and publish that file through `FEDERATION_ADDITIONAL_JWKS_FILE` before switching the active private key. During the overlap, the JWKS contains both `kid` values. Keep the previous public key published until all five-minute tokens and peer JWKS caches have expired; never place another private key in the additional JWKS file.
 
 ## Local checks
 
@@ -45,11 +71,15 @@ Administrative registry endpoints are the only Router-owned HTTP API:
 
 Messages, task reads and listings, cancellation, SSE streaming, and push-notification configuration use the official A2A v1 REST or JSON-RPC routes below each virtual employee address. The Router does not define private `/v1/messages` or `/v1/tasks` protocol endpoints.
 
-## Production layout
+## Deployment
 
 `compose.yaml` runs Caddy, Router, Postgres, and RabbitMQ. Postgres and RabbitMQ are confined to an internal Docker network; the Router gets a separate outbound network; only Caddy publishes TCP/UDP 443.
 
-Create `/opt/agent-router/.env` with mode `0600`, then enable `deploy/agent-router.service`. Secrets must be generated independently for Postgres, RabbitMQ, and `MASTER_ENCRYPTION_KEY_BASE64`.
+The checked-in deployment is the single supported layout for every operator. There are no environment-specific variants. Copy `.env.example` to `/opt/agent-router/.env`, replace every example value, set mode `0600`, then enable `deploy/agent-router.service`.
+
+`ROUTER_HOST` is the public TLS hostname, `PUBLIC_BASE_URL` is its absolute HTTPS URL, and `AGENT_ADDRESS_DOMAIN` is the domain used in registered addresses such as `writer@agents.example.com`. `WW_BASE_URL` must point to the account service whose `/v1/users/me` endpoint authenticates Router administrators.
+
+Generate independent values for `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD`, and `MASTER_ENCRYPTION_KEY_BASE64`. The real `.env`, federation signing keys, database contents, and RabbitMQ contents stay on the deployed server and are ignored by Git; all non-secret deployment behavior remains in this repository.
 
 The verifier under `examples/codex-employee` is intentionally a separate Compose project and network. Its container is non-root, read-only, capability-free, and mounts only a Codex authentication secret; its workspace and Codex home are private `tmpfs` mounts. Keep the host authentication file owned by `root:root` with mode `0640`; the container's non-root process receives supplemental group `0` solely to read that file and immediately copies it to its private Codex home with mode `0600`.
 

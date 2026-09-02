@@ -28,6 +28,7 @@ import { RouterUser } from "../auth.js";
 import { loadConfig } from "../config.js";
 import { createPool, migrate } from "../db.js";
 import { DeliveryRuntime } from "../delivery.js";
+import { FederationService } from "../federation.js";
 import { buildProxyAgentCard, QueuedProxyExecutor, textPart } from "../proxy-agent.js";
 import { PostgresPushNotificationStore } from "../push-notifications.js";
 import { AgentRegistry } from "../registry.js";
@@ -66,6 +67,7 @@ const employeeServer = createServer(employeeApp);
 let employeeExecutor: IntegrationEmployeeExecutor;
 let delivery: DeliveryRuntime | undefined;
 let integrationAgentId: string | undefined;
+let federation: FederationService | undefined;
 
 class IntegrationEmployeeExecutor implements AgentExecutor {
   private readonly held = new Map<string, () => void>();
@@ -198,6 +200,8 @@ try {
     routerTaskId: pushTaskId,
     routerContextId: pushContextId,
     messageId: pushMessage.messageId,
+    senderAddress: `router@${testConfig.agentAddressDomain}`,
+    targetKind: "local",
     message: pushMessage,
     attempt: 0,
   };
@@ -221,13 +225,14 @@ try {
     throw new Error("push_config_encryption_failed");
   }
 
-  delivery = new DeliveryRuntime(pool, registry, taskStore, taskEvents, testConfig);
+  federation = await FederationService.create(pool, testConfig);
+  delivery = new DeliveryRuntime(pool, registry, taskStore, taskEvents, testConfig, federation);
   await delivery.start();
   const noOpPushSender: PushNotificationSender = { send: async () => undefined };
   const routerHandler = new DefaultRequestHandler(
     buildProxyAgentCard(updated, "https://router.integration.invalid"),
     taskStore,
-    new QueuedProxyExecutor(updated, taskEvents),
+    new QueuedProxyExecutor(updated, taskEvents, testConfig.agentAddressDomain),
     taskEvents.manager,
     pushStore,
     noOpPushSender,
@@ -303,6 +308,7 @@ try {
   );
 } finally {
   await delivery?.stop().catch(() => undefined);
+  await federation?.close().catch(() => undefined);
   employeeServer.closeAllConnections();
   callbackServer.closeAllConnections();
   await Promise.all([closeServer(employeeServer), closeServer(callbackServer)]);
@@ -322,7 +328,7 @@ function integrationAgentCard(port: number): AgentCard {
         protocolVersion: A2A_PROTOCOL_VERSION,
       },
     ],
-    provider: { organization: "OpenGrove", url: "https://example.com" },
+    provider: { organization: "Example", url: "https://example.com" },
     version: "1.0.0",
     documentationUrl: "",
     capabilities: { streaming: false, pushNotifications: false, extensions: [], extendedAgentCard: false },
