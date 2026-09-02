@@ -11,11 +11,10 @@ ENV NODE_ENV=production \
     CODEX_HOME=/var/lib/codex
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && npm ci --omit=dev \
+RUN npm ci --omit=dev \
   && npm cache clean --force
+RUN mkdir -p /etc/ssl/certs \
+  && node -e "require('node:fs').writeFileSync('/etc/ssl/certs/ca-certificates.crt', require('node:tls').rootCertificates.join('\\n') + '\\n')"
 COPY --from=build /build/dist ./dist
 COPY entrypoint.sh /usr/local/bin/employee-entrypoint
 RUN chmod 0555 /usr/local/bin/employee-entrypoint \

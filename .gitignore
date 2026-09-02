@@ -6,4 +6,5 @@ dist/
 coverage/
 *.log
 secrets/
+state/
 .DS_Store

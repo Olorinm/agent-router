@@ -7,7 +7,10 @@ const credential = (await readFile(requiredEnv("ROUTER_CREDENTIAL_FILE"), "utf8"
 const existingTaskId = process.env.ROUTER_TASK_ID?.trim();
 const returnOnly = process.env.ROUTER_RETURN_ONLY === "true";
 const timeoutMs = Number(process.env.ROUTER_WAIT_TIMEOUT_MS ?? "360000");
-const cardResponse = await fetch(cardUrl, { signal: AbortSignal.timeout(15_000) });
+const cardResponse = await fetch(cardUrl, {
+  headers: { Authorization: `Bearer ${credential}` },
+  signal: AbortSignal.timeout(15_000),
+});
 if (!cardResponse.ok) throw new Error(`agent_card_http_${cardResponse.status}`);
 const card = AgentCard.fromJSON(await cardResponse.json());
 const client = await new ClientFactory().createFromAgentCard(card);
