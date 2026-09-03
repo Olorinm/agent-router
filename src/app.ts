@@ -36,8 +36,41 @@ export function createApp(dependencies: AppDependencies) {
   app.disable("x-powered-by");
   app.set("trust proxy", dependencies.trustProxy);
 
+  const healthRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: 300,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+  const adminRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: 120,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+  const callerRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: dependencies.federationRequestsPerMinute,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+  const federationRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: dependencies.federationRequestsPerMinute,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    skip: (request) => !dependencies.auth.currentUser(request).federationIdentity,
+    keyGenerator: (request) => dependencies.auth.currentUser(request).federationIdentity?.domain ?? "local",
+  });
+  const callbackRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: dependencies.federationRequestsPerMinute,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+
   app.get("/health/live", (_request, response) => response.json({ status: "ok" }));
-  app.get("/health/ready", async (_request, response) => {
+  app.get("/health/ready", healthRateLimit, async (_request, response) => {
     try {
       await dependencies.pool.query("SELECT 1");
       if (!dependencies.dispatcher.isReady()) throw new Error("dispatcher_not_ready");
@@ -62,26 +95,6 @@ export function createApp(dependencies: AppDependencies) {
     response.setHeader("Cache-Control", "public, max-age=300").json(dependencies.federation.jwks());
   });
 
-  const adminRateLimit = rateLimit({
-    windowMs: 60_000,
-    limit: 120,
-    standardHeaders: "draft-8",
-    legacyHeaders: false,
-  });
-  const federationRateLimit = rateLimit({
-    windowMs: 60_000,
-    limit: dependencies.federationRequestsPerMinute,
-    standardHeaders: "draft-8",
-    legacyHeaders: false,
-    skip: (request) => !dependencies.auth.currentUser(request).federationIdentity,
-    keyGenerator: (request) => dependencies.auth.currentUser(request).federationIdentity?.domain ?? "local",
-  });
-  const callbackRateLimit = rateLimit({
-    windowMs: 60_000,
-    limit: dependencies.federationRequestsPerMinute,
-    standardHeaders: "draft-8",
-    legacyHeaders: false,
-  });
   app.use("/v1", adminRateLimit, express.json({ limit: "256kb", type: "application/json" }));
 
   app.get("/v1/agents", dependencies.auth.requireAdmin, async (request, response) => {
@@ -188,6 +201,7 @@ export function createApp(dependencies: AppDependencies) {
 
   app.use(
     "/a2a/agents/:localpart/card",
+    callerRateLimit,
     dependencies.auth.requireCaller,
     federationRateLimit,
     localFederationCardHandler(dependencies),
@@ -207,6 +221,7 @@ export function createApp(dependencies: AppDependencies) {
   );
   app.post(
     "/federation/v1/push/:routerTaskId",
+    callerRateLimit,
     express.json({ limit: "2mb", type: ["application/a2a+json", "application/json"] }),
     dependencies.auth.requireCaller,
     federationRateLimit,
@@ -227,6 +242,7 @@ export function createApp(dependencies: AppDependencies) {
 
   app.use(
     "/agents/:address/.well-known/agent-card.json",
+    callerRateLimit,
     dependencies.auth.requireCaller,
     federationRateLimit,
     requireLocalTargetForFederatedCaller(dependencies),
@@ -234,6 +250,7 @@ export function createApp(dependencies: AppDependencies) {
   );
   app.use(
     "/agents/:address/a2a/rest",
+    callerRateLimit,
     dependencies.auth.requireCaller,
     federationRateLimit,
     requireLocalTargetForFederatedCaller(dependencies),
@@ -241,6 +258,7 @@ export function createApp(dependencies: AppDependencies) {
   );
   app.use(
     "/agents/:address/a2a/jsonrpc",
+    callerRateLimit,
     dependencies.auth.requireCaller,
     federationRateLimit,
     requireLocalTargetForFederatedCaller(dependencies),
