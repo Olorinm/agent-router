@@ -7,4 +7,15 @@ coverage/
 *.log
 secrets/
 state/
+.codex/
+auth.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.dump
+*.sql.gz
 .DS_Store

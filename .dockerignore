@@ -4,5 +4,17 @@ dist
 .env
 .env.*
 secrets
+state
+.codex
+auth.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.dump
+*.sql.gz
 coverage
 examples/codex-employee
