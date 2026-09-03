@@ -56,7 +56,7 @@ Before every public release:
 2. scan the complete Git history, not only the working tree;
 3. check commit author metadata;
 4. search for real domains, IP addresses, absolute home paths, usernames, email addresses, tokens, private-key markers, database dumps, and login state;
-5. run a dedicated secret scanner in CI;
+5. verify GitHub Secret Scanning and push protection are enabled;
 6. inspect generated archives and container build contexts;
 7. verify that examples use reserved `.example` domains and synthetic identities.
 
