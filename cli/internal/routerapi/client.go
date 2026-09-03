@@ -127,11 +127,11 @@ func (c *Client) Do(ctx context.Context, method, path string, body, target any) 
 
 func (c *Client) FetchCard(ctx context.Context, address string) (*a2a.AgentCard, error) {
 	path := "/agents/" + url.PathEscape(address) + "/.well-known/agent-card.json"
-	var card a2a.AgentCard
-	if err := c.Do(ctx, http.MethodGet, path, nil, &card); err != nil {
+	var raw json.RawMessage
+	if err := c.Do(ctx, http.MethodGet, path, nil, &raw); err != nil {
 		return nil, err
 	}
-	return &card, nil
+	return decodeAgentCard(raw)
 }
 
 func FetchExternalCard(ctx context.Context, cardURL, token string) (*a2a.AgentCard, error) {
@@ -151,14 +151,103 @@ func FetchExternalCard(ctx context.Context, cardURL, token string) (*a2a.AgentCa
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Agent Card returned HTTP %d", resp.StatusCode)
 	}
-	var card a2a.AgentCard
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&card); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	card, err := decodeAgentCard(raw)
+	if err != nil {
 		return nil, fmt.Errorf("decode Agent Card: %w", err)
 	}
-	if err := ValidateCard(&card); err != nil {
+	if err := ValidateCard(card); err != nil {
+		return nil, err
+	}
+	return card, nil
+}
+
+// decodeAgentCard keeps one narrow compatibility boundary for the current
+// official JS and Go SDKs. The JS SDK's Express card handler can emit protobuf
+// oneof objects as {scheme: {$case, value}} and StringList scopes as {list: []},
+// while the Go SDK accepts the canonical union key and a string array. After
+// normalizing only those two generated representations, the official Go SDK
+// remains the sole decoder and semantic model.
+func decodeAgentCard(raw []byte) (*a2a.AgentCard, error) {
+	var card a2a.AgentCard
+	if err := json.Unmarshal(raw, &card); err == nil {
+		return &card, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	normalizeJSSecuritySchemes(object)
+	normalizeJSSecurityRequirements(object["securityRequirements"])
+	if skills, ok := object["skills"].([]any); ok {
+		for _, item := range skills {
+			if skill, ok := item.(map[string]any); ok {
+				normalizeJSSecurityRequirements(skill["securityRequirements"])
+			}
+		}
+	}
+	normalized, err := json.Marshal(object)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(normalized, &card); err != nil {
 		return nil, err
 	}
 	return &card, nil
+}
+
+func normalizeJSSecuritySchemes(object map[string]any) {
+	schemes, ok := object["securitySchemes"].(map[string]any)
+	if !ok {
+		return
+	}
+	for name, item := range schemes {
+		wrapper, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		scheme, ok := wrapper["scheme"].(map[string]any)
+		if !ok {
+			continue
+		}
+		caseName, _ := scheme["$case"].(string)
+		value, present := scheme["value"]
+		switch caseName {
+		case "apiKeySecurityScheme", "httpAuthSecurityScheme", "oauth2SecurityScheme", "openIdConnectSecurityScheme", "mtlsSecurityScheme":
+			if present {
+				schemes[name] = map[string]any{caseName: value}
+			}
+		}
+	}
+}
+
+func normalizeJSSecurityRequirements(value any) {
+	requirements, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range requirements {
+		requirement, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		schemes, ok := requirement["schemes"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name, scopes := range schemes {
+			if list, ok := scopes.(map[string]any); ok {
+				values, _ := list["list"].([]any)
+				if values == nil {
+					values = []any{}
+				}
+				schemes[name] = values
+			}
+		}
+	}
 }
 
 func ValidateCard(card *a2a.AgentCard) error {

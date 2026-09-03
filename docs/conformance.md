@@ -29,7 +29,7 @@ A product must not describe the second layer as A2A conformance.
 
 ## Current implementation coverage
 
-Automated tests cover cryptography, endpoint policy, federation JWT/JWKS exchange, replay rejection, Card protection, push serialization, Task stores, streaming, delivery, mapping, and cancellation.
+Automated tests cover cryptography, endpoint policy, federation JWT/JWKS exchange, replay rejection, Card protection, push serialization, Task stores, streaming, delivery, mapping, cancellation, and official Go-client/JS-server interoperability. A narrow Card decoder normalizes the current JS SDK's generated oneof and `StringList` JSON forms before handing the Card to the official Go SDK; it does not define an alternate Card model or A2A transport.
 
 Run the local suite:
 
