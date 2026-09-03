@@ -3,7 +3,7 @@ import { createApp } from "./app.js";
 import { AuthService } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { createPool, migrate } from "./db.js";
-import { DeliveryRuntime } from "./delivery.js";
+import { DeliveryDispatcher } from "./delivery-dispatcher.js";
 import { FederationCallbackReceiver } from "./federation-callback.js";
 import { RouterPushNotificationSender } from "./federation-push.js";
 import { FederationService } from "./federation.js";
@@ -28,8 +28,8 @@ const taskStore = new PostgresTaskStore(pool, pushNotificationSender);
 const taskEvents = new TaskEventHub();
 const federationCallbacks = new FederationCallbackReceiver(pool, taskStore, taskEvents);
 const auth = new AuthService(pool, config.adminAuth, config.authCacheTtlMs, federation);
-const delivery = new DeliveryRuntime(pool, registry, taskStore, taskEvents, config, federation);
-await delivery.start();
+const dispatcher = new DeliveryDispatcher(pool, registry, taskStore, taskEvents, config, federation);
+await dispatcher.start();
 const proxyHandlers = new ProxyHandlerCache(
   targets,
   taskStore,
@@ -44,7 +44,7 @@ const app = createApp({
   registry,
   auth,
   proxyHandlers,
-  delivery,
+  dispatcher,
   publicBaseUrl: config.publicBaseUrl,
   trustProxy: config.trustProxy,
   federationRequestsPerMinute: config.federationRequestsPerMinute,
@@ -60,7 +60,7 @@ async function shutdown(signal: string): Promise<void> {
   stopping = true;
   logInfo("shutdown.started", { signal });
   server.close();
-  await delivery.stop();
+  await dispatcher.stop();
   await federation.close();
   await pool.end();
   logInfo("shutdown.completed");

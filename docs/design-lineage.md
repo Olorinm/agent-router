@@ -13,7 +13,7 @@ Agent Router reuses patterns from mature open protocols without claiming wire co
 
 The design rule is to reuse standards and mature libraries for agent semantics, transports, cryptography, HTTP, databases, and queues. Custom code is limited to the registry, SDK store adapters, reliable queue bridge, Task mapping, destination policy, and the thin federation profile.
 
-The delivery bridge follows the same acceptance boundary used by mature federated messaging systems: once the destination durably accepts an item, the sender releases its queue worker and records the destination identifier. Agent Router then resumes the accepted A2A Task asynchronously instead of resending the Message. Matrix code is not embedded because its event graph and homeserver transaction format are not A2A Task semantics.
+The delivery dispatcher follows the same acceptance boundary used by mature federated messaging systems: once the destination durably accepts an item, the sender releases its dispatcher slot and records the destination identifier. Agent Router then resumes the accepted A2A Task asynchronously instead of resending the Message. Matrix code is not embedded because its event graph and homeserver transaction format are not A2A Task semantics.
 
 ## Reused implementations
 

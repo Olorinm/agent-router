@@ -3,7 +3,7 @@ import { rateLimit } from "express-rate-limit";
 import type { Pool } from "pg";
 import { ZodError } from "zod";
 import type { AuthService } from "./auth.js";
-import type { DeliveryRuntime } from "./delivery.js";
+import type { DeliveryDispatcher } from "./delivery-dispatcher.js";
 import { FederationCallbackError, type FederationCallbackReceiver } from "./federation-callback.js";
 import {
   FEDERATION_JWKS_PATH,
@@ -23,7 +23,7 @@ interface AppDependencies {
   registry: AgentRegistry;
   auth: AuthService;
   proxyHandlers: ProxyHandlerCache;
-  delivery: DeliveryRuntime;
+  dispatcher: DeliveryDispatcher;
   publicBaseUrl: string;
   trustProxy: number;
   federationRequestsPerMinute: number;
@@ -40,7 +40,7 @@ export function createApp(dependencies: AppDependencies) {
   app.get("/health/ready", async (_request, response) => {
     try {
       await dependencies.pool.query("SELECT 1");
-      if (!dependencies.delivery.isReady()) throw new Error("delivery_not_ready");
+      if (!dependencies.dispatcher.isReady()) throw new Error("dispatcher_not_ready");
       response.json({ status: "ready" });
     } catch {
       response.status(503).json({ status: "unavailable" });

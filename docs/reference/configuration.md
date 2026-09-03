@@ -33,7 +33,7 @@ Federation JWTs are never stored in this cache because each `jti` must be claime
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `DELIVERY_CONCURRENCY` | concurrent delivery workers | `4` |
+| `DELIVERY_CONCURRENCY` | concurrent delivery dispatcher slots | `4` |
 | `DELIVERY_TIMEOUT_MS` | timeout for one remote acceptance or Task polling request | `300000` |
 | `DELIVERY_MAX_ATTEMPTS` | maximum delivery attempts | `12` |
 | `DELIVERY_RETRY_BASE_MS` | retry backoff base | `5000` |

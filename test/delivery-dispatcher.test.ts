@@ -11,14 +11,14 @@ import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { hashCredential } from "../src/crypto.js";
-import { DeliveryRuntime, parseCancelEnvelope } from "../src/delivery.js";
+import { DeliveryDispatcher, parseCancelEnvelope } from "../src/delivery-dispatcher.js";
 import type { FederationService } from "../src/federation.js";
 import type { RegisteredAgent, AgentRegistry } from "../src/registry.js";
 import type { DeliveryEnvelope } from "../src/router-metadata.js";
 import type { PostgresTaskStore } from "../src/task-store.js";
 import { TaskEventHub } from "../src/task-events.js";
 
-describe("delivery envelopes", () => {
+describe("delivery dispatcher envelopes", () => {
   it("accepts the A2A default empty tenant for cancellation", () => {
     expect(
       parseCancelEnvelope({
@@ -49,7 +49,7 @@ describe("reliable delivery", () => {
   it("records remote acceptance without waiting for a long task to finish", async () => {
     const fixture = deliveryFixture();
 
-    await fixture.runtime.deliver(fixture.envelope);
+    await fixture.dispatcher.deliver(fixture.envelope);
 
     expect(fixture.sendMessage).toHaveBeenCalledTimes(1);
     expect(fixture.getTask).not.toHaveBeenCalled();
@@ -61,8 +61,8 @@ describe("reliable delivery", () => {
   it("acks duplicate broker work without creating a second remote task", async () => {
     const fixture = deliveryFixture();
 
-    await fixture.runtime.deliver(fixture.envelope);
-    await fixture.runtime.deliver({ ...fixture.envelope, attempt: 1 });
+    await fixture.dispatcher.deliver(fixture.envelope);
+    await fixture.dispatcher.deliver({ ...fixture.envelope, attempt: 1 });
 
     expect(fixture.sendMessage).toHaveBeenCalledTimes(1);
     expect(fixture.binding.delivery_state).toBe("awaiting_result");
@@ -75,8 +75,8 @@ describe("reliable delivery", () => {
     fixture.task.status.state = TaskState.TASK_STATE_WORKING;
     fixture.getTask.mockResolvedValueOnce(remoteTask(TaskState.TASK_STATE_COMPLETED));
 
-    await fixture.runtime.deliver(fixture.envelope);
-    await fixture.runtime.recoverRemoteTask({
+    await fixture.dispatcher.deliver(fixture.envelope);
+    await fixture.dispatcher.recoverRemoteTask({
       tenant: "",
       owner_principal_id: fixture.envelope.ownerPrincipalId,
       router_task_id: fixture.envelope.routerTaskId,
@@ -95,7 +95,7 @@ describe("reliable delivery", () => {
   it("registers an authenticated push callback for a capable local agent", async () => {
     const fixture = deliveryFixture({ pushNotifications: true });
 
-    await fixture.runtime.deliver(fixture.envelope);
+    await fixture.dispatcher.deliver(fixture.envelope);
 
     const request = fixture.sendMessage.mock.calls[0]?.[0];
     const push = request?.configuration?.taskPushNotificationConfig;
@@ -196,8 +196,8 @@ function deliveryFixture(options: { pushNotifications?: boolean } = {}) {
     RABBITMQ_URL: "amqp://unused",
     MASTER_ENCRYPTION_KEY_BASE64: Buffer.alloc(32).toString("base64"),
   });
-  const runtime = new DeliveryRuntime(pool, registry, taskStore, new TaskEventHub(), config, federation);
-  return { runtime, envelope, agent, task, binding, attempts, sendMessage, getTask };
+  const dispatcher = new DeliveryDispatcher(pool, registry, taskStore, new TaskEventHub(), config, federation);
+  return { dispatcher, envelope, agent, task, binding, attempts, sendMessage, getTask };
 }
 
 function testAgent(pushNotifications: boolean): RegisteredAgent {

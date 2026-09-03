@@ -68,7 +68,7 @@ interface DeliveryBindingRow {
   delivery_state: "queued" | "delivering" | "awaiting_result" | "delivered" | "failed" | "canceled";
 }
 
-export class DeliveryRuntime {
+export class DeliveryDispatcher {
   private connection?: amqp.ChannelModel;
   private publisher?: ConfirmChannel;
   private consumer?: Channel;
@@ -102,7 +102,7 @@ export class DeliveryRuntime {
     this.publisherLoop = this.runPublisherLoop();
     this.consumerRefreshLoop = this.runConsumerRefreshLoop();
     this.remoteRecoveryLoop = this.runRemoteRecoveryLoop();
-    logInfo("delivery.started");
+    logInfo("delivery.dispatcher.started");
   }
 
   async stop(): Promise<void> {
@@ -171,7 +171,7 @@ export class DeliveryRuntime {
           await this.ensureConsumer(agent);
         }
       } catch (error) {
-        logError("delivery.consumer.refresh_failed", error);
+        logError("delivery.dispatcher.refresh_failed", error);
       }
       await delay(5000);
     }
@@ -182,7 +182,7 @@ export class DeliveryRuntime {
     const queue = await ensureAgentTopology(this.consumer, agent.id);
     await this.consumer.consume(queue, (message) => void this.handleMessage(message), { noAck: false });
     this.consumingAgentIds.add(agent.id);
-    logInfo("delivery.consumer.ready", { agentId: agent.id, address: agent.address });
+    logInfo("delivery.dispatcher.target_ready", { agentId: agent.id, address: agent.address });
   }
 
   private async runRemoteRecoveryLoop(): Promise<void> {

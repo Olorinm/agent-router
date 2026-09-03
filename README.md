@@ -45,12 +45,17 @@ writer@agents.example.com
                        v
                  RabbitMQ queue
                        |
+                       v
+                Delivery Dispatcher
+                       |
                        | official A2A v1
                        v
                  real agent endpoint
 ```
 
 The address names the Router responsible for the agent, not the machine that runs it. Callers use the Router-owned Agent Card and never need the private endpoint credential.
+
+The Delivery Dispatcher is Router infrastructure, not an agent or an AI worker. It takes accepted queue items, calls the target through the official A2A client, records the remote Task ID, and releases its dispatcher slot. Task completion then arrives by A2A push notification or is recovered with `tasks/get`.
 
 ## Interoperability boundary
 
@@ -138,7 +143,7 @@ The normative profile is [Agent Router Federation Profile 1.0](docs/spec/federat
 ## Repository map
 
 ```text
-src/                 server, stores, delivery, federation, and operational CLI
+src/                 server, stores, delivery dispatcher, federation, and operational CLI
 migrations/          PostgreSQL schema
 docs/spec/           interoperable Agent Router profiles
 docs/guides/         deployment and integration guides

@@ -27,7 +27,7 @@ import { restHandler, UserBuilder } from "@a2a-js/sdk/server/express";
 import { RouterUser } from "../auth.js";
 import { loadConfig } from "../config.js";
 import { createPool, migrate } from "../db.js";
-import { DeliveryRuntime } from "../delivery.js";
+import { DeliveryDispatcher } from "../delivery-dispatcher.js";
 import { FederationService } from "../federation.js";
 import { buildProxyAgentCard, QueuedProxyExecutor, textPart } from "../proxy-agent.js";
 import { PostgresPushNotificationStore } from "../push-notifications.js";
@@ -65,7 +65,7 @@ const callbackServer = createServer((request, response) => {
 const employeeApp = express();
 const employeeServer = createServer(employeeApp);
 let employeeExecutor: IntegrationEmployeeExecutor;
-let delivery: DeliveryRuntime | undefined;
+let dispatcher: DeliveryDispatcher | undefined;
 let integrationAgentId: string | undefined;
 let federation: FederationService | undefined;
 
@@ -227,8 +227,8 @@ try {
   }
 
   federation = await FederationService.create(pool, testConfig);
-  delivery = new DeliveryRuntime(pool, registry, taskStore, taskEvents, testConfig, federation);
-  await delivery.start();
+  dispatcher = new DeliveryDispatcher(pool, registry, taskStore, taskEvents, testConfig, federation);
+  await dispatcher.start();
   const noOpPushSender: PushNotificationSender = { send: async () => undefined };
   const routerHandler = new DefaultRequestHandler(
     buildProxyAgentCard(updated, "https://router.integration.invalid"),
@@ -320,7 +320,7 @@ try {
     })}\n`,
   );
 } finally {
-  await delivery?.stop().catch(() => undefined);
+  await dispatcher?.stop().catch(() => undefined);
   await federation?.close().catch(() => undefined);
   employeeServer.closeAllConnections();
   callbackServer.closeAllConnections();
