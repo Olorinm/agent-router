@@ -27,7 +27,7 @@ const pushNotificationSender = new RouterPushNotificationSender(pushNotification
 const taskStore = new PostgresTaskStore(pool, pushNotificationSender);
 const taskEvents = new TaskEventHub();
 const federationCallbacks = new FederationCallbackReceiver(pool, taskStore, taskEvents);
-const auth = new AuthService(pool, config.wwBaseUrl, config.authCacheTtlMs, federation);
+const auth = new AuthService(pool, config.adminAuth, config.authCacheTtlMs, federation);
 const delivery = new DeliveryRuntime(pool, registry, taskStore, taskEvents, config, federation);
 await delivery.start();
 const proxyHandlers = new ProxyHandlerCache(

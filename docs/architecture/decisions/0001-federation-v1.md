@@ -1,16 +1,18 @@
-# ADR 0001: OpenGrove Router Federation v1
+# ADR 0001: Agent Router Federation Profile 1.0
 
 - Status: accepted
-- Federation profile version: `1.0`
-- A2A wire version: `1.0`
+- Federation profile: `1.0`
+- A2A wire protocol: `1.0`
 
 ## Context
 
-One Router already provides authenticated Agent registration, an A2A v1 server, a durable PostgreSQL task ledger, and RabbitMQ delivery. Federation must let independently operated Routers exchange A2A tasks without a central server and without inventing a second message protocol.
+A single Router provides authenticated Agent registration, official A2A v1 interfaces, a PostgreSQL Task ledger, and reliable RabbitMQ delivery. Independent operators also need to exchange work without a central directory or a second message protocol.
 
-The trust boundary is a Router domain. A remote Router asserts the `sub` inside its JWT; the receiving Router does not independently prove that remote user. Allow/deny policy, replay protection, future quotas, and future billing therefore use the issuer domain as their principal.
+The difficult parts are discovery, server identity, private Card access, retry idempotency, asynchronous return delivery, cancellation, and abuse policy. The security boundary must be an operator domain because a remote Router alone vouches for the user named in its token.
 
 ## Decision
+
+Adopt the separately published [Agent Router Federation Profile 1.0](../../spec/federation-v1.md):
 
 ```text
 caller / local Agent
@@ -19,109 +21,50 @@ caller / local Agent
         v
 Router A -- PostgreSQL Outbox --> RabbitMQ
         |
-        | 1. resolve @domain through .well-known
-        | 2. fetch private Agent Card with JWT Bearer
-        | 3. official ClientFactory message/send
+        | .well-known discovery
+        | short-lived JWT Bearer via JWKS
+        | private Agent Card resolution
+        | official A2A ClientFactory
         v
 Router B -- PostgreSQL Outbox --> RabbitMQ --> local Agent
         |
-        | official A2A push notification + fresh JWT Bearer
+        | official A2A push + fresh JWT Bearer
         v
-Router A task / SSE / artifact history
+Router A Task / SSE / Artifact history
 ```
 
-### 1. Discovery
+The profile makes these choices:
 
-Every federating address domain serves:
+1. `localpart@domain` addresses and `/.well-known/agent-router` discovery;
+2. Ed25519 domain keys, public JWKS, and request-scoped JWT Bearer credentials;
+3. inbound and outbound federation denied unless an operator explicitly allows the peer domain;
+4. authenticated one-Agent Card resolution with no federation-wide list;
+5. official A2A delivery with `(issuer domain, messageId)` idempotency;
+6. push-first return delivery with official Task polling as recovery;
+7. official cancellation using persistent local-to-remote Task mappings.
 
-```http
-GET https://{domain}/.well-known/opengrove-router
-```
+## Rejected alternatives
 
-with:
+### Custom HTTP request signatures
 
-```json
-{
-  "baseUrl": "https://agents.example.com",
-  "federationVersion": "1.0",
-  "jwksUrl": "https://agents.example.com/federation/v1/jwks.json"
-}
-```
+Rejected because they would require non-standard client interceptors and duplicate timestamp, nonce, and key-rotation behavior available through short-lived JWTs and JWKS.
 
-`baseUrl` and `jwksUrl` must have the same origin. The address domain is the discovery authority, but its well-known document may delegate to a different Router origin, as in other federated systems.
+### Public Agent directory
 
-### 2. Server credentials
+Rejected because private Card existence and capabilities are sensitive, and federation does not require global enumeration.
 
-Routers use Ed25519 domain keys and publish their public keys as a standard JWKS. Every cross-Router HTTP call uses a newly issued JWT Bearer with:
+### Polling as the normal return path
 
-- `iss=https://{source-domain}`;
-- `sub={local identity}@{source-domain}`;
-- `aud={target Router origin}`;
-- `iat`, `nbf`, `exp`, and `jti`;
-- lifetime no longer than five minutes;
-- `kid` selecting a key from the issuer JWKS.
+Rejected because it increases latency and cross-domain load. A2A push notification already provides the appropriate asynchronous mechanism.
 
-The receiver verifies the signature, issuer, audience, lifetime, allowlist, and a durable `(issuer, jti)` replay claim. This is an A2A Card-declared bearer scheme; no custom HTTP/JWS signature header is introduced.
+### Agentgateway in the core path
 
-The active public key and optional additional public-only Ed25519 keys are published together. This permits a new `kid` to be announced before signing switches, and the previous public key to remain during the bounded overlap.
+Deferred. A traffic gateway may later add richer RBAC, limits, and telemetry, but it does not replace the registry, durable Task ledger, Outbox, or offline delivery buffer.
 
-### 3. Address and private Card resolution
+## Consequences
 
-`localpart@domain` resolves through the domain discovery document and then:
-
-```http
-GET {baseUrl}/a2a/agents/{localpart}/card
-Authorization: Bearer <short-lived domain JWT>
-```
-
-Card access and A2A calls use the same domain allowlist. The Router never exposes federated cache entries through its local `/v1/agents` directory. A local Agent appears in that list only when its administrator registered it locally; there is no federation-wide Agent enumeration endpoint.
-
-### 4. Delivery and idempotency
-
-The Router sends the remote Card through the official A2A `ClientFactory`; `DefaultRequestHandler`, `restHandler`, and `jsonRpcHandler` remain the receiving transport. RabbitMQ only carries the original SDK Message between the local server and its delivery worker.
-
-The A2A `messageId` is the client idempotency key. For a federated caller, the receiver deduplicates by `(issuer domain, messageId)`. It does not add a private idempotency header.
-
-### 5. Return path
-
-Router A includes an official A2A task push-notification configuration in `message/send`. Router B serializes updates with the SDK v1 push serializer and signs every callback request with a fresh domain JWT. Router A accepts a callback only when its URL origin and dedicated callback path match Router A's own well-known `baseUrl`.
-
-Push is the normal return path. Periodic official `tasks/get` polling is retained only as recovery when a webhook is lost or unavailable.
-
-### 6. Policy
-
-Inbound and outbound federation are default-deny. An administrator must explicitly set a domain to `allowed`; `blocked` records an explicit denial. The policy applies before remote JWKS or Card retrieval, so an unknown domain cannot make the Router fetch arbitrary URLs.
-
-### 7. Cancellation and task mapping
-
-`tasks/cancel` is forwarded by the official client. PostgreSQL stores the local Router task, remote domain, remote task/context IDs, original federation subject, delivery state, callback time, and recovery-poll time. This is routing state, not a second Task state machine.
-
-## Security invariants
-
-- Discovery, JWKS, Cards, callbacks, and Agent endpoints do not follow redirects.
-- DNS is resolved and checked immediately before connection; the connection is pinned to a checked public address to prevent DNS rebinding.
-- Private, loopback, link-local, multicast, reserved, and transition IP ranges are rejected in production.
-- A federated caller can call only Agents local to the receiving Router; it cannot use that Router as a relay to a third domain.
-- Terminal local tasks and terminal delivery bindings never regress when callbacks arrive late or out of order.
-- Card endpoint existence and skills are not disclosed before authentication and domain policy checks.
-- Inbound Card, task, and callback traffic is rate-limited by issuer domain, not by its self-asserted `sub`.
-
-## Deliberate non-goals
-
-- public global directory, Rooms, invitations, or Matrix-compatible wire protocol;
-- custom request-signature headers;
-- central identity proof for remote `sub` values;
-- settlement. A future WW order or protocol reference may be carried as an A2A metadata extension without changing this envelope;
-- Agentgateway in the first deployment. It can later sit in front for richer RBAC, limits, and telemetry without replacing this federation profile.
-
-## Reused implementations
-
-- `@a2a-js/sdk`: A2A objects, Agent Cards, REST/JSON-RPC, task handling, SSE, push serialization, cancellation, client transports, and version validation;
-- `jose`: JWT, EdDSA, JWKS, `kid`, and claim validation;
-- `undici`: controlled outbound HTTP and connection pinning;
-- `ipaddr.js`: public/private/reserved IP classification;
-- PostgreSQL: TaskStore, replay claims, policy, mappings, and transactional Outbox;
-- RabbitMQ: durable delivery, confirms, acknowledgements, retries, and dead letters;
-- Express and Caddy: application routing and public TLS ingress.
-
-Custom code is limited to the registry, WW identity adapter, PostgreSQL SDK stores, persistent queue bridge, Router-to-remote task mapping, domain policy, and the thin JWT federation profile above.
+- The A2A wire layer remains usable by official clients and servers without a private Message or Task format.
+- Operators retain domain-level control and accept explicit bilateral federation.
+- Federation Profile 1.0 is project-specific and requires independent interoperability testing before broader standardization claims.
+- Address-domain keys and stable discovery become operational identity and must be backed up and rotated carefully.
+- A Router can read Task content; this design does not provide end-to-end encryption.

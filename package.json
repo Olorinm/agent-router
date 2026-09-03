@@ -1,7 +1,8 @@
 {
-  "name": "@opengrove/agent-router",
+  "name": "@agent-router/server",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -12,6 +13,7 @@
     "test": "vitest run",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
+    "demo": "node scripts/demo.mjs",
     "migrate": "node dist/cli/migrate.js",
     "check:integration": "node dist/cli/integration-check.js",
     "bootstrap:verifier": "node dist/cli/bootstrap-verifier.js",

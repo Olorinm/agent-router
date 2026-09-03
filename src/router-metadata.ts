@@ -1,7 +1,7 @@
 import type { Message } from "@a2a-js/sdk";
 import { z } from "zod";
 
-export const ROUTER_METADATA_KEY = "opengroveRouter";
+export const ROUTER_METADATA_KEY = "agentRouter";
 
 export interface DeliveryEnvelope {
   agentId: string;

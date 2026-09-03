@@ -13,7 +13,7 @@ describe("router secrets", () => {
   it("generates opaque, hashable machine credentials", () => {
     const first = createMachineCredential();
     const second = createMachineCredential();
-    expect(first).toMatch(/^ogr_[A-Za-z0-9_-]{43}$/);
+    expect(first).toMatch(/^ar_[A-Za-z0-9_-]{43}$/);
     expect(first).not.toBe(second);
     expect(hashCredential(first)).toMatch(/^[a-f0-9]{64}$/);
   });

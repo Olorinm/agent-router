@@ -32,10 +32,10 @@ import { FederationPolicyStore, normalizeFederationDomain } from "./federation-p
 import { SafeHttpClient } from "./safe-fetch.js";
 
 export const FEDERATION_VERSION = "1.0";
-export const FEDERATION_WELL_KNOWN_PATH = "/.well-known/opengrove-router";
+export const FEDERATION_WELL_KNOWN_PATH = "/.well-known/agent-router";
 export const FEDERATION_JWKS_PATH = "/federation/v1/jwks.json";
 export const FEDERATION_PUSH_PATH_PREFIX = "/federation/v1/push/";
-export const FEDERATION_JWT_PROFILE_CLAIM = "opengrove_federation_version";
+export const FEDERATION_JWT_PROFILE_CLAIM = "agent_router_federation_version";
 
 export interface FederationDiscoveryDocument {
   baseUrl: string;

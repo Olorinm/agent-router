@@ -2,31 +2,32 @@
 
 Durable, authenticated, and optionally federated routing for [A2A Protocol](https://a2a-protocol.org/latest/) agents.
 
-Agent Router gives independently hosted agents stable addresses such as `writer@agents.example.com`, exposes official A2A v1 endpoints for those addresses, and reliably delivers tasks to the agents' actual A2A endpoints. It adds deployment infrastructure around A2A; it does not replace or fork the A2A wire protocol.
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![A2A](https://img.shields.io/badge/A2A-1.0-5b5bd6.svg)](https://a2a-protocol.org/latest/specification/)
+[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](docs/project-status.md)
 
-> **Project status:** alpha. The core local delivery path is implemented and integration-tested. The federation profile is implemented but remains an Agent Router-specific profile, not an A2A, Matrix, or IETF standard. The project has not received an independent security audit.
+Agent Router gives independently hosted agents stable addresses such as `writer@agents.example.com`. It publishes official A2A v1 interfaces for those addresses, persists Task state, and reliably delivers work to each agent's real A2A endpoint.
 
-This revision targets A2A wire protocol 1.0. The lockfile currently resolves the official JavaScript SDK, `@a2a-js/sdk`, at 1.1.0.
+It is infrastructure around A2A, not a fork of the A2A wire protocol.
 
-## Why this exists
+> **Status:** alpha. Local delivery is implemented and integration-tested. Federation is an experimental Agent Router profile, not an A2A, Matrix, or IETF standard. The project has not received an independent security audit.
 
-A2A already defines how agents describe capabilities and exchange Messages, Tasks, Artifacts, streams, cancellations, and push notifications. It deliberately does not prescribe a global account system, a central directory, a durable offline mailbox, or multi-domain federation policy.
+## Why Agent Router
 
-Agent Router fills that operational gap while leaving A2A semantics to the official SDK:
+A2A defines Agent Cards, Messages, Tasks, Artifacts, streaming, cancellation, and push notifications. It deliberately leaves deployment concerns such as shared directories, stable domain addresses, offline delivery, and federation policy to operators.
 
-- stable, domain-scoped agent addresses;
-- an authenticated local registry and skill search;
-- durable Tasks in PostgreSQL;
+Agent Router supplies those operational pieces:
+
+- domain-scoped addresses and a private Agent registry;
+- official A2A v1 server and client transports;
+- durable Task and push-configuration stores in PostgreSQL;
 - transactional enqueueing and RabbitMQ delivery;
-- retries, dead-letter queues, and remote Task mapping;
-- private Agent Cards and endpoint credentials;
-- optional Router-to-Router discovery, authentication, policy, and return delivery.
+- retries, dead letters, cancellation, and remote Task mapping;
+- optional domain discovery, JWT/JWKS authentication, and federated return delivery.
 
-The result is closer to a homeserver for agents than an agent framework. Agents remain independently implemented and independently hosted.
+The result resembles a homeserver for agents. Agents can use different frameworks, live on different machines, and remain under independent administrative control.
 
-## Mental model
-
-An address identifies the Router that allocated it, not the machine running the agent:
+## Architecture
 
 ```text
 caller
@@ -36,443 +37,118 @@ caller
 writer@agents.example.com
   |
   v
-Agent Router
-  |-- registry and policy
-  |-- PostgreSQL Task ledger and Outbox
-  |-- RabbitMQ durable queues
-  |
-  | official A2A v1
-  v
-the writer agent's real endpoint
++---------------- Agent Router ----------------+
+| A2A SDK handlers | registry | trust policy   |
+| PostgreSQL Task ledger + transactional Outbox |
++----------------------+------------------------+
+                       |
+                       v
+                 RabbitMQ queue
+                       |
+                       | official A2A v1
+                       v
+                 real agent endpoint
 ```
 
-The real endpoint may be a different server, cloud, framework, or operator. Callers see the Router-owned Agent Card and do not need the private endpoint URL or its credential.
-
-There are two ways to address an agent:
-
-1. **Local registration:** an administrator registers an agent on this Router and it receives `localpart@this-domain`.
-2. **Federation:** an agent keeps `localpart@another-domain`; this Router discovers and contacts the trusted remote Router when the address is used.
+The address names the Router responsible for the agent, not the machine that runs it. Callers use the Router-owned Agent Card and never need the private endpoint credential.
 
 ## Interoperability boundary
 
-This distinction is intentional and important:
-
-| Concern | Authority | Implementation |
+| Layer | Authority | Implementation |
 | --- | --- | --- |
-| Message, Task, Part, Artifact, and Agent Card models | A2A v1 | Official `@a2a-js/sdk` |
-| REST and JSON-RPC bindings | A2A v1 | Official SDK handlers |
-| Task lifecycle, streaming, cancellation, push payloads, errors, and version checks | A2A v1 | Official SDK server components |
-| Outbound agent calls | A2A v1 | Official SDK `ClientFactory` |
-| Local registry API | Agent Router | Implementation-specific administrative API |
-| Durable Task and push stores | Agent Router | PostgreSQL adapters for SDK interfaces |
-| Offline delivery buffer | Agent Router | Transactional Outbox and RabbitMQ |
-| Domain discovery and Router-to-Router trust | Agent Router Federation Profile 1.0 | HTTPS, JWT, and JWKS |
+| Message, Task, Part, Artifact, and Agent Card | A2A v1 | official `@a2a-js/sdk` types |
+| REST, JSON-RPC, SSE, cancellation, push, errors, and version checks | A2A v1 | official SDK handlers |
+| outbound agent calls | A2A v1 | official SDK `ClientFactory` |
+| registry, PostgreSQL adapters, queue bridge, and Task mapping | Agent Router | local implementation |
+| domain discovery, trust, and callbacks | Agent Router Federation Profile 1.0 | HTTPS, JWT, and JWKS |
 
-Agent Router does **not** define private message or Task lookalikes such as `/v1/messages` or `/v1/tasks/:id`. Message sending, Task reads and listing, streaming, cancellation, and push-notification configuration all use the official A2A endpoints generated by the SDK.
+Agent Router does not introduce private Message or Task lookalikes. A2A operations use the endpoints and objects produced by the official SDK.
 
-## Architecture
+This release targets A2A wire protocol 1.0 and currently resolves `@a2a-js/sdk` 1.1.0.
 
-```text
-                                +-----------------------+
-                                | remote Router domain  |
-                                | .well-known + JWKS    |
-                                +-----------+-----------+
-                                            ^
-                                            | official A2A + JWT Bearer
-                                            |
-+--------+     HTTPS      +-----------------+------------------+
-| client |--------------->| Caddy                              |
-+--------+                +-----------------+------------------+
-                                            |
-                         +------------------v------------------+
-                         | Agent Router                         |
-                         | official SDK server and client      |
-                         | registry / policy / target resolver |
-                         | queue bridge / federation adapter   |
-                         +----------+----------------+---------+
-                                    |                |
-                       transactions |                | AMQP
-                                    v                v
-                              +-----------+    +-----------+
-                              | PostgreSQL|    | RabbitMQ  |
-                              +-----------+    +-----+-----+
-                                                       |
-                                                       | official A2A
-                                                       v
-                                                +-------------+
-                                                | local agent |
-                                                +-------------+
-```
+## Try it locally
 
-### Request lifecycle
-
-1. Caddy terminates public TLS.
-2. A Router-issued machine credential, an administrator token, or an allowed federation JWT authenticates the caller.
-3. The official `DefaultRequestHandler` validates the A2A request and creates the Router Task.
-4. The custom `QueuedProxyExecutor` publishes the Task and Message into the PostgreSQL Outbox in the same transaction as Task persistence.
-5. The publisher confirms the message into a durable per-agent RabbitMQ queue.
-6. A worker resolves the target and uses the official `ClientFactory` to call its A2A endpoint.
-7. Remote status, Message, and Artifact updates are written back to the Router Task and emitted through official polling, SSE, or push mechanisms.
-
-RabbitMQ never interprets or rewrites A2A objects. It is an internal delivery buffer, not another protocol.
-
-## Features
-
-### A2A server and client
-
-- A2A v1 HTTP+JSON and JSON-RPC interfaces;
-- Agent Card generation and authenticated retrieval;
-- Message submission and idempotency using A2A `messageId`;
-- Task get, list, subscribe, and cancel;
-- SSE streaming;
-- Task push-notification configuration and delivery;
-- protocol negotiation and standard A2A errors;
-- outbound transport selection through `ClientFactory`.
-
-### Registry
-
-- register a local Agent Card;
-- allocate a unique `localpart@domain` address;
-- list or search by address, name, description, skill, or tag;
-- update display data, Card, endpoint credential, or status;
-- keep cached federated Cards out of the local directory;
-- issue a one-time machine credential at registration.
-
-### Reliability
-
-- PostgreSQL implementation of the official Task store contract;
-- PostgreSQL push-notification store with encrypted configuration;
-- transactional Outbox;
-- durable RabbitMQ exchanges and per-agent queues;
-- publisher confirms and consumer acknowledgements;
-- bounded retry with backoff and dead-letter queues;
-- Router Task to remote Task/context mapping;
-- cancellation forwarding;
-- push-first federation return path with polling recovery.
-
-### Security controls
-
-- HTTPS-only production endpoints;
-- authenticated Agent Cards, not a public capability directory;
-- one-way hashes for Router-issued machine credentials;
-- AES-256-GCM encryption for stored endpoint and push secrets;
-- Ed25519 federation keys exposed only as public JWKS;
-- short-lived, audience-bound federation JWTs with durable `jti` replay protection;
-- inbound and outbound federation denied unless a domain is explicitly allowed;
-- rate limiting by federation issuer domain;
-- no redirect following for untrusted discovery, Card, callback, or agent URLs;
-- DNS resolution immediately before connection and address pinning to prevent rebinding;
-- private, loopback, link-local, multicast, reserved, and transition ranges rejected by default;
-- non-root, read-only Router container with dropped Linux capabilities;
-- PostgreSQL and RabbitMQ confined to an internal Docker network.
-
-## HTTP surface
-
-### Public operational endpoints
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health/live` | Process liveness |
-| `GET` | `/health/ready` | Database and delivery readiness |
-| `GET` | `/.well-known/opengrove-router` | Federation discovery when enabled |
-| `GET` | `/federation/v1/jwks.json` | Federation public keys when enabled |
-
-### Administrative registry API
-
-These endpoints require a compatible human administrator token:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/v1/agents?q=<query>` | List or search local agents |
-| `POST` | `/v1/agents` | Register an official Agent Card |
-| `GET` | `/v1/agents/:address` | Read a local registration |
-| `PATCH` | `/v1/agents/:address` | Update Card, endpoint credential, metadata, or status |
-| `GET` | `/v1/federation/domains` | List domain policy |
-| `PUT` | `/v1/federation/domains/:domain` | Set `allowed` or `blocked` |
-| `DELETE` | `/v1/federation/domains/:domain` | Remove an explicit policy entry |
-
-### A2A endpoints per address
-
-For `writer@agents.example.com`, the Router publishes an authenticated Card and two official bindings:
-
-```text
-GET /agents/writer%40agents.example.com/.well-known/agent-card.json
-    /agents/writer%40agents.example.com/a2a/rest
-    /agents/writer%40agents.example.com/a2a/jsonrpc
-```
-
-The Agent Card is the source of truth for the exact operation URLs. Clients should load the Card and let an official A2A client select the binding instead of constructing message or Task URLs manually.
-
-## Federation Profile 1.0
-
-Federation is optional and default-deny. Its purpose is to let independent Router operators exchange standard A2A tasks without a central directory. The profile is documented normatively for this implementation in [ADR 0001](docs/architecture/decisions/0001-federation-v1.md).
-
-### Domain identity and discovery
-
-An address has the form `localpart@domain`. The domain that allocated the address publishes:
-
-```http
-GET https://company-b.example/.well-known/opengrove-router
-```
-
-```json
-{
-  "baseUrl": "https://agents.company-b.example",
-  "federationVersion": "1.0",
-  "jwksUrl": "https://agents.company-b.example/federation/v1/jwks.json"
-}
-```
-
-The address domain may delegate service to another origin. Discovery uses the well-known deployment pattern defined by [RFC 8615](https://www.rfc-editor.org/rfc/rfc8615); `opengrove-router` is currently an experimental, project-specific suffix rather than an IANA-registered well-known URI.
-
-### Router authentication
-
-Every cross-Router request carries a fresh JWT Bearer signed by the source domain's Ed25519 key. The receiver resolves the source JWKS and verifies:
-
-- `iss`: the source Router domain;
-- `sub`: the source identity asserted by that domain;
-- `aud`: the exact target Router origin;
-- `iat`, `nbf`, and `exp`, with a maximum five-minute lifetime;
-- `jti`, persisted to reject replay;
-- `kid`, selecting the active key from the source JWKS;
-- the local domain allow/deny policy.
-
-This uses standard [JWT](https://www.rfc-editor.org/rfc/rfc7519), [JWK/JWKS](https://www.rfc-editor.org/rfc/rfc7517), and Bearer authentication. It does not add a Matrix-style custom request-signature header or require modifications to A2A clients.
-
-The remote domain, not its self-asserted user name, is the security and future quota boundary.
-
-### Card resolution and delivery
-
-For `worker@company-b.example`, an allowed Router:
-
-1. resolves the domain's discovery document;
-2. fetches `/a2a/agents/worker/card` using a short-lived JWT;
-3. validates and temporarily caches the official Agent Card;
-4. submits the Message through the official A2A `ClientFactory`;
-5. deduplicates retries by A2A `messageId` scoped to the issuer domain.
-
-There is no federation-wide endpoint that enumerates private agents. Card retrieval and A2A calls apply the same domain policy.
-
-### Return path and cancellation
-
-The originating Router supplies an official A2A push-notification configuration. The receiving Router returns Task and Artifact updates to the origin's dedicated callback path with another fresh federation JWT. The callback origin must match the caller domain's discovered `baseUrl`; arbitrary webhook destinations are rejected.
-
-Polling with official Task operations is recovery, not the normal path. A2A cancellation is forwarded using the stored Router Task to remote Task mapping.
-
-Both Routers must explicitly allow the other domain:
-
-```sh
-curl --fail-with-body \
-  --request PUT \
-  --header "Authorization: Bearer $ADMIN_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{"status":"allowed"}' \
-  https://agents.company-a.example/v1/federation/domains/company-b.example
-```
-
-## Design lineage
-
-Agent Router reuses patterns from mature federated systems without claiming wire compatibility with them:
-
-| Source | Pattern reused | Important difference |
-| --- | --- | --- |
-| [A2A v1](https://a2a-protocol.org/latest/specification/) | Agent Cards, Messages, Tasks, Artifacts, bindings, streaming, push, cancellation | A2A is the actual agent wire protocol and semantic authority |
-| [Matrix Server-Server API](https://spec.matrix.org/latest/server-server-api/) | domain-owned identifiers, homeserver discovery, independent operators, explicit server policy | no Matrix rooms, event graph, PDUs, or `X-Matrix` signatures |
-| [Matrix identifier grammar](https://spec.matrix.org/latest/appendices/#common-identifier-format) | the domain allocates and resolves its local identifiers | Agent Router uses `localpart@domain`, not Matrix IDs |
-| [AT Protocol inter-service auth](https://atproto.com/specs/xrpc#inter-service-authentication-jwt) | short-lived signed JWTs with issuer, audience, expiry, key ID, and replay nonce | keys are discovered through JWKS, and A2A remains the application protocol |
-| [ActivityPub](https://www.w3.org/TR/activitypub/) | independently operated servers and asynchronous server-to-server delivery | no ActivityStreams vocabulary, actors, inboxes, followers, or social graph |
-| [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519) and [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517) | JWT claims and JSON Web Keys | the claim profile and domain policy are specific to Agent Router |
-
-The design rule is: reuse standards for syntax, cryptography, and agent semantics; write only the registry, persistence, delivery, and trust policy that those standards intentionally leave to operators.
-
-## Requirements
-
-- Docker Engine with Docker Compose v2;
-- a public DNS name resolving to the host;
-- inbound TCP and UDP 443 for HTTPS and HTTP/3;
-- outbound HTTPS to registered agents and federated Routers;
-- Node.js 24 only for local development and maintenance commands;
-- an identity service compatible with the administrator contract below.
-
-The included Compose deployment runs Caddy, Router, PostgreSQL, and RabbitMQ. It is the supported deployment profile for all operators; there is no repository-specific production overlay.
-
-## Quick start
-
-### 1. Clone and configure
-
-```sh
-git clone https://github.com/your-org/agent-router.git
-cd agent-router
-cp .env.example .env
-chmod 600 .env
-```
-
-Edit `.env` and replace every placeholder. Use operator-owned domains only:
-
-```dotenv
-ROUTER_HOST=agents.example.com
-PUBLIC_BASE_URL=https://agents.example.com
-AGENT_ADDRESS_DOMAIN=agents.example.com
-WW_BASE_URL=https://identity.example.com
-```
-
-Generate independent random values for the service passwords and 32-byte master encryption key:
-
-```sh
-openssl rand -hex 32
-openssl rand -hex 32
-openssl rand -base64 32
-```
-
-Do not reuse these values and do not commit `.env`.
-
-### 2. Generate the federation key
-
-The Compose service mounts the local `secrets/` directory even when federation is disabled, so create the key before the first start:
+The demo starts an isolated Router, PostgreSQL, RabbitMQ, and a deterministic A2A echo agent. It needs Docker Compose v2 and Node.js 24, but no domain, TLS certificate, external identity provider, or model account.
 
 ```sh
 npm ci
-npm run build
-npm run federation:keygen
-chmod 600 secrets/federation-private-key.pem
+docker compose --env-file .env.demo -f compose.yaml -f compose.demo.yaml \
+  up --detach --build router echo-agent
+npm run demo
 ```
 
-On a Linux Docker host, ensure `secrets/` and its files are readable by UID/GID `1000:1000`, the non-root `node` user in the Router image.
-
-### 3. Start the stack
-
-```sh
-docker compose up --detach --build
-docker compose ps
-curl --fail https://agents.example.com/health/ready
-```
-
-Caddy obtains and renews the public certificate. PostgreSQL and RabbitMQ have no published host ports.
-
-For boot-time management, adjust `WorkingDirectory` in [deploy/agent-router.service](deploy/agent-router.service), install it with systemd, and enable the unit.
-
-## Administrator identity contract
-
-The current thin identity adapter calls:
-
-```http
-GET {WW_BASE_URL}/v1/users/me
-Authorization: Bearer <administrator token>
-```
-
-It accepts the object directly or under `data`:
+Expected result:
 
 ```json
-{
-  "data": {
-    "user_id": "user-123",
-    "email": "operator@example.com",
-    "display_name": "Example Operator",
-    "role": "admin",
-    "roles": ["admin"]
-  }
-}
+{"address":"echo-...@local.test","result":"Echo: hello through the router"}
 ```
 
-`user_id` and `email` are required. The resolved roles must contain `admin`. This adapter is intentionally small, but it is currently required for registry and policy administration; a provider-neutral authentication plugin interface is not implemented yet.
-
-## Registering an agent
-
-The agent must already expose at least one reachable A2A v1 interface. Registration accepts the official Agent Card as an inline object and an optional bearer credential used only from Router to agent.
+Remove the disposable stack and its data with:
 
 ```sh
-curl --fail-with-body \
-  --request POST \
-  --header "Authorization: Bearer $ADMIN_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data @- \
-  https://agents.example.com/v1/agents <<'JSON'
-{
-  "address": "writer",
-  "displayName": "Example Writer",
-  "description": "Produces short editorial drafts.",
-  "endpointBearerToken": "replace-with-the-agent-endpoint-token",
-  "agentCard": {
-    "name": "Example Writer",
-    "description": "Produces short editorial drafts.",
-    "supportedInterfaces": [
-      {
-        "url": "https://worker.example.net/a2a/rest",
-        "protocolBinding": "HTTP+JSON",
-        "protocolVersion": "1.0"
-      }
-    ],
-    "provider": {
-      "organization": "Example Operator",
-      "url": "https://worker.example.net"
-    },
-    "version": "1.0.0",
-    "capabilities": {
-      "streaming": false,
-      "pushNotifications": false,
-      "extendedAgentCard": false
-    },
-    "defaultInputModes": ["text/plain"],
-    "defaultOutputModes": ["text/plain"],
-    "skills": [
-      {
-        "id": "draft",
-        "name": "Draft",
-        "description": "Writes a short draft from a brief.",
-        "tags": ["writing"]
-      }
-    ]
-  }
-}
-JSON
+docker compose --env-file .env.demo -f compose.yaml -f compose.demo.yaml down --volumes
 ```
 
-The response contains the final address, Router-owned Agent Card, and a machine credential shown exactly once. Store that credential in a secret manager. The database stores only its hash.
+`.env.demo` contains public, intentionally insecure test values and binds the Router only to loopback. Never reuse it for an Internet deployment.
 
-Use the returned Card with an official A2A client. The repository's `npm run send` command is a small interoperability and operations helper built on `ClientFactory`, not an alternative protocol client.
+## Production deployment
 
-## Configuration
+The supported production profile uses Docker Compose with Caddy, PostgreSQL, and RabbitMQ. It exposes only HTTPS; the database and broker remain on an internal network.
 
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `ROUTER_HOST` | Caddy public hostname | required |
-| `PUBLIC_BASE_URL` | absolute Router HTTPS origin | required |
-| `WW_BASE_URL` | administrator identity service | required |
-| `AGENT_ADDRESS_DOMAIN` | domain appended to local agent addresses | required |
-| `POSTGRES_PASSWORD` | PostgreSQL service password | required |
-| `RABBITMQ_PASSWORD` | RabbitMQ service password | required |
-| `MASTER_ENCRYPTION_KEY_BASE64` | exactly 32 random bytes in Base64 | required |
-| `AUTH_CACHE_TTL_MS` | local administrator-auth cache | `30000` |
-| `DELIVERY_CONCURRENCY` | concurrent delivery workers | `4` |
-| `DELIVERY_TIMEOUT_MS` | remote Task completion timeout | `300000` |
-| `DELIVERY_MAX_ATTEMPTS` | maximum delivery attempts | `12` |
-| `DELIVERY_RETRY_BASE_MS` | retry backoff base | `5000` |
-| `ALLOW_HTTP_AGENT_ENDPOINTS` | allow plaintext agent endpoints | `false` |
-| `ALLOW_PRIVATE_AGENT_ENDPOINTS` | allow private/reserved destination IPs | `false` |
-| `FEDERATION_ENABLED` | publish and accept federation | `false` |
-| `FEDERATION_PRIVATE_KEY_FILE` | active Ed25519 private key path | `/run/secrets/federation-private-key.pem` |
-| `FEDERATION_ADDITIONAL_JWKS_FILE` | optional public-only rotation keys | empty |
-| `FEDERATION_TOKEN_TTL_SECONDS` | federation JWT lifetime, maximum 300 | `300` |
-| `FEDERATION_CLOCK_TOLERANCE_SECONDS` | verifier clock tolerance | `15` |
-| `FEDERATION_DISCOVERY_CACHE_MS` | discovery document cache | `300000` |
-| `FEDERATION_REMOTE_CARD_CACHE_MS` | remote Card cache | `60000` |
-| `FEDERATION_PUSH_RECOVERY_MS` | push recovery polling delay | `30000` |
-| `FEDERATION_REQUESTS_PER_MINUTE` | per-domain federation limit | `120` |
+Start with the [deployment guide](docs/guides/deployment.md), then review the [security policy](SECURITY.md) and [configuration reference](docs/reference/configuration.md).
 
-Keep the two endpoint-policy overrides disabled in Internet-facing deployments. They exist for controlled development networks, not as a workaround for failed endpoint validation.
+Administrator authentication supports:
 
-## Key rotation
+- a generic bearer-token UserInfo endpoint for shared deployments; or
+- a constant-time checked static administrator token for small, controlled installations.
 
-Generate the next private key separately, export only its public JWK, and publish it through `FEDERATION_ADDITIONAL_JWKS_FILE` before changing the active signing key:
+Neither mode depends on a particular account provider.
 
-```sh
-npm run federation:keygen -- secrets/federation-next-private-key.pem
-npm run federation:jwks -- secrets/federation-next-private-key.pem
+## Federation
+
+Federation lets independently operated Routers exchange standard A2A Tasks without a central directory:
+
+```text
+worker@company-b.example
+        |
+        | /.well-known/agent-router
+        v
+Router A  <---- official A2A + short-lived JWT ---->  Router B
 ```
 
-The `kid` is the RFC 7638 thumbprint. Keep the old public key published until all five-minute tokens and peer caches have expired. Never put a private JWK in the additional JWKS file; the Router rejects one if supplied.
+Federation is disabled by default. Both operators must explicitly allow the other domain. Agent Cards and task endpoints use the same access policy, and private agents are never exposed through a global list.
 
-## Development and verification
+The normative profile is [Agent Router Federation Profile 1.0](docs/spec/federation-v1.md). Its design lineage and differences from Matrix, AT Protocol, and ActivityPub are documented separately in [Design lineage](docs/design-lineage.md).
+
+## Documentation
+
+| Document | Audience |
+| --- | --- |
+| [Local demo](docs/guides/local-demo.md) | first-time users |
+| [Production deployment](docs/guides/deployment.md) | operators |
+| [Register and call an agent](docs/guides/register-agent.md) | agent integrators |
+| [HTTP surface](docs/reference/http-api.md) | client and operations developers |
+| [Configuration](docs/reference/configuration.md) | operators |
+| [Federation Profile 1.0](docs/spec/federation-v1.md) | implementers |
+| [Conformance](docs/conformance.md) | interoperable implementations |
+| [Project status and versioning](docs/project-status.md) | adopters and contributors |
+| [ADR 0001](docs/architecture/decisions/0001-federation-v1.md) | architecture reviewers |
+| [Security policy](SECURITY.md) | operators and security researchers |
+
+## Repository map
+
+```text
+src/                 server, stores, delivery, federation, and operational CLI
+migrations/          PostgreSQL schema
+docs/spec/           interoperable Agent Router profiles
+docs/guides/         deployment and integration guides
+docs/reference/      APIs and configuration
+examples/echo-agent/ self-contained local demonstration agent
+examples/codex-employee/ isolated Codex-based end-to-end verifier
+deploy/              optional systemd integration
+```
+
+## Development
 
 ```sh
 npm ci
@@ -481,69 +157,8 @@ npm test
 npm run build
 ```
 
-The full integration check is intentionally destructive and refuses ordinary databases. It runs only when both safeguards are present:
+See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Protocol-affecting changes require an issue and an architecture decision or specification update before implementation.
 
-```sh
-INTEGRATION_CHECK_CONFIRM=disposable-database \
-DATABASE_URL=postgres://.../agent_router_integration \
-npm run check:integration
-```
+## License
 
-The database name must end in `_integration`. The check covers migrations, registry search and updates, PostgreSQL Task persistence, encrypted push configuration, SDK push delivery, the transactional Outbox, RabbitMQ, `ClientFactory`, SSE, Task mapping, and remote cancellation. Disposable queues are removed afterward.
-
-The isolated example in [examples/codex-employee](examples/codex-employee) is an A2A verifier, not a production agent template. It runs non-root, read-only, capability-free, with a dedicated Codex state directory and a private temporary workspace. Never place an ordinary user home, host SSH configuration, or unrelated credentials inside its mounted state.
-
-## Operations
-
-- Back up PostgreSQL and the master encryption key together; encrypted database fields cannot be recovered without that key.
-- Treat RabbitMQ as a delivery buffer, not the source of truth. PostgreSQL holds Tasks, mappings, attempts, policies, replay claims, and the Outbox.
-- Monitor dead-letter queues, failed delivery attempts, Outbox age, callback errors, and certificate renewal.
-- Keep clocks synchronized because federation JWTs are deliberately short-lived.
-- Rotate endpoint and machine credentials independently.
-- Preserve the old federation public key during planned key rotation.
-- Review [SECURITY.md](SECURITY.md) before exposing a Router to the Internet.
-
-## Deliberate non-goals
-
-- Matrix wire compatibility, rooms, event DAGs, or end-to-end encryption;
-- ActivityPub compatibility or a social graph;
-- a public global agent directory;
-- anonymous or self-service registration;
-- a model gateway, tool protocol, workflow engine, or agent runtime;
-- moving provider API keys through the Router;
-- settlement or payments;
-- proving the real-world identity of a remote domain's `sub` claim;
-- high-availability orchestration in the initial Compose profile.
-
-Future order, settlement, or policy references can be carried as namespaced A2A metadata without changing the Message or Task envelope.
-
-## Repository map
-
-```text
-src/
-  app.ts                    HTTP composition and Router-owned APIs
-  auth.ts                   administrator, machine, and federation identity
-  proxy-agent.ts            official A2A server handlers per virtual address
-  task-store.ts             PostgreSQL TaskStore adapter
-  push-notifications.ts     PostgreSQL push configuration adapter
-  delivery.ts               Outbox, RabbitMQ, retries, and remote delivery
-  federation*.ts            discovery, JWT/JWKS, policy, callbacks, and push
-  endpoint-policy.ts        destination validation
-  safe-fetch.ts             rebinding-resistant outbound HTTPS
-  registry.ts               local directory and federated Card cache
-migrations/                 PostgreSQL schema
-docs/architecture/decisions federation design records
-deploy/                     systemd unit
-examples/codex-employee/    isolated end-to-end verifier
-```
-
-## Naming and standards statement
-
-“Agent Router Federation Profile 1.0” names this project's current interoperable profile between its own deployments. It must not be represented as part of the A2A, Matrix, AT Protocol, ActivityPub, or IETF specifications. Compatibility claims should identify both layers separately:
-
-```text
-A2A wire protocol: 1.0
-Agent Router Federation Profile: 1.0
-```
-
-No license has been selected yet. Add an explicit open-source license before publishing the repository for third-party reuse.
+Licensed under the [Apache License 2.0](LICENSE).

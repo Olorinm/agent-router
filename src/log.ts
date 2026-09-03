@@ -1,6 +1,6 @@
 const secretPatterns = [
   /Bearer\s+[A-Za-z0-9._~+\/-]+/gi,
-  /ogr_[A-Za-z0-9_-]+/g,
+  /ar_[A-Za-z0-9_-]+/g,
   /sk-[A-Za-z0-9_-]+/g,
 ];
 

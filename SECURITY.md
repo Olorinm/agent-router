@@ -2,6 +2,15 @@
 
 Agent Router handles authenticated agent traffic, Task history, endpoint credentials, and federation signing keys. Treat every deployment as security-sensitive infrastructure.
 
+## Supported versions
+
+Agent Router is currently pre-1.0 alpha software. Security fixes are applied only to the latest release and the `main` branch.
+
+| Version | Supported |
+| --- | --- |
+| latest `0.1.x` | yes |
+| earlier snapshots | no |
+
 ## Project maturity
 
 The project is alpha software and has not received an independent security audit. Deployment defaults do not replace an operator's threat model, network policy, backups, monitoring, or incident response.
@@ -29,12 +38,15 @@ Never include production tokens, private keys, Task contents, database dumps, ho
 - remote agent endpoint credentials;
 - push-notification tokens;
 - identity-provider access tokens;
+- static administrator tokens;
 - Codex or other provider login state;
 - proxy subscriptions and node credentials;
 - database, RabbitMQ, and application state;
 - SSH keys, cloud credentials, and deployment inventories.
 
 Only public federation JWKs may be published. A private JWK contains a `d` member and must never be committed or supplied as an additional public rotation key.
+
+The checked-in `.env.demo` is an explicit exception containing only public, disposable values. It binds to loopback and must never be used as the basis for an Internet deployment.
 
 ## Repository hygiene
 

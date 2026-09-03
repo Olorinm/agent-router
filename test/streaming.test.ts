@@ -36,7 +36,7 @@ describe("queued proxy streaming", () => {
       { keepBusAliveStates: [TaskState.TASK_STATE_SUBMITTED] },
     );
     const context = new ServerCallContext({
-      user: new RouterUser("ww:test", "Test Admin", "human", ["admin"], "admin@example.com"),
+      user: new RouterUser("human:test", "Test Admin", "human", ["admin"], "admin@example.com"),
       requestedVersion: "1.0",
     });
     const message: Message = {
@@ -117,7 +117,7 @@ describe("queued proxy streaming", () => {
       { keepBusAliveStates: [TaskState.TASK_STATE_SUBMITTED] },
     );
     const context = new ServerCallContext({
-      user: new RouterUser("ww:test", "Test Admin", "human", ["admin"], "admin@example.com"),
+      user: new RouterUser("human:test", "Test Admin", "human", ["admin"], "admin@example.com"),
       requestedVersion: "1.0",
     });
     const result = await handler.sendMessage(
@@ -229,7 +229,7 @@ function testAgent(): RegisteredAgent {
     }),
     targetKind: "local",
     status: "active",
-    ownerPrincipalId: "ww:test",
+    ownerPrincipalId: "human:test",
     updatedAt: new Date(0).toISOString(),
   };
 }

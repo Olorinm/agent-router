@@ -275,5 +275,5 @@ function integerEnv(name: string, fallback: number): number {
 }
 
 function redact(value: string): string {
-  return value.replace(/(Bearer\s+|sk-|ogr_)[A-Za-z0-9._~+\/-]+/gi, "$1[redacted]").slice(0, 1000);
+  return value.replace(/(Bearer\s+|sk-|ar_)[A-Za-z0-9._~+\/-]+/gi, "$1[redacted]").slice(0, 1000);
 }

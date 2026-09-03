@@ -50,7 +50,8 @@ describe("push notifications", () => {
     } as unknown as Pool;
     const config = loadConfig({
       PUBLIC_BASE_URL: "https://router.example",
-      WW_BASE_URL: "https://ww.example",
+      ADMIN_AUTH_MODE: "static",
+      STATIC_ADMIN_TOKEN: "test-static-admin-token-at-least-32-bytes",
       AGENT_ADDRESS_DOMAIN: "agents.example",
       DATABASE_URL: "postgres://unused",
       RABBITMQ_URL: "amqp://unused",
@@ -61,7 +62,7 @@ describe("push notifications", () => {
     const store = new PostgresPushNotificationStore(pool, config);
     const sender = new DefaultPushNotificationSender(store);
     const context = new ServerCallContext({
-      user: new RouterUser("ww:test", "Test Admin", "human", ["admin"], "admin@example.com"),
+      user: new RouterUser("human:test", "Test Admin", "human", ["admin"], "admin@example.com"),
       requestedVersion: "1.0",
     });
     const taskId = crypto.randomUUID();

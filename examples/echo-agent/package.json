@@ -1,5 +1,5 @@
 {
-  "name": "@agent-router/codex-verifier-employee",
+  "name": "@agent-router/echo-agent",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
-    "@openai/codex": "^0.152.1",
     "express": "^5.2.1"
   },
   "devDependencies": {

@@ -5,9 +5,24 @@ const booleanString = z
   .default("false")
   .transform((value) => value === "true");
 
+const optionalUrl = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().url().optional(),
+);
+
+const optionalSecret = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(32).max(4096).optional(),
+);
+
 const configSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().transform((value) => value.replace(/\/+$/, "")),
-  WW_BASE_URL: z.string().url().transform((value) => value.replace(/\/+$/, "")),
+  ADMIN_AUTH_MODE: z.enum(["userinfo", "static"]).default("userinfo"),
+  IDENTITY_USERINFO_URL: optionalUrl,
+  IDENTITY_ADMIN_ROLE: z.string().min(1).default("admin"),
+  STATIC_ADMIN_TOKEN: optionalSecret,
+  STATIC_ADMIN_SUBJECT: z.string().min(1).max(200).default("local-admin"),
+  STATIC_ADMIN_DISPLAY_NAME: z.string().min(1).max(200).default("Local Administrator"),
   AGENT_ADDRESS_DOMAIN: z.string().min(3),
   DATABASE_URL: z.string().min(1),
   RABBITMQ_URL: z.string().min(1),
@@ -30,6 +45,13 @@ const configSchema = z.object({
   FEDERATION_REMOTE_CARD_CACHE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(60_000),
   FEDERATION_PUSH_RECOVERY_MS: z.coerce.number().int().min(5000).max(3_600_000).default(30_000),
   FEDERATION_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(120),
+}).superRefine((value, context) => {
+  if (value.ADMIN_AUTH_MODE === "userinfo" && !value.IDENTITY_USERINFO_URL) {
+    context.addIssue({ code: "custom", path: ["IDENTITY_USERINFO_URL"], message: "required in userinfo mode" });
+  }
+  if (value.ADMIN_AUTH_MODE === "static" && !value.STATIC_ADMIN_TOKEN) {
+    context.addIssue({ code: "custom", path: ["STATIC_ADMIN_TOKEN"], message: "required in static mode" });
+  }
 });
 
 export type RouterConfig = ReturnType<typeof loadConfig>;
@@ -42,7 +64,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   }
   return {
     publicBaseUrl: parsed.PUBLIC_BASE_URL,
-    wwBaseUrl: parsed.WW_BASE_URL,
+    adminAuth: parsed.ADMIN_AUTH_MODE === "static"
+      ? {
+          mode: "static" as const,
+          token: parsed.STATIC_ADMIN_TOKEN!,
+          subject: parsed.STATIC_ADMIN_SUBJECT,
+          displayName: parsed.STATIC_ADMIN_DISPLAY_NAME,
+        }
+      : {
+          mode: "userinfo" as const,
+          userInfoUrl: parsed.IDENTITY_USERINFO_URL!,
+          requiredRole: parsed.IDENTITY_ADMIN_ROLE,
+        },
     agentAddressDomain: parsed.AGENT_ADDRESS_DOMAIN.toLowerCase(),
     databaseUrl: parsed.DATABASE_URL,
     rabbitmqUrl: parsed.RABBITMQ_URL,

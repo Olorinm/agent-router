@@ -31,7 +31,7 @@ describe("proxy agent card", () => {
       sourceAgentCard,
       targetKind: "local",
       status: "active",
-      ownerPrincipalId: "ww:test",
+      ownerPrincipalId: "human:test",
       updatedAt: new Date(0).toISOString(),
     };
     const card = buildProxyAgentCard(agent, "https://router.example");

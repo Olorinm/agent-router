@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 const CIPHER_VERSION = "v1";
 
 export function createMachineCredential(): string {
-  return `ogr_${randomBytes(32).toString("base64url")}`;
+  return `ar_${randomBytes(32).toString("base64url")}`;
 }
 
 export function hashCredential(value: string): string {

@@ -1,0 +1,43 @@
+name: agent-router-demo
+
+services:
+  router:
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  echo-agent:
+    build: ./examples/echo-agent
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PUBLIC_BASE_URL: http://echo-agent:8080
+      PORT: "8080"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks: [outbound]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health/live').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  backend:
+    name: agent-router-demo-backend
+  outbound:
+    name: agent-router-demo-outbound
+  edge:
+    name: agent-router-demo-edge
+
+volumes:
+  postgres_data:
+    name: agent-router-demo-postgres-data
+  rabbitmq_data:
+    name: agent-router-demo-rabbitmq-data
+  caddy_data:
+    name: agent-router-demo-caddy-data
+  caddy_config:
+    name: agent-router-demo-caddy-config

@@ -41,7 +41,12 @@ services:
       - no-new-privileges:true
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?required}
-      WW_BASE_URL: ${WW_BASE_URL:?required}
+      ADMIN_AUTH_MODE: ${ADMIN_AUTH_MODE:-userinfo}
+      IDENTITY_USERINFO_URL: ${IDENTITY_USERINFO_URL:-}
+      IDENTITY_ADMIN_ROLE: ${IDENTITY_ADMIN_ROLE:-admin}
+      STATIC_ADMIN_TOKEN: ${STATIC_ADMIN_TOKEN:-}
+      STATIC_ADMIN_SUBJECT: ${STATIC_ADMIN_SUBJECT:-local-admin}
+      STATIC_ADMIN_DISPLAY_NAME: ${STATIC_ADMIN_DISPLAY_NAME:-Local Administrator}
       AGENT_ADDRESS_DOMAIN: ${AGENT_ADDRESS_DOMAIN:?required}
       DATABASE_URL: postgres://agent_router:${POSTGRES_PASSWORD}@postgres:5432/agent_router
       RABBITMQ_URL: amqp://agent_router:${RABBITMQ_PASSWORD}@rabbitmq:5672

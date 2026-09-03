@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { Pool } from "pg";
 import { UnauthenticatedUser, type User } from "@a2a-js/sdk/server";
@@ -13,6 +13,7 @@ import {
   type FederationService,
 } from "./federation.js";
 import { upsertPrincipal } from "./registry.js";
+import type { RouterConfig } from "./config.js";
 
 export class RouterUser implements User {
   readonly isAuthenticated = true;
@@ -52,7 +53,7 @@ export class AuthService {
 
   constructor(
     private readonly pool: Pool,
-    private readonly wwBaseUrl: string,
+    private readonly adminAuth: RouterConfig["adminAuth"],
     private readonly cacheTtlMs: number,
     private readonly federation: FederationService,
   ) {}
@@ -61,7 +62,7 @@ export class AuthService {
     const token = bearerToken(request);
     if (!token) return undefined;
     const cacheKey = createHash("sha256").update(token).digest("base64url");
-    if (token.startsWith("ogr_")) {
+    if (token.startsWith("ar_")) {
       const cached = this.cached(cacheKey);
       if (cached) return cached;
       const user = await this.authenticateMachineCredential(token);
@@ -75,7 +76,7 @@ export class AuthService {
     if (federated) return federated;
     const cached = this.cached(cacheKey);
     if (cached) return cached;
-    const user = await this.authenticateWwToken(token);
+    const user = await this.authenticateAdminToken(token);
     if (user) this.cache.set(cacheKey, { user, expiresAt: Date.now() + this.cacheTtlMs });
     if (this.cache.size > 1000) this.evictExpired();
     return user;
@@ -153,34 +154,47 @@ export class AuthService {
     return new RouterUser(principalId, identity.subject, "federation", [], undefined, identity.subject, identity);
   }
 
-  private async authenticateWwToken(token: string): Promise<RouterUser | undefined> {
-    const response = await fetch(`${this.wwBaseUrl}/v1/users/me`, {
+  private async authenticateAdminToken(token: string): Promise<RouterUser | undefined> {
+    if (this.adminAuth.mode === "static") {
+      if (!equalSecret(token, this.adminAuth.token)) return undefined;
+      const principalId = `human:static:${this.adminAuth.subject}`;
+      await upsertPrincipal(this.pool, {
+        id: principalId,
+        kind: "human",
+        displayName: this.adminAuth.displayName,
+      });
+      return new RouterUser(principalId, this.adminAuth.displayName, "human", ["admin"]);
+    }
+
+    const response = await fetch(this.adminAuth.userInfoUrl, {
       headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status === 401 || response.status === 403) return undefined;
-    if (!response.ok) throw new Error(`ww_auth_http_${response.status}`);
+    if (!response.ok) throw new Error(`identity_userinfo_http_${response.status}`);
     const body = await response.json();
     const object = asRecord(asRecord(body).data ?? body);
-    const userId = stringValue(object.user_id);
+    const subject = stringValue(object.sub);
     const email = stringValue(object.email);
-    const displayName = stringValue(object.display_name) || email;
-    const role = stringValue(object.role) || "user";
+    const displayName = stringValue(object.name) || stringValue(object.preferred_username) || email || subject;
+    const role = stringValue(object.role);
     const roles = [
       ...new Set([
-        role,
+        ...(role ? [role] : []),
         ...(Array.isArray(object.roles) ? object.roles.map(stringValue).filter(Boolean) : []),
       ]),
     ].sort();
-    if (!userId || !email) throw new Error("ww_user_response_invalid");
-    const principalId = `ww:${userId}`;
+    if (!subject) throw new Error("identity_userinfo_response_invalid");
+    const issuerScope = createHash("sha256").update(this.adminAuth.userInfoUrl).digest("base64url").slice(0, 16);
+    const principalId = `human:${issuerScope}:${Buffer.from(subject).toString("base64url")}`;
     await upsertPrincipal(this.pool, {
       id: principalId,
       kind: "human",
       displayName,
-      email,
+      ...(email ? { email } : {}),
     });
-    return new RouterUser(principalId, displayName, "human", roles, email);
+    const authorizedRoles = roles.includes(this.adminAuth.requiredRole) ? roles : [];
+    return new RouterUser(principalId, displayName, "human", authorizedRoles, email || undefined);
   }
 
   private evictExpired(): void {
@@ -234,6 +248,12 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function equalSecret(actual: string, expected: string): boolean {
+  const actualDigest = createHash("sha256").update(actual).digest();
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(actualDigest, expectedDigest);
 }
 
 function respondAuthenticationError(response: Response, error: unknown): void {

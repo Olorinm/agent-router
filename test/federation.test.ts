@@ -121,7 +121,8 @@ describe("federation trust profile", () => {
 function federationConfig(domain: string, baseUrl: string): RouterConfig {
   return loadConfig({
     PUBLIC_BASE_URL: baseUrl,
-    WW_BASE_URL: "https://ww.example",
+    ADMIN_AUTH_MODE: "static",
+    STATIC_ADMIN_TOKEN: "test-static-admin-token-at-least-32-bytes",
     AGENT_ADDRESS_DOMAIN: domain,
     DATABASE_URL: "postgres://unused",
     RABBITMQ_URL: "amqp://unused",
