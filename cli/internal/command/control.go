@@ -51,24 +51,9 @@ func (a *app) agentCommand() *cobra.Command {
 			if address == "" || cardURL == "" {
 				return errors.New("--address and --card are required")
 			}
-			if noStore && !a.jsonOutput {
-				return errors.New("--no-store requires --json so the one-time credential can be captured")
-			}
 			s, err := a.session(false)
 			if err != nil {
 				return err
-			}
-			ctx, cancel := requestContext(cmd, 30*time.Second)
-			defer cancel()
-			card, err := routerapi.FetchExternalCard(ctx, cardURL, os.Getenv("AGENT_ENDPOINT_TOKEN"))
-			if err != nil {
-				return err
-			}
-			body := map[string]any{
-				"address": address, "displayName": card.Name, "description": card.Description, "agentCard": card,
-			}
-			if endpointToken := os.Getenv("AGENT_ENDPOINT_TOKEN"); endpointToken != "" {
-				body["endpointBearerToken"] = endpointToken
 			}
 			path := "/v1/agents"
 			token := ""
@@ -85,36 +70,7 @@ func (a *app) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var result registrationResult
-			if err := routerapi.New(s.Profile.BaseURL, token).Do(ctx, http.MethodPost, path, body, &result); err != nil {
-				return err
-			}
-			stored := false
-			if !noStore {
-				if err := secret.Set(s.Name, result.Data.Address, result.Data.MachineCredential); err != nil {
-					fmt.Fprintln(a.stderr, "Warning: credential store unavailable; returning the one-time credential in JSON:", err)
-					noStore = true
-					a.jsonOutput = true
-				} else {
-					p := s.Config.Profiles[s.Name]
-					p.ActiveIdentity = result.Data.Address
-					s.Config.Profiles[s.Name] = p
-					if err := a.store.Save(s.Config); err != nil {
-						return err
-					}
-					stored = true
-				}
-			}
-			output := map[string]any{"id": result.Data.ID, "address": result.Data.Address, "agentCard": json.RawMessage(result.Data.AgentCard), "credentialStored": stored}
-			if noStore {
-				output["machineCredential"] = result.Data.MachineCredential
-			}
-			return a.print(output, func() string {
-				if stored {
-					return "Registered " + result.Data.Address + " and selected its credential"
-				}
-				return "Registered " + result.Data.Address + "; capture machineCredential from --json output"
-			})
+			return a.registerAgent(cmd, s, address, cardURL, token, path, noStore)
 		},
 	}
 	register.Flags().StringVar(&address, "address", "", "requested localpart or full agent address")
@@ -124,6 +80,62 @@ func (a *app) agentCommand() *cobra.Command {
 
 	cmd.AddCommand(validate, register, a.credentialCommand())
 	return cmd
+}
+
+func (a *app) registerAgent(
+	cmd *cobra.Command,
+	s *session,
+	address string,
+	cardURL string,
+	token string,
+	path string,
+	noStore bool,
+) error {
+	if noStore && !a.jsonOutput {
+		return errors.New("--no-store requires --json so the one-time credential can be captured")
+	}
+	ctx, cancel := requestContext(cmd, 30*time.Second)
+	defer cancel()
+	card, err := routerapi.FetchExternalCard(ctx, cardURL, os.Getenv("AGENT_ENDPOINT_TOKEN"))
+	if err != nil {
+		return err
+	}
+	body := map[string]any{
+		"address": address, "displayName": card.Name, "description": card.Description, "agentCard": card,
+	}
+	if endpointToken := os.Getenv("AGENT_ENDPOINT_TOKEN"); endpointToken != "" {
+		body["endpointBearerToken"] = endpointToken
+	}
+	var result registrationResult
+	if err := routerapi.New(s.Profile.BaseURL, token).Do(ctx, http.MethodPost, path, body, &result); err != nil {
+		return err
+	}
+	stored := false
+	if !noStore {
+		if err := secret.Set(s.Name, result.Data.Address, result.Data.MachineCredential); err != nil {
+			fmt.Fprintln(a.stderr, "Warning: credential store unavailable; returning the one-time credential in JSON:", err)
+			noStore = true
+			a.jsonOutput = true
+		} else {
+			p := s.Config.Profiles[s.Name]
+			p.ActiveIdentity = result.Data.Address
+			s.Config.Profiles[s.Name] = p
+			if err := a.store.Save(s.Config); err != nil {
+				return err
+			}
+			stored = true
+		}
+	}
+	output := map[string]any{"id": result.Data.ID, "address": result.Data.Address, "agentCard": json.RawMessage(result.Data.AgentCard), "credentialStored": stored}
+	if noStore {
+		output["machineCredential"] = result.Data.MachineCredential
+	}
+	return a.print(output, func() string {
+		if stored {
+			return "Joined as " + result.Data.Address
+		}
+		return "Registered " + result.Data.Address + "; capture machineCredential from --json output"
+	})
 }
 
 func (a *app) credentialCommand() *cobra.Command {
@@ -448,7 +460,10 @@ func (a *app) federationCommand() *cobra.Command {
 
 func (a *app) schemaCommand() *cobra.Command {
 	schemas := map[string]any{
-		"send":                    map[string]any{"arguments": []string{"ADDRESS", "MESSAGE"}, "flags": map[string]string{"message-id": "optional stable A2A messageId", "wait": "wait for a terminal Task", "json": "JSON result"}},
+		"send":                    map[string]any{"arguments": []string{"ADDRESS", "MESSAGE"}, "flags": map[string]string{"message-id": "optional stable A2A messageId", "detach": "return after Task acceptance", "json": "JSON result"}},
+		"login":                   map[string]any{"arguments": []string{"optional Router domain"}, "secretInputs": []string{"interactive prompt", "--token-stdin", "AGENT_ROUTER_TOKEN"}},
+		"invite":                  map[string]any{"arguments": []string{"ADDRESS", "ENDPOINT"}, "secretOutput": "one-time invitation"},
+		"join":                    map[string]any{"arguments": []string{"optional Agent Card URL"}, "secretInputs": []string{"interactive prompt", "--invite-stdin", "AGENT_ROUTER_INVITE"}},
 		"agent.register":          map[string]any{"requiredFlags": []string{"address", "card"}, "secretInputs": []string{"--enrollment-token-stdin", "AGENT_ENDPOINT_TOKEN"}},
 		"admin.enrollment.create": map[string]any{"flags": []string{"address", "endpoint-origin", "expires-in", "label"}, "secretOutput": "data.token is shown once"},
 	}

@@ -55,19 +55,25 @@ func New() (*cobra.Command, error) {
 	root.SetErr(a.stderr)
 	root.PersistentFlags().StringVar(&a.profileFlag, "profile", "", "Router profile to use")
 	root.PersistentFlags().BoolVar(&a.jsonOutput, "json", false, "write one JSON result to stdout")
-	root.AddCommand(
-		a.profileCommand(),
-		a.authCommand(),
-		a.whoamiCommand(),
-		a.doctorCommand(),
-		a.linkCommand(),
-		a.agentCommand(),
-		a.directoryCommand(),
-		a.sendCommand(),
-		a.taskCommand(),
-		a.adminCommand(),
-		a.schemaCommand(),
+	root.AddGroup(
+		&cobra.Group{ID: "start", Title: "Start here:"},
+		&cobra.Group{ID: "work", Title: "Tasks and status:"},
+		&cobra.Group{ID: "advanced", Title: "Advanced operations:"},
 	)
+	login, invite, join, find, send := a.loginCommand(), a.inviteCommand(), a.joinCommand(), a.findCommand(), a.sendCommand()
+	for _, command := range []*cobra.Command{login, invite, join, find, send} {
+		command.GroupID = "start"
+	}
+	whoami, doctor, task := a.whoamiCommand(), a.doctorCommand(), a.taskCommand()
+	for _, command := range []*cobra.Command{whoami, doctor, task} {
+		command.GroupID = "work"
+	}
+	profile, auth, link := a.profileCommand(), a.authCommand(), a.linkCommand()
+	agent, directory, admin, schema := a.agentCommand(), a.directoryCommand(), a.adminCommand(), a.schemaCommand()
+	for _, command := range []*cobra.Command{profile, auth, link, agent, directory, admin, schema} {
+		command.GroupID = "advanced"
+	}
+	root.AddCommand(login, invite, join, find, send, whoami, doctor, task, profile, auth, link, agent, directory, admin, schema)
 	return root, nil
 }
 

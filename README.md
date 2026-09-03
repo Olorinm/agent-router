@@ -60,30 +60,28 @@ The Delivery Dispatcher is Router infrastructure, not an agent or an AI worker. 
 
 ## CLI
 
-Download the standalone binary for macOS, Linux, or Windows from [GitHub Releases](https://github.com/Olorinm/agent-router/releases). It does not require Node.js or a local Router checkout.
+Install the standalone binary with Homebrew, then use the four-command human workflow:
 
 ```sh
-agent-router profile add work agents.example.com
-printf '%s' "$ADMIN_TOKEN" | agent-router auth login --token-stdin
-agent-router admin enrollment create \
-  --address writer \
-  --endpoint-origin https://worker.example.net
+brew install Olorinm/tap/agent-router
+agent-router login agents.example.com
+agent-router invite writer worker.example.net
 ```
 
-The agent operator can then validate and register an independently hosted A2A agent with the one-time token:
+The worker operator receives the one-time invitation and runs:
 
 ```sh
-agent-router agent validate https://worker.example.net/.well-known/agent-card.json
-printf '%s' "$ENROLLMENT_TOKEN" | agent-router agent register \
-  --address writer \
-  --card https://worker.example.net/.well-known/agent-card.json \
-  --enrollment-token-stdin
-
-agent-router directory search writing
-agent-router send writer@agents.example.com "Draft a two-sentence introduction." --wait
+agent-router join
 ```
 
-Profiles contain only non-secret Router locations. Credentials go to the operating-system credential store. Headless containers can inject `AGENT_ROUTER_TOKEN`; one-time outputs can be captured with `--json --no-store`. See the complete [CLI guide](docs/guides/cli.md).
+The CLI prompts privately for the invitation and public Agent Card URL, discovers the Router, validates and registers the agent, and stores its machine credential. Calling an agent is then ordinary:
+
+```sh
+agent-router find writing
+agent-router send writer "Draft a two-sentence introduction."
+```
+
+`send` waits and prints the A2A result by default; `--detach` returns after Task acceptance. Profiles, raw enrollment administration, credential lifecycle commands, `--json`, stdin, and environment-secret inputs remain available for operators and headless containers. See the complete [CLI guide](docs/guides/cli.md).
 
 ## Interoperability boundary
 

@@ -1,134 +1,126 @@
 # Agent Router CLI
 
-`agent-router` is a standalone, provider-neutral client for people, scripts, and agents. It uses Router-owned HTTP endpoints only for discovery, enrollment, and directory administration. Messages and Tasks go through the official A2A Go SDK.
+`agent-router` is a standalone, provider-neutral client for people, scripts, and agents. The ordinary path has four verbs: log in, invite, join, and send. Router profiles, enrollment records, credential rotation, and raw JSON remain available for operators and automation without being prerequisites for first use.
+
+Messages and Tasks use the official A2A Go SDK. Router-specific HTTP is limited to discovery, enrollment, directory, and administration.
 
 ## Install
 
-Download the archive for your operating system and architecture from [GitHub Releases](https://github.com/Olorinm/agent-router/releases), verify the adjacent SHA-256 file, and place `agent-router` on `PATH`.
-
-To build from source:
+On macOS or Linux with Homebrew:
 
 ```sh
-cd cli
-go build -o agent-router ./cmd/agent-router
+brew install Olorinm/tap/agent-router
 ```
 
-The CLI requires no Node.js runtime and does not contain a Router server.
-
-## Profiles and authentication
-
-A profile is the equivalent of a homeserver selection. Discovery reads `/.well-known/agent-router`, verifies the returned base URL, and stores only non-secret location data.
+With Go:
 
 ```sh
-agent-router profile add work agents.example.com
-agent-router profile list
-agent-router profile use work
+go install github.com/Olorinm/agent-router/cli/cmd/agent-router@latest
+```
+
+Signed release metadata, platform archives, and adjacent SHA-256 files are available on [GitHub Releases](https://github.com/Olorinm/agent-router/releases). The CLI is a single binary and does not require Node.js or a local Router checkout.
+
+## Log in once
+
+Give the CLI a Router domain. It discovers the service through `/.well-known/agent-router`, makes it current, prompts for the administrator credential without echoing it, verifies the identity, and stores the credential in the operating-system credential store.
+
+```sh
+agent-router login agents.example.com
+```
+
+Multiple Router profiles are an advanced feature:
+
+```sh
+agent-router profile add staging staging.agents.example.com
+agent-router profile use staging
 agent-router doctor
 ```
 
-Administrator access currently accepts a bearer token through stdin. The token is verified before being written to the operating-system credential store.
+## Invite an agent
+
+The administrator supplies the desired address and the agent endpoint. A short-lived invitation is shown once. The endpoint is reduced to its HTTPS origin and bound into the enrollment so the invitation cannot be used to register a different endpoint.
 
 ```sh
-printf '%s' "$ADMIN_TOKEN" | agent-router auth login --token-stdin
-agent-router whoami
-agent-router auth status
-agent-router auth logout
+agent-router invite writer worker.example.net
 ```
 
-No command accepts a secret as a normal flag. `AGENT_ROUTER_TOKEN` is a process-level override intended for CI and headless containers.
+Send the resulting `arj1_...` invitation to the worker operator through a private channel.
 
-## Enroll an agent
+## Join from the agent machine
 
-An administrator creates a short-lived, one-use token. Restrict both the requested address and endpoint origin whenever possible.
+The worker operator runs one command:
 
 ```sh
-agent-router admin enrollment create \
-  --address writer \
-  --endpoint-origin https://worker.example.net \
-  --expires-in 900 \
-  --label onboarding-writer
+agent-router join
 ```
 
-The worker operator exposes an A2A v1 Agent Card, validates it, and consumes the token:
+The CLI privately prompts for the invitation and then asks for the A2A Agent Card URL. It discovers the invitation's Router, validates the Card, registers the agent, stores the returned machine credential, and selects that agent identity. Neither the invitation nor the machine credential is placed in shell history.
 
-```sh
-agent-router agent validate https://worker.example.net/.well-known/agent-card.json
+For a conventional Card location, the interaction looks like this:
 
-printf '%s' "$ENROLLMENT_TOKEN" | agent-router agent register \
-  --address writer \
-  --card https://worker.example.net/.well-known/agent-card.json \
-  --enrollment-token-stdin
+```text
+One-time invitation: [hidden]
+Agent Card URL: https://worker.example.net/.well-known/agent-card.json
+Joined as writer@agents.example.com
 ```
 
-If the worker endpoint itself requires a bearer token, provide it only through `AGENT_ENDPOINT_TOKEN` for this invocation. The Router encrypts it at rest and never publishes it in the Router-owned Card.
-
-By default the returned Router machine credential is stored in the OS credential store and selected as the active identity. In a clean container without a system keychain, capture it explicitly:
-
-```sh
-printf '%s' "$ENROLLMENT_TOKEN" | agent-router --json agent register \
-  --address writer \
-  --card https://worker.example.net/.well-known/agent-card.json \
-  --enrollment-token-stdin \
-  --no-store
-```
-
-Then pass the captured value as `AGENT_ROUTER_TOKEN` to later commands.
-
-Enrollment tokens are hashed at rest, expire automatically, and are consumed in the same database transaction that creates the registration. A concurrent second use cannot create a second agent.
+If the real agent endpoint requires a bearer token, set `AGENT_ENDPOINT_TOKEN` only for the `join` invocation. The Router encrypts it at rest and never publishes it in the Router-owned Card.
 
 ## Find and call agents
 
-The directory is authenticated. It searches only active local registrations and returns Router-owned Cards, never real endpoint credentials.
-
 ```sh
-agent-router directory search writing
-agent-router directory show writer@agents.example.com
-agent-router send writer@agents.example.com "Draft an introduction."
-agent-router send writer@agents.example.com "Draft an introduction." --wait
+agent-router find writing
+agent-router send writer "Draft a two-sentence introduction."
 ```
 
-`send` creates an official A2A Message. Use a stable client-generated ID when retrying the same logical request:
+Local addresses may use only the localpart (`writer`); federated addresses remain explicit (`writer@another.example`). `send` waits for the terminal A2A Task by default and prints its text result. Use `--detach` when only Task acceptance is needed:
 
 ```sh
-agent-router send writer@agents.example.com "Draft an introduction." \
-  --message-id 019example-stable-id
+agent-router send writer "Run the long analysis." --detach
 ```
 
-The Router and federated Routers use `messageId` as the idempotency key. Do not generate a new ID for a transport retry.
+Use a stable client-generated ID when retrying the same logical request:
+
+```sh
+agent-router send writer "Draft an introduction." --message-id 019example-stable-id
+```
 
 ## Tasks
 
-After `send` returns a Task, the CLI remembers the target address locally so the Task can be addressed by ID alone:
+The CLI remembers which Agent owns each Task, so the ID is normally enough:
 
 ```sh
 agent-router task get TASK_ID
 agent-router task watch TASK_ID --ndjson
-agent-router task list --agent writer@agents.example.com
+agent-router task list --agent writer
 agent-router task cancel TASK_ID --yes
 ```
 
-Add `--agent ADDRESS` if the Task was created by another client or the local mapping is unavailable. All four operations use official A2A Task methods.
+## Automation and containers
 
-## Credential lifecycle
-
-An administrator or the agent itself can list non-secret metadata, create another credential, revoke one credential, or atomically replace every active credential:
+Interactive prompts are the human default. Automation uses environment variables or stdin and structured output:
 
 ```sh
-agent-router agent credential list writer@agents.example.com
-agent-router agent credential create writer@agents.example.com --label deploy-2 --activate
-agent-router agent credential revoke writer@agents.example.com CREDENTIAL_ID --yes
-agent-router agent credential rotate writer@agents.example.com --label quarterly --yes
+AGENT_ROUTER_TOKEN="$ADMIN_TOKEN" agent-router --json invite writer worker.example.net
+
+AGENT_ROUTER_INVITE="$INVITATION" agent-router --json join \
+  https://worker.example.net/.well-known/agent-card.json \
+  --no-store
 ```
 
-Revocation and expiration take effect on the next request; machine credentials are deliberately not cached by the Router.
-
-## Automation contract
-
-- stdout contains results; diagnostics and warnings use stderr;
+- stdout contains results; diagnostics and prompts use stderr;
 - `--json` emits one JSON document;
 - `task watch --ndjson` emits one Task per state transition;
-- destructive or trust-changing operations require `--yes`;
-- `agent-router schema [COMMAND]` prints compact machine-readable command contracts;
+- `agent-router schema [COMMAND]` exposes compact machine-readable command contracts;
+- destructive trust changes require `--yes`;
 - exit status is non-zero on discovery, authentication, validation, HTTP, or A2A errors.
 
-`agent-router link --agent ADDRESS` writes a non-secret `.agent-router.json` association for the current directory. The file is ignored by this repository and is never used as a credential store.
+The lower-level `auth`, `profile`, `admin enrollment`, `directory`, and `agent credential` command groups remain available for operators. They are not part of the ordinary onboarding path.
+
+## Design lineage
+
+- [Vercel CLI](https://vercel.com/docs/cli): short top-level workflow and remembered project/server context;
+- [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login): interactive human login, secure credential storage, and environment/stdin fallbacks for automation;
+- [Matrix server discovery](https://spec.matrix.org/latest/client-server-api/#server-discovery): users provide a domain or identity while the client discovers the actual service URL;
+- [Tailscale auth keys](https://tailscale.com/docs/features/access-control/auth-keys/): scoped, expiring enrollment authority for unattended machines;
+- `lark-cli`: task-level shortcuts for common actions, with typed low-level commands and machine-readable schemas retained as an escape hatch.

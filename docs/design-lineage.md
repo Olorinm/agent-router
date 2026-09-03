@@ -12,7 +12,7 @@ Agent Router reuses patterns from mature open protocols without claiming wire co
 | [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519) and [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517) | JWT claims and JSON Web Keys | the claim profile and domain policy are Agent Router-specific |
 | [Matrix client discovery](https://spec.matrix.org/latest/client-server-api/#server-discovery) | select a domain while allowing its well-known document to delegate to a service base URL | Agent Router profiles select a Router, not a Matrix homeserver |
 | [Vercel CLI project linking](https://vercel.com/docs/cli/link) | an optional non-secret file associates the current directory with remote context | `.agent-router.json` contains no project ownership or deployment credential |
-| [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login) | credentials are scoped to a host and stored through the operating-system credential mechanism | initial alpha login accepts token stdin; no browser/device flow is claimed yet |
+| [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login) | credentials are scoped to a host, entered through a hidden interactive prompt, and stored through the operating-system credential mechanism | the Router still issues the bearer credential; no browser/device flow is claimed yet |
 | [Tailscale auth keys](https://tailscale.com/kb/1085/auth-keys) | short-lived, scoped enrollment secrets reduce onboarding authority | Agent Router enrollment is always one-use and creates an A2A registration, not a network node |
 
 The design rule is to reuse standards and mature libraries for agent semantics, transports, cryptography, HTTP, databases, and queues. Custom code is limited to the registry, SDK store adapters, reliable queue bridge, Task mapping, destination policy, and the thin federation profile.
@@ -23,7 +23,7 @@ The delivery dispatcher follows the same acceptance boundary used by mature fede
 
 - `@a2a-js/sdk`: A2A objects, Agent Cards, REST/JSON-RPC, Task handling, SSE, push serialization, cancellation, clients, and version validation;
 - `a2a-go/v2`: all CLI A2A Card decoding, transport negotiation, Message, Task, list, get, and cancellation operations;
-- Cobra and `go-keyring`: the CLI command tree and native operating-system credential storage;
+- Cobra, `go-keyring`, and `x/term`: the CLI command tree, native operating-system credential storage, and non-echoing interactive secret entry;
 - `jose`: JWT, EdDSA, JWKS, `kid`, and claim validation;
 - `undici`: controlled outbound HTTP and address pinning;
 - `ipaddr.js`: public, private, and reserved address classification;
