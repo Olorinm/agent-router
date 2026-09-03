@@ -13,7 +13,7 @@ import (
 
 func (a *app) sendCommand() *cobra.Command {
 	var messageID, contextID string
-	var wait bool
+	var detach bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "send ADDRESS MESSAGE",
@@ -52,7 +52,7 @@ func (a *app) sendCommand() *cobra.Command {
 				if err := a.rememberTask(s, string(task.ID), strings.ToLower(args[0])); err != nil {
 					return err
 				}
-				if wait && !task.Status.State.Terminal() {
+				if !detach && !task.Status.State.Terminal() {
 					task, err = waitForTask(callCtx, client.GetTask, task.ID, time.Second)
 					if err != nil {
 						return err
@@ -65,7 +65,7 @@ func (a *app) sendCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&messageID, "message-id", "", "stable A2A messageId for idempotent retries")
 	cmd.Flags().StringVar(&contextID, "context-id", "", "continue an A2A context")
-	cmd.Flags().BoolVar(&wait, "wait", false, "wait for a terminal Task state")
+	cmd.Flags().BoolVar(&detach, "detach", false, "return as soon as the Task is accepted")
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "overall timeout")
 	return cmd
 }
