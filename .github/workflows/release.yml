@@ -1,0 +1,71 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: Build archive
+        working-directory: cli
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="agent-router_${version}_${GOOS}_${GOARCH}"
+          mkdir -p "dist/$name"
+          suffix=""
+          if [ "$GOOS" = windows ]; then suffix=".exe"; fi
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/Olorinm/agent-router/cli/internal/command.Version=$version -X github.com/Olorinm/agent-router/cli/internal/command.Commit=$GITHUB_SHA" \
+            -o "dist/$name/agent-router$suffix" ./cmd/agent-router
+          cp ../LICENSE "dist/$name/LICENSE"
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "$name.zip" "$name")
+          else
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+          rm -rf "dist/$name"
+          (cd dist && sha256sum * > "$name.sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-router-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: cli/dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag

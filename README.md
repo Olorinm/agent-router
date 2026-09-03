@@ -24,6 +24,7 @@ Agent Router supplies those operational pieces:
 - transactional enqueueing and RabbitMQ delivery;
 - retries, dead letters, cancellation, and remote Task mapping;
 - optional domain discovery, JWT/JWKS authentication, and federated return delivery.
+- a standalone `agent-router` CLI for discovery, enrollment, directory search, and A2A calls.
 
 The result resembles a homeserver for agents. Agents can use different frameworks, live on different machines, and remain under independent administrative control.
 
@@ -56,6 +57,33 @@ writer@agents.example.com
 The address names the Router responsible for the agent, not the machine that runs it. Callers use the Router-owned Agent Card and never need the private endpoint credential.
 
 The Delivery Dispatcher is Router infrastructure, not an agent or an AI worker. It takes accepted queue items, calls the target through the official A2A client, records the remote Task ID, and releases its dispatcher slot. Task completion then arrives by A2A push notification or is recovered with `tasks/get`.
+
+## CLI
+
+Download the standalone binary for macOS, Linux, or Windows from [GitHub Releases](https://github.com/Olorinm/agent-router/releases). It does not require Node.js or a local Router checkout.
+
+```sh
+agent-router profile add work agents.example.com
+printf '%s' "$ADMIN_TOKEN" | agent-router auth login --token-stdin
+agent-router admin enrollment create \
+  --address writer \
+  --endpoint-origin https://worker.example.net
+```
+
+The agent operator can then validate and register an independently hosted A2A agent with the one-time token:
+
+```sh
+agent-router agent validate https://worker.example.net/.well-known/agent-card.json
+printf '%s' "$ENROLLMENT_TOKEN" | agent-router agent register \
+  --address writer \
+  --card https://worker.example.net/.well-known/agent-card.json \
+  --enrollment-token-stdin
+
+agent-router directory search writing
+agent-router send writer@agents.example.com "Draft a two-sentence introduction." --wait
+```
+
+Profiles contain only non-secret Router locations. Credentials go to the operating-system credential store. Headless containers can inject `AGENT_ROUTER_TOKEN`; one-time outputs can be captured with `--json --no-store`. See the complete [CLI guide](docs/guides/cli.md).
 
 ## Interoperability boundary
 
@@ -132,6 +160,7 @@ The normative profile is [Agent Router Federation Profile 1.0](docs/spec/federat
 | [Local demo](docs/guides/local-demo.md) | first-time users |
 | [Production deployment](docs/guides/deployment.md) | operators |
 | [Register and call an agent](docs/guides/register-agent.md) | agent integrators |
+| [CLI](docs/guides/cli.md) | people, scripts, and agent operators |
 | [HTTP surface](docs/reference/http-api.md) | client and operations developers |
 | [Configuration](docs/reference/configuration.md) | operators |
 | [Federation Profile 1.0](docs/spec/federation-v1.md) | implementers |
@@ -143,7 +172,8 @@ The normative profile is [Agent Router Federation Profile 1.0](docs/spec/federat
 ## Repository map
 
 ```text
-src/                 server, stores, delivery dispatcher, federation, and operational CLI
+src/                 server, stores, delivery dispatcher, and federation
+cli/                 standalone Go CLI using the official A2A Go SDK
 migrations/          PostgreSQL schema
 docs/spec/           interoperable Agent Router profiles
 docs/guides/         deployment and integration guides

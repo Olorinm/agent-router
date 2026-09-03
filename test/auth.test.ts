@@ -59,6 +59,37 @@ describe("administrator authentication", () => {
     expect(() => testConfig({ ADMIN_AUTH_MODE: "userinfo" })).toThrow();
     expect(() => testConfig({ ADMIN_AUTH_MODE: "static" })).toThrow();
   });
+
+  it("checks machine-credential revocation and expiration on every request", async () => {
+    const config = testConfig({
+      ADMIN_AUTH_MODE: "static",
+      STATIC_ADMIN_TOKEN: "static-admin-token-with-at-least-32-bytes",
+    });
+    let selects = 0;
+    const pool = {
+      query: async (text: string) => {
+        if (text.includes("FROM credentials")) {
+          selects += 1;
+          expect(text).toContain("c.expires_at > now()");
+          return {
+            rows: [{
+              principal_id: "agent:1",
+              display_name: "Agent",
+              kind: "agent",
+              agent_status: "active",
+              agent_address: "agent@example.com",
+            }],
+            rowCount: 1,
+          };
+        }
+        return { rows: [], rowCount: 1 };
+      },
+    } as unknown as Pool;
+    const auth = new AuthService(pool, config.adminAuth, config.authCacheTtlMs, noFederation());
+    await auth.authenticate(requestWithToken("ar_machine_token"));
+    await auth.authenticate(requestWithToken("ar_machine_token"));
+    expect(selects).toBe(2);
+  });
 });
 
 function testConfig(overrides: Record<string, string>) {

@@ -26,3 +26,19 @@ jobs:
       - run: npm --prefix examples/echo-agent run typecheck
       - run: npm --prefix examples/codex-employee ci
       - run: npm --prefix examples/codex-employee run typecheck
+
+  cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - run: go test ./...
+        working-directory: cli
+      - run: go vet ./...
+        working-directory: cli
+      - run: go build ./cmd/agent-router
+        working-directory: cli
