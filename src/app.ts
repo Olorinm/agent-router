@@ -76,6 +76,12 @@ export function createApp(dependencies: AppDependencies) {
     skip: (request) => !dependencies.auth.currentUser(request).federationIdentity,
     keyGenerator: (request) => dependencies.auth.currentUser(request).federationIdentity?.domain ?? "local",
   });
+  const callbackRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: dependencies.federationRequestsPerMinute,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
   app.use("/v1", adminRateLimit, express.json({ limit: "256kb", type: "application/json" }));
 
   app.get("/v1/agents", dependencies.auth.requireAdmin, async (request, response) => {
@@ -185,6 +191,19 @@ export function createApp(dependencies: AppDependencies) {
     dependencies.auth.requireCaller,
     federationRateLimit,
     localFederationCardHandler(dependencies),
+  );
+  app.post(
+    "/callbacks/v1/a2a/:routerTaskId",
+    callbackRateLimit,
+    express.json({ limit: "2mb", type: ["application/a2a+json", "application/json"] }),
+    async (request, response) => {
+      await dependencies.federationCallbacks.receiveLocal(
+        routeParam(request.params.routerTaskId),
+        request.header("x-a2a-notification-token") ?? "",
+        request.body,
+      );
+      response.status(204).end();
+    },
   );
   app.post(
     "/federation/v1/push/:routerTaskId",

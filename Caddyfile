@@ -8,7 +8,7 @@
 		-Server
 	}
 	request_body {
-		max_size 512KB
+		max_size 2MB
 	}
 	reverse_proxy router:8080
 }

@@ -61,6 +61,12 @@ interface CachedDiscovery {
   value: FederationDiscoveryDocument;
 }
 
+interface CachedRemoteJwks {
+  expiresAt: number;
+  jwksUrl: string;
+  value: ReturnType<typeof createRemoteJWKSet>;
+}
+
 type ClientInterceptor = NonNullable<ClientConfig["interceptors"]>[number];
 
 const discoverySchema = z.object({
@@ -99,7 +105,7 @@ export class FederationService {
   private readonly publishedJwks: readonly JWK[];
   private readonly keyId: string | undefined;
   private readonly discoveryCache = new Map<string, CachedDiscovery>();
-  private readonly remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+  private readonly remoteJwks = new Map<string, CachedRemoteJwks>();
   private replayClaimsSinceCleanup = 0;
 
   private constructor(
@@ -200,21 +206,30 @@ export class FederationService {
     } catch {
       return undefined;
     }
-    if (!await this.policy.isAllowed(domain)) throw new FederationAuthError("federation_domain_denied", 403);
+    if (!await this.policy.isAllowed(domain)) throw new FederationAuthError("federation_token_invalid");
 
     try {
       const discovery = await this.discover(domain, false);
-      let jwks = this.remoteJwks.get(unverified.iss);
-      if (!jwks) {
-        jwks = createRemoteJWKSet(new URL(discovery.jwksUrl), {
+      let cachedJwks = this.remoteJwks.get(unverified.iss);
+      if (
+        !cachedJwks ||
+        cachedJwks.expiresAt <= Date.now() ||
+        cachedJwks.jwksUrl !== discovery.jwksUrl
+      ) {
+        const value = createRemoteJWKSet(new URL(discovery.jwksUrl), {
           [customFetch]: this.http.fetch,
           cooldownDuration: 5_000,
           cacheMaxAge: this.config.federationDiscoveryCacheMs,
           timeoutDuration: 10_000,
         });
-        this.remoteJwks.set(unverified.iss, jwks);
+        cachedJwks = {
+          value,
+          jwksUrl: discovery.jwksUrl,
+          expiresAt: Date.now() + this.config.federationDiscoveryCacheMs,
+        };
+        this.remoteJwks.set(unverified.iss, cachedJwks);
       }
-      const result = await jwtVerify(token, jwks, {
+      const result = await jwtVerify(token, cachedJwks.value, {
         algorithms: ["EdDSA"],
         issuer: `https://${domain}`,
         audience: this.baseOrigin,

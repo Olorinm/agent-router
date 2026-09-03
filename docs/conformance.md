@@ -20,7 +20,8 @@ A product must not describe the second layer as A2A conformance.
 | privacy | Card existence and capability data hidden before authentication and policy checks |
 | locality | a Router cannot be used to relay to a third domain |
 | delivery | official A2A client and server bindings exchange the Message |
-| idempotency | retries with the same `(issuer domain, messageId)` do not create duplicate work |
+| idempotency | retries with the same `(issuer domain, target agent, messageId)` do not create duplicate work, while intentional fan-out to another Agent remains distinct |
+| accepted Task recovery | once a remote Task ID is stored, broker redelivery and recovery use that Task ID and never call `message/send` again |
 | return path | push callback origin and path match discovery and stored mapping |
 | recovery | failed push can recover through official Task polling |
 | cancellation | cancellation reaches the mapped remote Task |

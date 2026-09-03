@@ -32,7 +32,7 @@ import { FederationService } from "../federation.js";
 import { buildProxyAgentCard, QueuedProxyExecutor, textPart } from "../proxy-agent.js";
 import { PostgresPushNotificationStore } from "../push-notifications.js";
 import { AgentRegistry } from "../registry.js";
-import { ROUTER_METADATA_KEY, type DeliveryEnvelope } from "../router-metadata.js";
+import type { DeliveryEnvelope } from "../router-metadata.js";
 import { PostgresTaskStore } from "../task-store.js";
 import { TaskEventHub } from "../task-events.js";
 
@@ -205,6 +205,7 @@ try {
     message: pushMessage,
     attempt: 0,
   };
+  taskStore.stageDelivery(envelope);
   await taskStore.save(
     {
       id: pushTaskId,
@@ -212,7 +213,7 @@ try {
       status: { state: TaskState.TASK_STATE_SUBMITTED, timestamp: new Date().toISOString(), message: undefined },
       artifacts: [],
       history: [pushMessage],
-      metadata: { [ROUTER_METADATA_KEY]: envelope },
+      metadata: {},
     },
     context,
   );
@@ -232,7 +233,7 @@ try {
   const routerHandler = new DefaultRequestHandler(
     buildProxyAgentCard(updated, "https://router.integration.invalid"),
     taskStore,
-    new QueuedProxyExecutor(updated, taskEvents, testConfig.agentAddressDomain),
+    new QueuedProxyExecutor(updated, taskEvents, testConfig.agentAddressDomain, taskStore),
     taskEvents.manager,
     pushStore,
     noOpPushSender,
@@ -274,6 +275,17 @@ try {
   if (deliveredBinding?.delivery_state !== "delivered" || !deliveredBinding.remote_task_id) {
     throw new Error("router_remote_task_mapping_failed");
   }
+  const persistedTask = await pool.query<{ task: Task }>(
+    "SELECT task FROM tasks WHERE task_id = $1",
+    [streamedTaskId],
+  );
+  if (
+    persistedTask.rows[0]?.task.metadata?.agentRouter ||
+    persistedTask.rows[0]?.task.metadata?.remoteTaskId ||
+    persistedTask.rows[0]?.task.metadata?.remoteContextId
+  ) {
+    throw new Error("router_private_metadata_leaked");
+  }
 
   const held = await routerHandler.sendMessage(sendRequest("hold"), context);
   if (!("id" in held)) throw new Error("held_task_missing");
@@ -303,6 +315,7 @@ try {
       officialClientFactory: "ok",
       officialSseLifecycle: "ok",
       routerRemoteTaskMapping: "ok",
+      privateRoutingMetadata: "ok",
       remoteCancellation: "ok",
     })}\n`,
   );

@@ -2,15 +2,17 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { Role, TaskState, type Task, type TaskPushNotificationConfig } from "@a2a-js/sdk";
-import { DefaultPushNotificationSender, ServerCallContext } from "@a2a-js/sdk/server";
+import { ServerCallContext } from "@a2a-js/sdk/server";
 import type { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { RouterUser } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
+import { RouterPushNotificationSender } from "../src/federation-push.js";
+import { FederationService } from "../src/federation.js";
 import { PostgresPushNotificationStore } from "../src/push-notifications.js";
 
 describe("push notifications", () => {
-  it("encrypts persisted config and dispatches through the official sender", async () => {
+  it("encrypts persisted config and safely dispatches the official wire format", async () => {
     const requests: Array<{ body: string; contentType?: string; token?: string }> = [];
     const server = createServer((request, response) => {
       let body = "";
@@ -60,7 +62,8 @@ describe("push notifications", () => {
       ALLOW_PRIVATE_AGENT_ENDPOINTS: "true",
     });
     const store = new PostgresPushNotificationStore(pool, config);
-    const sender = new DefaultPushNotificationSender(store);
+    const federation = await FederationService.create(pool, config);
+    const sender = new RouterPushNotificationSender(store, federation);
     const context = new ServerCallContext({
       user: new RouterUser("human:test", "Test Admin", "human", ["admin"], "admin@example.com"),
       requestedVersion: "1.0",
@@ -104,6 +107,7 @@ describe("push notifications", () => {
     expect(requests[0]?.contentType).toBe("application/a2a+json");
     expect(requests[0]?.token).toBe("callback-token");
     expect(requests[0]?.body).toContain(taskId);
+    await federation.close();
     server.close();
     await once(server, "close");
   });

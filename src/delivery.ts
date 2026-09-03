@@ -10,18 +10,19 @@ import {
   type Message,
   type SendMessageResult,
   type Task,
+  type TaskPushNotificationConfig,
 } from "@a2a-js/sdk";
 import type { Client } from "@a2a-js/sdk/client";
 import { ServerCallContext } from "@a2a-js/sdk/server";
 import type { Pool, PoolClient } from "pg";
 import type { RouterConfig } from "./config.js";
-import { decryptSecret } from "./crypto.js";
+import { decryptSecret, hashCredential } from "./crypto.js";
 import { withTransaction } from "./db.js";
 import type { FederationService } from "./federation.js";
 import { logError, logInfo, safeError } from "./log.js";
 import { textPart } from "./proxy-agent.js";
 import type { AgentRegistry, RegisteredAgent } from "./registry.js";
-import { parseDeliveryEnvelope, ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
+import { parseDeliveryEnvelope, type DeliveryEnvelope } from "./router-metadata.js";
 import { routerUserForPrincipalId } from "./auth.js";
 import { insertOutbox, type PostgresTaskStore } from "./task-store.js";
 import type { TaskEventHub } from "./task-events.js";
@@ -52,14 +53,19 @@ interface CancelEnvelope {
   attempt: number;
 }
 
-interface FederationRecoveryRow {
+interface RemoteRecoveryRow {
   tenant: string;
   owner_principal_id: string;
   router_task_id: string;
   agent_id: string;
   remote_task_id: string;
-  remote_domain: string;
-  remote_subject: string;
+  remote_domain: string | null;
+  remote_subject: string | null;
+}
+
+interface DeliveryBindingRow {
+  remote_task_id: string | null;
+  delivery_state: "queued" | "delivering" | "awaiting_result" | "delivered" | "failed" | "canceled";
 }
 
 export class DeliveryRuntime {
@@ -69,7 +75,7 @@ export class DeliveryRuntime {
   private stopped = false;
   private publisherLoop?: Promise<void>;
   private consumerRefreshLoop?: Promise<void>;
-  private federationRecoveryLoop?: Promise<void>;
+  private remoteRecoveryLoop?: Promise<void>;
   private readonly consumingAgentIds = new Set<string>();
 
   constructor(
@@ -95,13 +101,13 @@ export class DeliveryRuntime {
     await this.consumer.prefetch(this.config.deliveryConcurrency);
     this.publisherLoop = this.runPublisherLoop();
     this.consumerRefreshLoop = this.runConsumerRefreshLoop();
-    this.federationRecoveryLoop = this.runFederationRecoveryLoop();
+    this.remoteRecoveryLoop = this.runRemoteRecoveryLoop();
     logInfo("delivery.started");
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
-    await Promise.allSettled([this.publisherLoop, this.consumerRefreshLoop, this.federationRecoveryLoop]);
+    await Promise.allSettled([this.publisherLoop, this.consumerRefreshLoop, this.remoteRecoveryLoop]);
     await this.consumer?.close().catch(() => undefined);
     await this.publisher?.close().catch(() => undefined);
     await this.connection?.close().catch(() => undefined);
@@ -179,31 +185,33 @@ export class DeliveryRuntime {
     logInfo("delivery.consumer.ready", { agentId: agent.id, address: agent.address });
   }
 
-  private async runFederationRecoveryLoop(): Promise<void> {
+  private async runRemoteRecoveryLoop(): Promise<void> {
     while (!this.stopped) {
-      if (this.federation.enabled) {
-        try {
-          const rows = await this.claimFederationRecoveryBatch();
-          for (const row of rows) await this.recoverFederatedTask(row);
-        } catch (error) {
-          logError("federation.recovery.failed", error);
+      try {
+        const rows = await this.claimRemoteRecoveryBatch();
+        for (let offset = 0; offset < rows.length; offset += this.config.deliveryConcurrency) {
+          await Promise.allSettled(
+            rows
+              .slice(offset, offset + this.config.deliveryConcurrency)
+              .map((row) => this.recoverRemoteTask(row)),
+          );
         }
+      } catch (error) {
+        logError("delivery.recovery.failed", error);
       }
-      await delay(Math.min(this.config.federationPushRecoveryMs, 5000));
+      await delay(Math.min(this.config.remoteTaskPollMs, 5000));
     }
   }
 
-  private async claimFederationRecoveryBatch(): Promise<FederationRecoveryRow[]> {
+  private async claimRemoteRecoveryBatch(): Promise<RemoteRecoveryRow[]> {
     return withTransaction(this.pool, async (client) => {
-      const result = await client.query<FederationRecoveryRow>(
+      const result = await client.query<RemoteRecoveryRow>(
         `SELECT tenant, owner_principal_id, router_task_id, agent_id,
                 remote_task_id, remote_domain, remote_subject
            FROM task_bindings
-          WHERE delivery_state = 'awaiting_push'
+          WHERE delivery_state = 'awaiting_result'
             AND next_poll_at <= now()
             AND remote_task_id IS NOT NULL
-            AND remote_domain IS NOT NULL
-            AND remote_subject IS NOT NULL
           ORDER BY next_poll_at
           LIMIT 20
           FOR UPDATE SKIP LOCKED`,
@@ -216,7 +224,7 @@ export class DeliveryRuntime {
               SELECT * FROM unnest($2::text[], $3::text[], $4::text[])
             )`,
           [
-            new Date(Date.now() + this.config.federationPushRecoveryMs),
+            new Date(Date.now() + this.config.remoteTaskPollMs),
             result.rows.map((row) => row.tenant),
             result.rows.map((row) => row.owner_principal_id),
             result.rows.map((row) => row.router_task_id),
@@ -227,18 +235,32 @@ export class DeliveryRuntime {
     });
   }
 
-  private async recoverFederatedTask(row: FederationRecoveryRow): Promise<void> {
+  async recoverRemoteTask(row: RemoteRecoveryRow): Promise<void> {
     const agent = await this.registry.getById(row.agent_id);
-    if (!agent || agent.targetKind !== "federated") return;
+    if (!agent || agent.status !== "active") return;
     try {
-      const { client, serviceParameters } = await this.clientForAgent(agent, row.remote_subject);
+      const { client, serviceParameters } = await this.clientForAgent(agent, row.remote_subject ?? "");
       const remote = await client.getTask(
         { id: row.remote_task_id, historyLength: 20, tenant: "" },
         { serviceParameters, signal: AbortSignal.timeout(this.config.deliveryTimeoutMs) },
       );
       const context = contextForOwner(row.owner_principal_id, row.tenant);
       const current = await this.taskStore.load(row.router_task_id, context);
-      if (!current || current.status?.state === TaskState.TASK_STATE_CANCELED) return;
+      if (!current) return;
+      if (isTerminal(current.status?.state)) {
+        await this.pool.query(
+          `UPDATE task_bindings
+              SET delivery_state = $4, next_poll_at = NULL, updated_at = now()
+            WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
+          [
+            row.tenant,
+            row.owner_principal_id,
+            row.router_task_id,
+            current.status?.state === TaskState.TASK_STATE_CANCELED ? "canceled" : "delivered",
+          ],
+        );
+        return;
+      }
       const mapped = mapRemoteResult(current, remote);
       await this.taskStore.save(mapped.task, context);
       if (isTerminal(mapped.task.status?.state)) {
@@ -252,10 +274,10 @@ export class DeliveryRuntime {
         this.taskEvents.publishStatus(mapped.task);
       }
     } catch (error) {
-      logError("federation.recovery.poll_failed", error, {
+      logError("delivery.recovery.poll_failed", error, {
         routerTaskId: row.router_task_id,
         remoteTaskId: row.remote_task_id,
-        remoteDomain: row.remote_domain,
+        ...(row.remote_domain ? { remoteDomain: row.remote_domain } : {}),
       });
     }
   }
@@ -276,11 +298,16 @@ export class DeliveryRuntime {
     }
   }
 
-  private async deliver(envelope: DeliveryEnvelope): Promise<void> {
+  async deliver(envelope: DeliveryEnvelope): Promise<void> {
     const context = contextForOwner(envelope.ownerPrincipalId, envelope.tenant);
     const current = await this.taskStore.load(envelope.routerTaskId, context);
     if (!current || isTerminal(current.status?.state)) {
       await recordAttempt(this.pool, envelope, "skipped", undefined, 0);
+      return;
+    }
+    const claim = await claimInitialDelivery(this.pool, envelope);
+    if (claim !== "send") {
+      await recordAttempt(this.pool, envelope, "skipped", claim, 0);
       return;
     }
     const agent = await this.registry.getById(envelope.agentId);
@@ -290,7 +317,6 @@ export class DeliveryRuntime {
     }
 
     const startedAt = Date.now();
-    await setBindingState(this.pool, envelope, "delivering");
     await recordAttempt(this.pool, envelope, "started", undefined, 0);
     current.status = {
       state: TaskState.TASK_STATE_WORKING,
@@ -301,9 +327,16 @@ export class DeliveryRuntime {
     this.taskEvents.publishStatus(current);
 
     try {
-      const result = await this.callRemoteAgent(agent, envelope);
+      const pushConfig = await this.prepareRemotePushConfig(agent, envelope);
+      const result = await this.callRemoteAgent(agent, envelope, pushConfig);
       if (!("messageId" in result)) {
-        await setRemoteBinding(this.pool, envelope, result.id, result.contextId);
+        await setRemoteBinding(
+          this.pool,
+          envelope,
+          result.id,
+          result.contextId,
+          this.config.remoteTaskPollMs,
+        );
         const latest = await this.taskStore.load(envelope.routerTaskId, context);
         if (latest?.status?.state === TaskState.TASK_STATE_CANCELED) {
           await this.cancelRemoteTask(agent, result.id, envelope.senderAddress).catch((error) =>
@@ -312,33 +345,32 @@ export class DeliveryRuntime {
           await setBindingCanceled(this.pool, envelope);
           return;
         }
+        if (isTerminal(latest?.status?.state)) {
+          await recordAttempt(this.pool, envelope, "accepted", "completed_by_callback", Date.now() - startedAt);
+          return;
+        }
       }
-      if (
-        agent.targetKind === "federated" &&
-        !("messageId" in result) &&
-        !isTerminal(result.status?.state) &&
-        agent.sourceAgentCard.capabilities?.pushNotifications
-      ) {
-        await markAwaitingPush(this.pool, envelope, this.config.federationPushRecoveryMs);
-        await recordAttempt(this.pool, envelope, "delivered", undefined, Date.now() - startedAt);
-        logInfo("delivery.awaiting_federation_push", {
-          taskId: envelope.routerTaskId,
-          remoteTaskId: result.id,
-          targetDomain: agent.originDomain,
-        });
-        return;
-      }
-      const finalResult = await this.waitForTerminalResult(agent, result, envelope.senderAddress);
       const latest = (await this.taskStore.load(envelope.routerTaskId, context)) ?? current;
       if (latest.status?.state === TaskState.TASK_STATE_CANCELED) {
-        if (!("messageId" in finalResult)) {
-          await this.cancelRemoteTask(agent, finalResult.id, envelope.senderAddress).catch(() => undefined);
+        if (!("messageId" in result)) {
+          await this.cancelRemoteTask(agent, result.id, envelope.senderAddress).catch(() => undefined);
         }
         await setBindingCanceled(this.pool, envelope);
         return;
       }
-      const mapped = mapRemoteResult(latest, finalResult);
+      const mapped = mapRemoteResult(latest, result);
       await this.taskStore.save(mapped.task, context);
+      if (!isTerminal(mapped.task.status?.state)) {
+        this.taskEvents.publishStatus(mapped.task);
+        await recordAttempt(this.pool, envelope, "accepted", undefined, Date.now() - startedAt);
+        logInfo("delivery.accepted", {
+          taskId: envelope.routerTaskId,
+          remoteTaskId: mapped.remoteTaskId,
+          agentId: envelope.agentId,
+          pushEnabled: Boolean(pushConfig),
+        });
+        return;
+      }
       this.taskEvents.publishFinal(mapped.task);
       await withTransaction(this.pool, async (client) => {
         await client.query(
@@ -363,7 +395,11 @@ export class DeliveryRuntime {
     }
   }
 
-  private async callRemoteAgent(agent: RegisteredAgent, envelope: DeliveryEnvelope): Promise<SendMessageResult> {
+  private async callRemoteAgent(
+    agent: RegisteredAgent,
+    envelope: DeliveryEnvelope,
+    taskPushNotificationConfig: TaskPushNotificationConfig | undefined,
+  ): Promise<SendMessageResult> {
     const { client, serviceParameters } = await this.clientForAgent(agent, envelope.senderAddress);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("delivery_timeout")), this.config.deliveryTimeoutMs);
@@ -375,16 +411,7 @@ export class DeliveryRuntime {
             acceptedOutputModes: [],
             returnImmediately: true,
             historyLength: 20,
-            taskPushNotificationConfig: agent.targetKind === "federated" && agent.sourceAgentCard.capabilities?.pushNotifications
-              ? {
-                  tenant: "",
-                  id: "",
-                  taskId: "",
-                  url: `${this.config.publicBaseUrl}/federation/v1/push/${encodeURIComponent(envelope.routerTaskId)}`,
-                  token: "",
-                  authentication: undefined,
-                }
-              : undefined,
+            taskPushNotificationConfig,
           },
           metadata: { routerTaskId: envelope.routerTaskId },
           tenant: "",
@@ -396,21 +423,36 @@ export class DeliveryRuntime {
     }
   }
 
-  private async waitForTerminalResult(
+  private async prepareRemotePushConfig(
     agent: RegisteredAgent,
-    initial: SendMessageResult,
-    federationSubject: string,
-  ): Promise<SendMessageResult> {
-    if ("messageId" in initial || isTerminal(initial.status?.state)) return initial;
-    const { client, serviceParameters } = await this.clientForAgent(agent, federationSubject);
-    const deadline = Date.now() + this.config.deliveryTimeoutMs;
-    let task = initial;
-    while (!isTerminal(task.status?.state)) {
-      if (Date.now() >= deadline) throw new Error("remote_task_timeout");
-      await delay(1000);
-      task = await client.getTask({ id: task.id, historyLength: 20, tenant: "" }, { serviceParameters });
+    envelope: DeliveryEnvelope,
+  ): Promise<TaskPushNotificationConfig | undefined> {
+    if (!agent.sourceAgentCard.capabilities?.pushNotifications) return undefined;
+    if (agent.targetKind === "federated") {
+      return {
+        tenant: "",
+        id: "",
+        taskId: "",
+        url: `${this.config.publicBaseUrl}/federation/v1/push/${encodeURIComponent(envelope.routerTaskId)}`,
+        token: "",
+        authentication: undefined,
+      };
     }
-    return task;
+    const token = `arcb_${crypto.randomUUID().replaceAll("-", "")}`;
+    await this.pool.query(
+      `UPDATE task_bindings SET callback_token_hash = $4, updated_at = now()
+        WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3
+          AND delivery_state = 'delivering'`,
+      [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId, hashCredential(token)],
+    );
+    return {
+      tenant: "",
+      id: "",
+      taskId: "",
+      url: `${this.config.publicBaseUrl}/callbacks/v1/a2a/${encodeURIComponent(envelope.routerTaskId)}`,
+      token,
+      authentication: undefined,
+    };
   }
 
   private async retryOrFail(
@@ -422,13 +464,33 @@ export class DeliveryRuntime {
   ): Promise<void> {
     const nextAttempt = envelope.attempt + 1;
     const message = safeError(error);
+    const accepted = await this.pool.query<{ remote_task_id: string | null }>(
+      `SELECT remote_task_id FROM task_bindings
+        WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
+      [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
+    );
+    if (accepted.rows[0]?.remote_task_id) {
+      await this.pool.query(
+        `UPDATE task_bindings
+            SET delivery_state = 'awaiting_result', next_poll_at = now(), updated_at = now()
+          WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3
+            AND delivery_state NOT IN ('delivered', 'canceled')`,
+        [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
+      );
+      await recordAttempt(this.pool, envelope, "accepted", message, durationMs);
+      logError("delivery.accepted_recovery_scheduled", error, {
+        taskId: envelope.routerTaskId,
+        remoteTaskId: accepted.rows[0].remote_task_id,
+      });
+      return;
+    }
     if (nextAttempt < this.config.deliveryMaxAttempts) {
       const retryEnvelope = { ...envelope, attempt: nextAttempt };
       const availableAt = new Date(Date.now() + retryDelayMs(this.config.deliveryRetryBaseMs, nextAttempt));
       task.status = {
-        state: TaskState.TASK_STATE_SUBMITTED,
+        state: TaskState.TASK_STATE_WORKING,
         timestamp: new Date().toISOString(),
-        message: statusMessage(task, `Delivery delayed; retry ${nextAttempt} scheduled.`),
+        message: statusMessage(task, `The destination has not accepted the task; retry ${nextAttempt} is scheduled.`),
       };
       await this.taskStore.save(task, context);
       this.taskEvents.publishStatus(task);
@@ -604,11 +666,7 @@ function mapRemoteResult(routerTask: Task, result: SendMessageResult): {
       status,
       artifacts: structuredClone(result.artifacts ?? []),
       history: mergeHistory(routerTask.history ?? [], remoteHistory, status?.message ? [status.message] : []),
-      metadata: {
-        ...(routerTask.metadata ?? {}),
-        remoteTaskId: result.id,
-        remoteContextId: result.contextId,
-      },
+      metadata: structuredClone(routerTask.metadata ?? {}),
     },
     remoteTaskId: result.id,
     remoteContextId: result.contextId,
@@ -658,12 +716,39 @@ function retryDelayMs(baseMs: number, attempt: number): number {
   return Math.min(baseMs * 2 ** exponent, 60 * 60 * 1000);
 }
 
-async function setBindingState(pool: Pool, envelope: DeliveryEnvelope, state: "delivering"): Promise<void> {
-  await pool.query(
-    `UPDATE task_bindings SET delivery_state = $4, updated_at = now()
-      WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
-    [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId, state],
-  );
+async function claimInitialDelivery(pool: Pool, envelope: DeliveryEnvelope): Promise<"send" | "already_claimed" | "already_accepted" | "finished"> {
+  return withTransaction(pool, async (client) => {
+    const result = await client.query<DeliveryBindingRow>(
+      `SELECT remote_task_id, delivery_state
+         FROM task_bindings
+        WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3
+        FOR UPDATE`,
+      [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
+    );
+    const binding = result.rows[0];
+    if (!binding) return "finished";
+    if (binding.remote_task_id) {
+      if (binding.delivery_state !== "delivered" && binding.delivery_state !== "canceled") {
+        await client.query(
+          `UPDATE task_bindings
+              SET delivery_state = 'awaiting_result', next_poll_at = COALESCE(next_poll_at, now()), updated_at = now()
+            WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
+          [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
+        );
+      }
+      return "already_accepted";
+    }
+    if (binding.delivery_state === "delivering" || binding.delivery_state === "awaiting_result") {
+      return "already_claimed";
+    }
+    if (binding.delivery_state !== "queued") return "finished";
+    await client.query(
+      `UPDATE task_bindings SET delivery_state = 'delivering', updated_at = now()
+        WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
+      [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId],
+    );
+    return "send";
+  });
 }
 
 async function setRemoteBinding(
@@ -671,29 +756,33 @@ async function setRemoteBinding(
   envelope: DeliveryEnvelope,
   remoteTaskId: string,
   remoteContextId: string,
+  recoveryMs: number,
 ): Promise<void> {
-  await pool.query(
-    `UPDATE task_bindings SET remote_task_id = $4, remote_context_id = $5, updated_at = now()
-      WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3`,
-    [envelope.tenant, envelope.ownerPrincipalId, envelope.routerTaskId, remoteTaskId, remoteContextId],
-  );
-}
-
-async function markAwaitingPush(pool: Pool, envelope: DeliveryEnvelope, recoveryMs: number): Promise<void> {
-  await pool.query(
+  const result = await pool.query(
     `UPDATE task_bindings SET
-       delivery_state = 'awaiting_push',
-       next_poll_at = $4,
+       remote_task_id = COALESCE(remote_task_id, $4),
+       remote_context_id = COALESCE(remote_context_id, $5),
+       delivery_state = CASE
+         WHEN delivery_state IN ('delivered', 'canceled') THEN delivery_state
+         ELSE 'awaiting_result'
+       END,
+       next_poll_at = CASE
+         WHEN delivery_state IN ('delivered', 'canceled') THEN NULL
+         ELSE $6::timestamptz
+       END,
        updated_at = now()
      WHERE tenant = $1 AND owner_principal_id = $2 AND router_task_id = $3
-       AND delivery_state NOT IN ('delivered', 'canceled')`,
+       AND (remote_task_id IS NULL OR remote_task_id = $4)`,
     [
       envelope.tenant,
       envelope.ownerPrincipalId,
       envelope.routerTaskId,
+      remoteTaskId,
+      remoteContextId || null,
       new Date(Date.now() + recoveryMs),
     ],
   );
+  if (result.rowCount !== 1) throw new Error("remote_task_binding_conflict");
 }
 
 async function setBindingCanceled(pool: Pool, envelope: DeliveryEnvelope): Promise<void> {
@@ -707,7 +796,7 @@ async function setBindingCanceled(pool: Pool, envelope: DeliveryEnvelope): Promi
 async function recordAttempt(
   pool: Pool,
   envelope: DeliveryEnvelope,
-  outcome: "started" | "delivered" | "retrying" | "failed" | "skipped",
+  outcome: "started" | "accepted" | "delivered" | "retrying" | "failed" | "skipped",
   error: string | undefined,
   durationMs: number,
 ): Promise<void> {
@@ -717,7 +806,7 @@ async function recordAttempt(
 async function insertAttempt(
   client: PoolClient,
   envelope: DeliveryEnvelope,
-  outcome: "started" | "delivered" | "retrying" | "failed" | "skipped",
+  outcome: "started" | "accepted" | "delivered" | "retrying" | "failed" | "skipped",
   error: string | undefined,
   durationMs: number,
 ): Promise<void> {

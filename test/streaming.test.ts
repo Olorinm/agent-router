@@ -67,6 +67,7 @@ describe("queued proxy streaming", () => {
     const submitted = await stream.next();
     expect(submitted.value?.payload?.$case).toBe("task");
     if (submitted.value?.payload?.$case !== "task") throw new Error("submitted_task_missing");
+    expect(submitted.value.payload.value.metadata).toEqual({});
     const taskId = submitted.value.payload.value.id;
     const task = await store.load(taskId, context);
     if (!task) throw new Error("stored_task_missing");
@@ -156,7 +157,6 @@ describe("queued proxy streaming", () => {
       { keepBusAliveStates: [TaskState.TASK_STATE_SUBMITTED] },
     );
     const handler = withMessageIdempotency(base, {
-      acquireMessageLock: async () => async () => undefined,
       findByMessage: async (_agentId, messageId, currentContext) => {
         const listed = await store.list(
           {

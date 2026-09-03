@@ -133,7 +133,9 @@ There is no federation-wide Agent enumeration endpoint. Cached remote Cards MUST
 
 The source Router MUST select and call an interface from the resolved Agent Card using an A2A 1.0 client. Each HTTP request MUST carry a fresh federation JWT through the Card-declared bearer scheme.
 
-The A2A Message `messageId` is the client-generated idempotency key. A target Router MUST deduplicate delivery by `(issuer domain, messageId)`. It MUST NOT require a private idempotency header.
+The A2A Message `messageId` is the client-generated idempotency key. A target Router MUST deduplicate delivery by `(issuer domain, target agent, messageId)`. Including the target Agent permits one source message to be intentionally fanned out to multiple Agents without collision. The Router MUST NOT require a private idempotency header.
+
+Once the target A2A server has returned a Task ID, the source Router MUST persist that ID and acknowledge its internal delivery item. Later retries MUST resume that same Task through push notifications or `tasks/get`; they MUST NOT call `message/send` again for an accepted Task. This is an at-least-once transport with idempotent acceptance, not an exactly-once transport claim.
 
 An internal queue MAY buffer delivery, but it MUST preserve the official A2A Message and MUST NOT introduce a second public Task state machine.
 
@@ -185,8 +187,8 @@ Before reaching an A2A handler, implementations SHOULD use:
 
 | Status | Meaning |
 | --- | --- |
-| `401` | bearer token absent, malformed, expired, replayed, or cryptographically invalid |
-| `403` | authenticated issuer domain is not allowed |
+| `401` | bearer token absent, malformed, expired, replayed, cryptographically invalid, or issued by a domain that is not allowed; these cases are intentionally indistinguishable |
+| `403` | an authenticated principal lacks permission for an operation unrelated to domain allowlisting |
 | `404` | Agent absent or deliberately undisclosed |
 | `429` | issuer-domain rate limit exceeded |
 

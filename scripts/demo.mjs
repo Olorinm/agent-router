@@ -64,7 +64,8 @@ let result = await client.sendMessage({
 }, { serviceParameters });
 
 if ("id" in result) {
-  const deadline = Date.now() + 30_000;
+  // The default router profile polls non-push agents every 30 seconds.
+  const deadline = Date.now() + 75_000;
   while (!terminal(result.status?.state) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     result = await client.getTask({ id: result.id, historyLength: 10, tenant: "" }, { serviceParameters });

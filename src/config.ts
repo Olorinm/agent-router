@@ -32,7 +32,7 @@ const configSchema = z.object({
   AUTH_CACHE_TTL_MS: z.coerce.number().int().min(1000).max(300_000).default(30_000),
   DELIVERY_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
   DELIVERY_TIMEOUT_MS: z.coerce.number().int().min(1000).max(1_800_000).default(300_000),
-  DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
+  DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(12),
   DELIVERY_RETRY_BASE_MS: z.coerce.number().int().min(100).max(3_600_000).default(5000),
   ALLOW_HTTP_AGENT_ENDPOINTS: booleanString,
   ALLOW_PRIVATE_AGENT_ENDPOINTS: booleanString,
@@ -43,7 +43,7 @@ const configSchema = z.object({
   FEDERATION_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().min(0).max(60).default(15),
   FEDERATION_DISCOVERY_CACHE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(300_000),
   FEDERATION_REMOTE_CARD_CACHE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(60_000),
-  FEDERATION_PUSH_RECOVERY_MS: z.coerce.number().int().min(5000).max(3_600_000).default(30_000),
+  REMOTE_TASK_POLL_MS: z.coerce.number().int().min(5000).max(3_600_000).default(30_000),
   FEDERATION_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(120),
 }).superRefine((value, context) => {
   if (value.ADMIN_AUTH_MODE === "userinfo" && !value.IDENTITY_USERINFO_URL) {
@@ -96,7 +96,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     federationClockToleranceSeconds: parsed.FEDERATION_CLOCK_TOLERANCE_SECONDS,
     federationDiscoveryCacheMs: parsed.FEDERATION_DISCOVERY_CACHE_MS,
     federationRemoteCardCacheMs: parsed.FEDERATION_REMOTE_CARD_CACHE_MS,
-    federationPushRecoveryMs: parsed.FEDERATION_PUSH_RECOVERY_MS,
+    remoteTaskPollMs: parsed.REMOTE_TASK_POLL_MS,
     federationRequestsPerMinute: parsed.FEDERATION_REQUESTS_PER_MINUTE,
   };
 }

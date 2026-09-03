@@ -113,7 +113,10 @@ describe("federation trust profile", () => {
       { privateKeyPem: await privateKeyPem(), http: { fetch: async () => new Response(), close: async () => undefined } },
     );
     const token = await signer.mintToken("alice@a.example", "http://127.0.0.1:4102");
-    await expect(service.tryAuthenticate(token)).rejects.toThrow("federation_domain_denied");
+    await expect(service.tryAuthenticate(token)).rejects.toMatchObject({
+      message: "federation_token_invalid",
+      status: 401,
+    });
     expect(fetchCount).toBe(0);
   });
 });

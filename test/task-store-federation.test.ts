@@ -6,7 +6,7 @@ import { federationPrincipalId, type FederationIdentity } from "../src/federatio
 import { PostgresTaskStore } from "../src/task-store.js";
 
 describe("federated message idempotency", () => {
-  it("scopes a messageId to the issuer domain rather than its asserted subject", async () => {
+  it("scopes a messageId to the issuer domain and destination agent", async () => {
     const parameters: unknown[][] = [];
     const pool = {
       query: async (_text: string, values: unknown[]) => {
@@ -17,11 +17,13 @@ describe("federated message idempotency", () => {
     const store = new PostgresTaskStore(pool);
 
     await store.findByMessage("agent-one", "same-message", federationContext("alice@a.example"));
-    await store.findByMessage("agent-two", "same-message", federationContext("bob@a.example"));
+    await store.findByMessage("agent-one", "same-message", federationContext("bob@a.example"));
+    await store.findByMessage("agent-two", "same-message", federationContext("alice@a.example"));
     await store.findByMessage("agent-one", "same-message", federationContext("alice@b.example"));
 
     expect(parameters[0]?.[0]).toBe(parameters[1]?.[0]);
     expect(parameters[0]?.[0]).not.toBe(parameters[2]?.[0]);
+    expect(parameters[0]?.[0]).not.toBe(parameters[3]?.[0]);
     expect(parameters.every((entry) => entry[1] === "same-message")).toBe(true);
   });
 });

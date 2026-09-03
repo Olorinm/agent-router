@@ -27,7 +27,7 @@ import {
 import type { RequestHandler } from "express";
 import type { AgentRegistry, RegisteredAgent } from "./registry.js";
 import type { AgentTargetResolver } from "./target-resolver.js";
-import { ROUTER_METADATA_KEY, type DeliveryEnvelope } from "./router-metadata.js";
+import type { DeliveryEnvelope } from "./router-metadata.js";
 import type { PostgresTaskStore } from "./task-store.js";
 import type { TaskEventHub } from "./task-events.js";
 
@@ -59,7 +59,7 @@ export class ProxyHandlerCache {
     const cached = this.suites.get(agent.address);
     if (cached?.updatedAt === agent.updatedAt) return cached;
     const card = buildProxyAgentCard(agent, this.publicBaseUrl);
-    const executor = new QueuedProxyExecutor(agent, this.taskEvents, this.localDomain);
+    const executor = new QueuedProxyExecutor(agent, this.taskEvents, this.localDomain, this.taskStore);
     const baseHandler = new DefaultRequestHandler(
       card,
       this.taskStore,
@@ -96,6 +96,7 @@ export class QueuedProxyExecutor implements AgentExecutor {
     private readonly agent: RegisteredAgent,
     private readonly taskEvents: TaskEventHub,
     private readonly localDomain: string,
+    private readonly deliveryStager?: Pick<PostgresTaskStore, "stageDelivery">,
   ) {}
 
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
@@ -118,6 +119,7 @@ export class QueuedProxyExecutor implements AgentExecutor {
       message,
       attempt: 0,
     };
+    this.deliveryStager?.stageDelivery(envelope);
     const task: Task = {
       id: requestContext.taskId,
       contextId: requestContext.contextId,
@@ -137,7 +139,7 @@ export class QueuedProxyExecutor implements AgentExecutor {
       },
       artifacts: [],
       history: [message],
-      metadata: { [ROUTER_METADATA_KEY]: envelope },
+      metadata: {},
     };
     eventBus.publish(AgentEvent.task(task));
   }
@@ -161,7 +163,7 @@ export class QueuedProxyExecutor implements AgentExecutor {
 
 export function withMessageIdempotency(
   handler: A2ARequestHandler,
-  taskStore: Pick<PostgresTaskStore, "findByMessage" | "acquireMessageLock">,
+  taskStore: Pick<PostgresTaskStore, "findByMessage">,
   agent: RegisteredAgent,
 ): A2ARequestHandler {
   const locks = new Map<string, Promise<void>>();
@@ -172,14 +174,15 @@ export function withMessageIdempotency(
           if (params.message?.taskId) return target.sendMessage(params, context);
           const key = messageScopeKey(params, context, agent);
           return runExclusive(locks, key, async () => {
-            const releaseDatabase = await taskStore.acquireMessageLock(agent.id, params.message!.messageId, context);
             try {
               const existing = await findExistingTask(params, context, taskStore, agent);
               if (existing) return existing;
               const result = await target.sendMessage(params, context);
               return (await findExistingTask(params, context, taskStore, agent)) ?? result;
-            } finally {
-              await releaseDatabase();
+            } catch (error) {
+              const raced = await findExistingTask(params, context, taskStore, agent);
+              if (raced && isUniqueViolation(error)) return raced;
+              throw error;
             }
           });
         };
@@ -192,7 +195,6 @@ export function withMessageIdempotency(
           }
           const key = messageScopeKey(params, context, agent);
           const release = await acquire(locks, key);
-          const releaseDatabase = await taskStore.acquireMessageLock(agent.id, params.message!.messageId, context);
           try {
             const existing = await findExistingTask(params, context, taskStore, agent);
             if (existing) {
@@ -203,13 +205,18 @@ export function withMessageIdempotency(
             for await (const event of target.sendMessageStream(params, context)) {
               if (first) {
                 first = false;
-                await releaseDatabase();
                 release();
               }
               yield event;
             }
+          } catch (error) {
+            const raced = await findExistingTask(params, context, taskStore, agent);
+            if (raced && isUniqueViolation(error)) {
+              yield { payload: { $case: "task", value: raced } };
+              return;
+            }
+            throw error;
           } finally {
-            await releaseDatabase();
             release();
           }
         };
@@ -218,6 +225,10 @@ export function withMessageIdempotency(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
 }
 
 async function findExistingTask(

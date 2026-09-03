@@ -34,7 +34,7 @@ Federation JWTs are never stored in this cache because each `jti` must be claime
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DELIVERY_CONCURRENCY` | concurrent delivery workers | `4` |
-| `DELIVERY_TIMEOUT_MS` | remote Task completion timeout | `300000` |
+| `DELIVERY_TIMEOUT_MS` | timeout for one remote acceptance or Task polling request | `300000` |
 | `DELIVERY_MAX_ATTEMPTS` | maximum delivery attempts | `12` |
 | `DELIVERY_RETRY_BASE_MS` | retry backoff base | `5000` |
 | `ALLOW_HTTP_AGENT_ENDPOINTS` | allow plaintext agent endpoints | `false` |
@@ -53,5 +53,5 @@ The two endpoint-policy overrides are intended only for controlled development n
 | `FEDERATION_CLOCK_TOLERANCE_SECONDS` | verifier clock tolerance | `15` |
 | `FEDERATION_DISCOVERY_CACHE_MS` | discovery cache lifetime | `300000` |
 | `FEDERATION_REMOTE_CARD_CACHE_MS` | remote Card cache lifetime | `60000` |
-| `FEDERATION_PUSH_RECOVERY_MS` | push recovery polling delay | `30000` |
+| `REMOTE_TASK_POLL_MS` | interval for recovering accepted remote Tasks when push is absent or delayed | `30000` |
 | `FEDERATION_REQUESTS_PER_MINUTE` | inbound limit per issuer domain | `120` |

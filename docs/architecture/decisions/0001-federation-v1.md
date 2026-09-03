@@ -39,7 +39,7 @@ The profile makes these choices:
 2. Ed25519 domain keys, public JWKS, and request-scoped JWT Bearer credentials;
 3. inbound and outbound federation denied unless an operator explicitly allows the peer domain;
 4. authenticated one-Agent Card resolution with no federation-wide list;
-5. official A2A delivery with `(issuer domain, messageId)` idempotency;
+5. official A2A delivery with `(issuer domain, target agent, messageId)` idempotency;
 6. push-first return delivery with official Task polling as recovery;
 7. official cancellation using persistent local-to-remote Task mappings.
 

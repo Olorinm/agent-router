@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { timingSafeEqual } from "node:crypto";
 import {
   StreamResponse,
   TaskState,
@@ -10,6 +11,7 @@ import {
 import { ServerCallContext } from "@a2a-js/sdk/server";
 import type { Pool } from "pg";
 import { routerUserForPrincipalId } from "./auth.js";
+import { hashCredential } from "./crypto.js";
 import type { FederationIdentity } from "./federation.js";
 import type { PostgresTaskStore } from "./task-store.js";
 import type { TaskEventHub } from "./task-events.js";
@@ -19,12 +21,13 @@ interface BindingRow {
   owner_principal_id: string;
   remote_task_id: string | null;
   delivery_state: string;
+  callback_token_hash: string | null;
 }
 
 export class FederationCallbackError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 401 | 404 | 409,
   ) {
     super(message);
   }
@@ -42,7 +45,7 @@ export class FederationCallbackReceiver {
     const remoteTaskId = taskIdFromResponse(response);
     if (!remoteTaskId) throw new FederationCallbackError("federation_push_task_id_missing", 400);
     const result = await this.pool.query<BindingRow>(
-      `SELECT tenant, owner_principal_id, remote_task_id, delivery_state
+      `SELECT tenant, owner_principal_id, remote_task_id, delivery_state, callback_token_hash
          FROM task_bindings
         WHERE router_task_id = $1 AND remote_domain = $2
         LIMIT 2`,
@@ -53,6 +56,38 @@ export class FederationCallbackReceiver {
     if (binding.remote_task_id && binding.remote_task_id !== remoteTaskId) {
       throw new FederationCallbackError("federation_push_remote_task_mismatch", 409);
     }
+    await this.apply(routerTaskId, response, binding);
+  }
+
+  async receiveLocal(routerTaskId: string, token: string, raw: unknown): Promise<void> {
+    if (!token) throw new FederationCallbackError("push_token_invalid", 401);
+    const response = StreamResponse.fromJSON(raw);
+    const remoteTaskId = taskIdFromResponse(response);
+    if (!remoteTaskId) throw new FederationCallbackError("push_task_id_missing", 400);
+    const result = await this.pool.query<BindingRow>(
+      `SELECT tenant, owner_principal_id, remote_task_id, delivery_state, callback_token_hash
+         FROM task_bindings
+        WHERE router_task_id = $1 AND remote_domain IS NULL
+        LIMIT 2`,
+      [routerTaskId],
+    );
+    if (result.rowCount !== 1) throw new FederationCallbackError("push_binding_not_found", 404);
+    const binding = result.rows[0]!;
+    if (!binding.callback_token_hash || !equalHash(binding.callback_token_hash, hashCredential(token))) {
+      throw new FederationCallbackError("push_token_invalid", 401);
+    }
+    if (binding.remote_task_id && binding.remote_task_id !== remoteTaskId) {
+      throw new FederationCallbackError("push_remote_task_mismatch", 409);
+    }
+    await this.apply(routerTaskId, response, binding);
+  }
+
+  private async apply(
+    routerTaskId: string,
+    response: ReturnType<typeof StreamResponse.fromJSON>,
+    binding: BindingRow,
+  ): Promise<void> {
+    const remoteTaskId = taskIdFromResponse(response);
     if (binding.delivery_state === "canceled") return;
 
     const context = new ServerCallContext({
@@ -85,7 +120,7 @@ export class FederationCallbackReceiver {
          delivery_state = CASE
            WHEN delivery_state IN ('delivered', 'canceled') THEN delivery_state
            WHEN $6 THEN 'delivered'
-           ELSE 'awaiting_push'
+           ELSE 'awaiting_result'
          END,
          next_poll_at = CASE WHEN $6 OR delivery_state IN ('delivered', 'canceled') THEN NULL ELSE next_poll_at END,
          updated_at = now()
@@ -105,6 +140,12 @@ export class FederationCallbackReceiver {
     if (applied.task.status && isTerminal(applied.task.status.state)) this.taskEvents.publishFinal(applied.task);
     else if (applied.statusChanged) this.taskEvents.publishStatus(applied.task);
   }
+}
+
+function equalHash(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function applyResponse(current: Task, response: ReturnType<typeof StreamResponse.fromJSON>): {
@@ -128,11 +169,6 @@ function applyResponse(current: Task, response: ReturnType<typeof StreamResponse
         (remote.history ?? []).map((message) => remapMessage(message, current)),
         status?.message ? [status.message] : [],
       );
-      task.metadata = {
-        ...(task.metadata ?? {}),
-        remoteTaskId: remote.id,
-        remoteContextId: remote.contextId,
-      };
       return { task, statusChanged: !isDeepStrictEqual(current.status, task.status) };
     }
     case "statusUpdate": {
