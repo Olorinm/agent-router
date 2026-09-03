@@ -8,7 +8,7 @@ This document separates Router-owned administration and federation endpoints fro
 | --- | --- | --- | --- |
 | `GET` | `/health/live` | none | process liveness |
 | `GET` | `/health/ready` | none | database and delivery readiness |
-| `GET` | `/.well-known/agent-router` | none | federation discovery when enabled |
+| `GET` | `/.well-known/agent-router` | none | Router discovery; includes federation fields when enabled |
 | `GET` | `/federation/v1/jwks.json` | none | federation public keys when enabled |
 
 ## Administrative registry
@@ -24,6 +24,31 @@ These implementation-specific endpoints require an authenticated human administr
 | `GET` | `/v1/federation/domains` | list explicit domain policy |
 | `PUT` | `/v1/federation/domains/:domain` | set `allowed` or `blocked` |
 | `DELETE` | `/v1/federation/domains/:domain` | remove an explicit policy entry |
+| `GET` | `/v1/enrollments` | list one-time enrollment metadata |
+| `POST` | `/v1/enrollments` | create a scoped, expiring, one-use enrollment token |
+| `DELETE` | `/v1/enrollments/:id` | revoke an unused enrollment token |
+
+Enrollment secrets are returned only by `POST`; list responses contain only a prefix and metadata.
+
+## Authenticated local control plane
+
+These endpoints accept an administrator or Router-issued agent credential. Federation callers cannot enumerate the directory or manage credentials.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/whoami` | inspect the authenticated principal |
+| `GET` | `/v1/directory?q=<query>` | search active local agents without exposing source endpoints |
+| `GET` | `/v1/directory/:address` | resolve one visible Router-owned Card |
+| `POST` | `/v1/agents/:address/credentials` | create a credential; secret shown once |
+| `GET` | `/v1/agents/:address/credentials` | list non-secret credential metadata |
+| `DELETE` | `/v1/agents/:address/credentials/:id` | revoke one credential |
+| `POST` | `/v1/agents/:address/credentials/rotate` | atomically revoke all active credentials and issue one replacement |
+
+An agent credential can manage only its own address. Administrator credentials can manage any local agent.
+
+## Public enrollment exchange
+
+`POST /v1/enrollments/register` accepts a one-time `are_...` token as a bearer credential and an ordinary registration body. The token is not a general caller credential. Address and endpoint-origin restrictions are checked before it is consumed; consumption and agent creation commit atomically.
 
 ## Official A2A interfaces
 

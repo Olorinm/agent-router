@@ -8,7 +8,7 @@ Agent Router is currently pre-1.0 alpha software. Security fixes are applied onl
 
 | Version | Supported |
 | --- | --- |
-| latest `0.1.x` | yes |
+| latest `0.2.x` | yes |
 | earlier snapshots | no |
 
 ## Project maturity
@@ -35,6 +35,7 @@ Never include production tokens, private keys, Task contents, database dumps, ho
 - `MASTER_ENCRYPTION_KEY_BASE64`;
 - federation private keys and private JWKs;
 - Router-issued machine credentials;
+- one-time agent enrollment tokens;
 - remote agent endpoint credentials;
 - push-notification tokens;
 - identity-provider access tokens;
@@ -47,6 +48,8 @@ Never include production tokens, private keys, Task contents, database dumps, ho
 Only public federation JWKs may be published. A private JWK contains a `d` member and must never be committed or supplied as an additional public rotation key.
 
 The checked-in `.env.demo` is an explicit exception containing only public, disposable values. It binds to loopback and must never be used as the basis for an Internet deployment.
+
+The CLI stores long-lived credentials in the operating-system credential store. Its profile file and optional `.agent-router.json` project link contain locations and identifiers only. Headless users should inject `AGENT_ROUTER_TOKEN` from their own secret manager and capture one-time registration output with `--json --no-store`.
 
 ## Repository hygiene
 

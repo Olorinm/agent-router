@@ -11,13 +11,14 @@ Agent Router welcomes focused bug reports, documentation improvements, tests, an
 
 ## Development setup
 
-Requirements are Node.js 24 and Docker Compose v2.
+Requirements are Node.js 24, Go 1.25, and Docker Compose v2.
 
 ```sh
 npm ci
 npm run typecheck
 npm test
 npm run build
+cd cli && go test ./... && go vet ./...
 ```
 
 Use the [local demo](docs/guides/local-demo.md) for an end-to-end check. The full integration check requires a database whose name ends in `_integration` and the explicit disposable-database confirmation documented in [Conformance](docs/conformance.md).

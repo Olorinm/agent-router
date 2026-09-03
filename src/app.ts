@@ -17,6 +17,7 @@ import { logError } from "./log.js";
 import type { ProxyHandlerCache, ProxyHandlerSuite } from "./proxy-agent.js";
 import { buildProxyAgentCard } from "./proxy-agent.js";
 import type { AgentRegistry } from "./registry.js";
+import { RegistryError } from "./registry.js";
 
 interface AppDependencies {
   pool: Pool;
@@ -82,7 +83,10 @@ export function createApp(dependencies: AppDependencies) {
 
   app.get(FEDERATION_WELL_KNOWN_PATH, (_request, response) => {
     if (!dependencies.federation.enabled) {
-      response.status(404).json({ error: "not_found" });
+      response.setHeader("Cache-Control", "public, max-age=300").json({
+        baseUrl: dependencies.publicBaseUrl,
+        serviceVersion: "1.0",
+      });
       return;
     }
     response.setHeader("Cache-Control", "public, max-age=300").json(dependencies.federation.discoveryDocument());
@@ -96,6 +100,71 @@ export function createApp(dependencies: AppDependencies) {
   });
 
   app.use("/v1", adminRateLimit, express.json({ limit: "256kb", type: "application/json" }));
+
+  app.get("/v1/whoami", dependencies.auth.requireCaller, (request, response) => {
+    const user = dependencies.auth.currentUser(request);
+    response.json({
+      data: {
+        principalId: user.userName,
+        displayName: user.displayName,
+        kind: user.kind,
+        roles: user.roles,
+        ...(user.address ? { address: user.address } : {}),
+      },
+    });
+  });
+
+  app.get("/v1/directory", dependencies.auth.requireCaller, async (request, response) => {
+    if (dependencies.auth.currentUser(request).federationIdentity) {
+      response.status(404).json({ error: "not_found" });
+      return;
+    }
+    const search = typeof request.query.q === "string" ? request.query.q : "";
+    const agents = await dependencies.registry.list(search);
+    response.json({
+      data: agents.map((agent) => publicAgent(agent, dependencies.publicBaseUrl)),
+    });
+  });
+
+  app.get("/v1/directory/:address", dependencies.auth.requireCaller, async (request, response) => {
+    if (dependencies.auth.currentUser(request).federationIdentity) {
+      response.status(404).json({ error: "not_found" });
+      return;
+    }
+    const agent = await dependencies.registry.getByAddress(routeParam(request.params.address));
+    if (!agent || agent.status !== "active") {
+      response.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    response.json({ data: publicAgent(agent, dependencies.publicBaseUrl) });
+  });
+
+  app.post("/v1/enrollments/register", async (request, response) => {
+    const registration = await dependencies.registry.registerWithEnrollment(
+      request.body,
+      requestBearerToken(request) ?? "",
+    );
+    response.status(201).json(registrationResponse(registration, dependencies.publicBaseUrl));
+  });
+
+  app.get("/v1/enrollments", dependencies.auth.requireAdmin, async (_request, response) => {
+    response.json({ data: await dependencies.registry.listEnrollments() });
+  });
+
+  app.post("/v1/enrollments", dependencies.auth.requireAdmin, async (request, response) => {
+    const actor = dependencies.auth.currentUser(request);
+    const result = await dependencies.registry.createEnrollment(request.body, actor.userName);
+    response.status(201).json({
+      data: { ...result.enrollment, token: result.token },
+      warning: "The enrollment token is shown once and can be used once.",
+    });
+  });
+
+  app.delete("/v1/enrollments/:id", dependencies.auth.requireAdmin, async (request, response) => {
+    const actor = dependencies.auth.currentUser(request);
+    const deleted = await dependencies.registry.revokeEnrollment(routeParam(request.params.id), actor.userName);
+    response.status(deleted ? 204 : 404).end();
+  });
 
   app.get("/v1/agents", dependencies.auth.requireAdmin, async (request, response) => {
     const search = typeof request.query.q === "string" ? request.query.q : "";
@@ -141,15 +210,64 @@ export function createApp(dependencies: AppDependencies) {
       displayName: owner.displayName,
       ...(owner.email ? { email: owner.email } : {}),
     });
+    response.status(201).json(registrationResponse(registration, dependencies.publicBaseUrl));
+  });
+
+  app.get("/v1/agents/:address/credentials", dependencies.auth.requireCaller, async (request, response) => {
+    const address = routeParam(request.params.address);
+    if (!(await mayManageAgent(request, response, dependencies, address))) return;
+    const credentials = await dependencies.registry.listCredentials(address);
+    if (!credentials) {
+      response.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    response.json({ data: credentials });
+  });
+
+  app.post("/v1/agents/:address/credentials", dependencies.auth.requireCaller, async (request, response) => {
+    const address = routeParam(request.params.address);
+    if (!(await mayManageAgent(request, response, dependencies, address))) return;
+    const actor = dependencies.auth.currentUser(request);
+    const created = await dependencies.registry.createCredential(address, request.body, actor.userName);
+    if (!created) {
+      response.status(404).json({ error: "agent_not_found" });
+      return;
+    }
     response.status(201).json({
-      data: {
-        id: registration.agent.id,
-        address: registration.agent.address,
-        agentCard: buildProxyAgentCard(registration.agent, dependencies.publicBaseUrl),
-        machineCredential: registration.machineCredential,
-      },
-      warning: "The machine credential is shown once. Store it as a secret.",
+      data: { ...created.credential, token: created.token },
+      warning: "The machine credential is shown once.",
     });
+  });
+
+  app.post("/v1/agents/:address/credentials/rotate", dependencies.auth.requireCaller, async (request, response) => {
+    const address = routeParam(request.params.address);
+    if (!(await mayManageAgent(request, response, dependencies, address))) return;
+    const actor = dependencies.auth.currentUser(request);
+    const created = await dependencies.registry.rotateCredentials(address, request.body, actor.userName);
+    if (!created) {
+      response.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    response.status(201).json({
+      data: { ...created.credential, token: created.token },
+      warning: "All previous credentials were revoked. The new credential is shown once.",
+    });
+  });
+
+  app.delete("/v1/agents/:address/credentials/:credentialId", dependencies.auth.requireCaller, async (request, response) => {
+    const address = routeParam(request.params.address);
+    if (!(await mayManageAgent(request, response, dependencies, address))) return;
+    const actor = dependencies.auth.currentUser(request);
+    const revoked = await dependencies.registry.revokeCredential(
+      address,
+      routeParam(request.params.credentialId),
+      actor.userName,
+    );
+    if (revoked === undefined) {
+      response.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    response.status(revoked ? 204 : 404).end();
   });
 
   app.patch("/v1/agents/:address", dependencies.auth.requireAdmin, async (request, response) => {
@@ -279,11 +397,67 @@ export function createApp(dependencies: AppDependencies) {
       response.status(error.status).json({ error: error.message });
       return;
     }
+    if (error instanceof RegistryError) {
+      response.status(error.status).json({ error: error.message });
+      return;
+    }
     const status = error instanceof SyntaxError ? 400 : 500;
     if (status === 500) logError("http.unhandled", error);
     response.status(status).json({ error: status === 400 ? "invalid_json" : "internal_error" });
   }) satisfies ErrorRequestHandler);
   return app;
+}
+
+function publicAgent(agent: Awaited<ReturnType<AgentRegistry["getByAddress"]>> & {}, publicBaseUrl: string) {
+  return {
+    address: agent.address,
+    displayName: agent.displayName,
+    description: agent.description,
+    updatedAt: agent.updatedAt,
+    agentCard: buildProxyAgentCard(agent, publicBaseUrl),
+  };
+}
+
+function registrationResponse(
+  registration: Awaited<ReturnType<AgentRegistry["register"]>>,
+  publicBaseUrl: string,
+) {
+  return {
+    data: {
+      id: registration.agent.id,
+      address: registration.agent.address,
+      agentCard: buildProxyAgentCard(registration.agent, publicBaseUrl),
+      machineCredential: registration.machineCredential,
+    },
+    warning: "The machine credential is shown once. Store it as a secret.",
+  };
+}
+
+async function mayManageAgent(
+  request: Parameters<RequestHandler>[0],
+  response: Parameters<RequestHandler>[1],
+  dependencies: AppDependencies,
+  address: string,
+): Promise<boolean> {
+  const user = dependencies.auth.currentUser(request);
+  if (user.federationIdentity) {
+    response.status(404).json({ error: "not_found" });
+    return false;
+  }
+  if (user.isAdmin) return true;
+  const agent = await dependencies.registry.getByAddress(address);
+  if (!agent || user.kind !== "agent" || user.address !== agent.address) {
+    response.status(403).json({ error: "agent_access_denied" });
+    return false;
+  }
+  return true;
+}
+
+function requestBearerToken(request: Parameters<RequestHandler>[0]): string | undefined {
+  const header = request.header("authorization");
+  if (!header?.startsWith("Bearer ")) return undefined;
+  const token = header.slice("Bearer ".length);
+  return token && !/\s/.test(token) ? token : undefined;
 }
 
 function localFederationCardHandler(dependencies: AppDependencies): RequestHandler {

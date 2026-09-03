@@ -63,11 +63,9 @@ export class AuthService {
     if (!token) return undefined;
     const cacheKey = createHash("sha256").update(token).digest("base64url");
     if (token.startsWith("ar_")) {
-      const cached = this.cached(cacheKey);
-      if (cached) return cached;
-      const user = await this.authenticateMachineCredential(token);
-      if (user) this.cache.set(cacheKey, { user, expiresAt: Date.now() + this.cacheTtlMs });
-      return user;
+      // Machine credentials are checked on every request so revocation and
+      // expiration take effect immediately rather than after the auth cache TTL.
+      return this.authenticateMachineCredential(token);
     }
 
     // Federation JWTs are deliberately never cached: every use must claim a
@@ -134,7 +132,9 @@ export class AuthService {
          FROM credentials c
          JOIN principals p ON p.id = c.principal_id
          LEFT JOIN agents a ON c.principal_id = 'agent:' || a.id::text
-        WHERE c.token_hash = $1 AND c.status = 'active'`,
+        WHERE c.token_hash = $1
+          AND c.status = 'active'
+          AND (c.expires_at IS NULL OR c.expires_at > now())`,
       [hashCredential(token)],
     );
     if (!row || row.kind !== "agent" || row.agent_status !== "active") return undefined;

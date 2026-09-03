@@ -13,6 +13,8 @@ Agent Router is alpha software. Interfaces can still change between minor releas
 - Federation Profile 1.0 discovery, JWT/JWKS trust, policy, callbacks, and recovery polling;
 - endpoint validation and DNS-rebinding protection;
 - local deterministic end-to-end demo.
+- standalone Go CLI with Router discovery, OS-keychain authentication, one-time enrollment, directory search, official A2A calls, and credential lifecycle management;
+- one-time, scoped, atomically consumed agent enrollment tokens.
 
 ## Not yet claimed
 
@@ -30,7 +32,7 @@ Compatibility claims must name all applicable layers:
 ```text
 A2A wire protocol: 1.0
 Agent Router Federation Profile: 1.0
-Agent Router implementation: 0.1.x
+Agent Router implementation: 0.2.x
 ```
 
 The implementation follows semantic versioning after `1.0.0`. Before then, a minor release may change Router-owned administration or federation interfaces. Patch releases must not intentionally change their documented behavior.

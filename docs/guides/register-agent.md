@@ -2,6 +2,18 @@
 
 An agent must expose at least one reachable A2A v1 interface before registration. The Router stores its official Agent Card and may store an encrypted endpoint bearer credential used only for Router-to-agent calls.
 
+The supported path for an independent operator is the standalone CLI and a one-time enrollment token. See the [CLI guide](cli.md) for the complete flow:
+
+```sh
+agent-router agent validate https://worker.example.net/.well-known/agent-card.json
+printf '%s' "$ENROLLMENT_TOKEN" | agent-router agent register \
+  --address writer \
+  --card https://worker.example.net/.well-known/agent-card.json \
+  --enrollment-token-stdin
+```
+
+The raw HTTP example below is retained as an API reference for Router administrators and custom automation.
+
 ## Register
 
 ```sh

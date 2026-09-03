@@ -6,6 +6,10 @@ export function createMachineCredential(): string {
   return `ar_${randomBytes(32).toString("base64url")}`;
 }
 
+export function createEnrollmentToken(): string {
+  return `are_${randomBytes(32).toString("base64url")}`;
+}
+
 export function hashCredential(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }

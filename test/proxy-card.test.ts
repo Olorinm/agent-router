@@ -42,5 +42,10 @@ describe("proxy agent card", () => {
     expect(card.capabilities.streaming).toBe(true);
     expect(card.capabilities.pushNotifications).toBe(true);
     expect(card.securityRequirements).toHaveLength(2);
+    const wireCard = JSON.parse(JSON.stringify(card));
+    expect(wireCard.securitySchemes.RouterCredential).toMatchObject({
+      httpAuthSecurityScheme: { scheme: "bearer", bearerFormat: "opaque" },
+    });
+    expect(wireCard.securitySchemes.RouterCredential).not.toHaveProperty("scheme.$case");
   });
 });

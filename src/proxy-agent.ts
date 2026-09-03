@@ -1,8 +1,8 @@
 import {
   A2A_PROTOCOL_VERSION,
+  AgentCard,
   Role,
   TaskState,
-  type AgentCard,
   type SendMessageRequest,
   type StreamResponse,
   type Task,
@@ -282,7 +282,7 @@ export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: strin
   const encodedAddress = encodeURIComponent(agent.address);
   const base = `${publicBaseUrl}/agents/${encodedAddress}/a2a`;
   const addressDomain = agent.address.slice(agent.address.lastIndexOf("@") + 1);
-  return {
+  const card: AgentCard = {
     name: agent.displayName,
     description: agent.description,
     supportedInterfaces: [
@@ -350,6 +350,14 @@ export function buildProxyAgentCard(agent: RegisteredAgent, publicBaseUrl: strin
     signatures: [],
     iconUrl: agent.sourceAgentCard.iconUrl,
   };
+  // The SDK's Express card handler delegates to JSON.stringify. Give the
+  // in-memory protobuf-shaped object an explicit standards-shaped serializer
+  // so clients from other official SDKs can decode security schemes.
+  Object.defineProperty(card, "toJSON", {
+    enumerable: false,
+    value: () => AgentCard.toJSON(card),
+  });
+  return card;
 }
 
 export function textPart(text: string) {
