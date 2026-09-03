@@ -80,3 +80,25 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("unexpected discovery result: %s %s", domain, baseURL)
 	}
 }
+
+func TestDecodeCurrentJSSDKAgentCardShape(t *testing.T) {
+	raw := []byte(`{
+      "name":"JS Agent",
+      "description":"Current official JS SDK shape",
+      "version":"1.0.0",
+      "supportedInterfaces":[{"url":"https://agent.example/a2a/jsonrpc","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],
+      "securitySchemes":{"Bearer":{"scheme":{"$case":"httpAuthSecurityScheme","value":{"scheme":"bearer","bearerFormat":"opaque"}}}},
+      "securityRequirements":[{"schemes":{"Bearer":{"list":[]}}}],
+      "capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]
+    }`)
+	card, err := decodeAgentCard(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := card.SecuritySchemes["Bearer"].(a2a.HTTPAuthSecurityScheme); !ok {
+		t.Fatalf("security scheme was not decoded: %#v", card.SecuritySchemes)
+	}
+	if len(card.SecurityRequirements) != 1 || len(card.SecurityRequirements[0]["Bearer"]) != 0 {
+		t.Fatalf("security requirements were not decoded: %#v", card.SecurityRequirements)
+	}
+}
