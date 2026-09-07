@@ -11,7 +11,7 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   "allow-receive": { type: "boolean", default: false },
   block: { type: "boolean", default: false }, note: { type: "string", default: "" },
 } });
-const base = (process.env.CONNECTOR_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+const base = (process.env.CONNECTOR_URL ?? process.env.PUBLIC_BASE_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const token = process.env.CONNECTOR_API_TOKEN_FILE ? readFileSync(process.env.CONNECTOR_API_TOKEN_FILE, "utf8").trim() : process.env.CONNECTOR_API_TOKEN ?? "";
 const authFetch: typeof fetch = (input, init) => {
   const url = input instanceof Request ? input.url : input.toString();
