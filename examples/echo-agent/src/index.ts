@@ -4,7 +4,7 @@ import {
   AGENT_CARD_PATH,
   Role,
   TaskState,
-  type AgentCard,
+  AgentCard,
   type Artifact,
   type Message,
   type Task,
@@ -17,7 +17,7 @@ import {
   type ExecutionEventBus,
   type RequestContext,
 } from "@a2a-js/sdk/server";
-import { agentCardHandler, jsonRpcHandler, restHandler, UserBuilder } from "@a2a-js/sdk/server/express";
+import { jsonRpcHandler, restHandler, UserBuilder } from "@a2a-js/sdk/server/express";
 
 const port = Number(process.env.PORT ?? "8080");
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL ?? "http://127.0.0.1:8081").replace(/\/+$/, "");
@@ -123,7 +123,9 @@ const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), new Ech
 const app = express();
 app.disable("x-powered-by");
 app.get("/health/live", (_request, response) => response.json({ status: "ok" }));
-app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler, cache: { maxAge: 0 } }));
+app.get(`/${AGENT_CARD_PATH}`, async (_req, res) => {
+  res.set("Cache-Control", "no-cache").json(AgentCard.toJSON(await handler.getAgentCard()));
+});
 app.use("/a2a/rest", restHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
 app.use("/a2a/jsonrpc", jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
 app.use((_request, response) => response.status(404).json({ error: "not_found" }));

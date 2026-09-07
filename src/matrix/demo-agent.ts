@@ -5,7 +5,8 @@ import express from "express";
 import { AgentCard, Artifact, TaskState, type ListTasksRequest, type Task } from "@a2a-js/sdk";
 import { AgentEvent, DefaultRequestHandler, type AgentExecutor, type ExecutionEventBus, type RequestContext,
   type ServerCallContext, type TaskStore } from "@a2a-js/sdk/server";
-import { agentCardHandler, jsonRpcHandler, restHandler } from "@a2a-js/sdk/server/express";
+import { jsonRpcHandler, restHandler } from "@a2a-js/sdk/server/express";
+import { agentCardRoute } from "./agent-card.js";
 import { ConnectorStore } from "./store.js";
 import { key, newTask, statusMessage, terminal } from "./protocol.js";
 import { delay } from "./connector.js";
@@ -96,7 +97,7 @@ app.get("/diagnostics", (_req, res) => res.json({ invocations: store.entries("in
   sessions: store.entries("codex_sessions").map((r) => ({ contextId: r.id, sessionId: r.value })),
   tasks: store.entries<Task>("tasks").map((r) => ({ id: r.value.id, terminal: terminal(r.value) })) }));
 const userBuilder = async () => ({ isAuthenticated: true, userName: "connector" });
-app.use("/.well-known/agent-card.json", agentCardHandler({ agentCardProvider: handler }));
+app.use("/.well-known/agent-card.json", agentCardRoute(handler));
 app.use("/a2a/rest", restHandler({ requestHandler: handler, userBuilder }));
 app.use("/a2a/jsonrpc", jsonRpcHandler({ requestHandler: handler, userBuilder }));
 const server = app.listen(port, process.env.HOST ?? "127.0.0.1", () => process.stdout.write(`A2A fixture listening on ${port}\n`));

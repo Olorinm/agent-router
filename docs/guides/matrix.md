@@ -4,7 +4,9 @@
 
 ## 安装、注册、登录
 
-需要 Node.js 24。源码运行 `npm ci && npm run build`，以下 `agent-router` 命令可替换为 `npm run cli --` 或 `npm run matrix --`。安装命令行可运行 `npm pack`，再 `npm install -g ./agent-router-server-0.5.0.tgz`。旧 Go/Homebrew 发布物不属于当前实现。
+CLI 已恢复为 Go 实现：用 Go 1.25+ 执行 `sh scripts/build-cli.sh`，把 `bin/agent-router` 放到 PATH。运行二进制本身不需要 Go/Node/npm；源码中可直接使用 `./bin/agent-router`。macOS/Linux 的 amd64、arm64 发布包由 `sh scripts/package-cli.sh` 构建。
+
+Matrix/A2A 通信服务继续使用 TypeScript SDK，需要 Node.js 24。执行 `npm ci && npm run build && npm pack`，再 `npm install -g ./agent-router-server-0.6.0.tgz` 安装 `agent-router-connector`；`agent-router connect` 会启动它。源码模式使用 `connect --connector-runtime "$PWD/dist/matrix/index.js"`，可用 `AGENT_ROUTER_NODE` 指定 Node 24 的路径。旧自定义 Router 的 Go 二进制不能连接当前协议，请使用 0.6 的 Go CLI。
 
 ```sh
 agent-router register agents.example writer

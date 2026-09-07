@@ -11,7 +11,7 @@ if (!server || !invitation) throw new Error("MATRIX_TEST_HOMESERVER and MATRIX_T
 const root = resolve(process.env.MATRIX_AUTH_CHECK_DIR ?? "state/matrix-auth-check");
 mkdirSync(root, { recursive: true, mode: 0o700 });
 const config = join(root, "profiles");
-const env = { ...process.env, MATRIX_CONFIG_DIR: config };
+const env = { ...process.env, MATRIX_CONFIG_DIR: config, AGENT_ROUTER_CONNECTOR_ENTRY: resolve("dist/matrix/index.js") };
 delete env.MATRIX_PROFILE;
 const suffix = randomBytes(5).toString("hex");
 const users = { a: `onboard_a_${suffix}`, b: `onboard_b_${suffix}` };
@@ -27,7 +27,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const children = new Set();
 
 async function cli(side, ...args) {
-  const child = spawn(process.execPath, ["dist/cli/matrix.js", ...args, "--profile", profileName(side)], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(resolve(process.env.AGENT_ROUTER_CLI ?? "bin/agent-router"), [...args, "--profile", profileName(side)], { env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   child.stdout.on("data", (x) => { stdout += x; }); child.stderr.on("data", (x) => { stderr += x; });
   const timer = setTimeout(() => child.kill("SIGKILL"), 120000);
@@ -37,7 +37,8 @@ async function cli(side, ...args) {
   return stdout ? JSON.parse(stdout) : undefined;
 }
 function start(args, additionalEnv = {}) {
-  const child = spawn(process.execPath, args, { env: { ...env, ...additionalEnv }, stdio: ["ignore", "pipe", "pipe"] });
+  const executable = args[0]?.endsWith(".js") ? process.execPath : resolve(process.env.AGENT_ROUTER_CLI ?? "bin/agent-router");
+  const child = spawn(executable, args, { env: { ...env, ...additionalEnv }, stdio: ["ignore", "pipe", "pipe"] });
   let log = ""; child.stdout.on("data", (x) => { log += x; }); child.stderr.on("data", (x) => { log += x; });
   child.diagnostics = () => log.slice(-4000); children.add(child); return child;
 }
@@ -78,10 +79,10 @@ try {
     ENDPOINT_BEARER_TOKEN_FILE: agentTokenFile, DEMO_STORE_PATH: join(root, `agent-${suffix}.sqlite`) });
   await until(async () => (await fetch("http://127.0.0.1:18880/health/live")).ok);
   await cli("b", "bind", "http://127.0.0.1:18880/.well-known/agent-card.json", "--endpoint-token-file", agentTokenFile);
-  let a = start(["dist/cli/matrix.js", "connect", "--profile", profileName("a")]);
-  let b = start(["dist/cli/matrix.js", "connect", "--profile", profileName("b")]);
+  let a = start(["connect", "--profile", profileName("a")]);
+  let b = start(["connect", "--profile", profileName("b")]);
   await ready("a", a); await ready("b", b);
-  await assert.rejects(cli("b", "logout"), /Profile is in use/);
+  await assert.rejects(cli("b", "logout"), /profile_is_in_use/);
   await cli("b", "contact-add", profile("a").userId, "--allow-receive");
   const request = await cli("a", "send", profile("b").userId, "onboarding approval");
   const pending = await until(async () => (await cli("b", "requests")).data.find((x) => x.request.taskId === request.id));
@@ -111,8 +112,8 @@ try {
     assert.deepEqual(profile(side).backend, old[side].backend);
   }
   pass("logout_revokes_server_tokens_and_relogin_preserves_profile_bindings");
-  a = start(["dist/cli/matrix.js", "connect", "--profile", profileName("a")]);
-  b = start(["dist/cli/matrix.js", "connect", "--profile", profileName("b")]);
+  a = start(["connect", "--profile", profileName("a")]);
+  b = start(["connect", "--profile", profileName("b")]);
   await ready("a", a); await ready("b", b);
   assert.equal(artifact(await cli("a", "send", profile("b").userId, "recall", "--context-id", memory.contextId, "--wait", "90")), marker);
   assert.equal((await cli("a", "get", profile("b").userId, request.id)).status.state, "TASK_STATE_COMPLETED");

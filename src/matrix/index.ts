@@ -1,14 +1,16 @@
+#!/usr/bin/env node
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import express, { type RequestHandler } from "express";
 import { z } from "zod";
-import { agentCardHandler, jsonRpcHandler, restHandler, type UserBuilder } from "@a2a-js/sdk/server/express";
+import { jsonRpcHandler, restHandler, type UserBuilder } from "@a2a-js/sdk/server/express";
 import { A2ABackend } from "./backend.js";
 import { WorkError } from "./cli-work.js";
 import { MatrixConnector, delay, type Contact } from "./connector.js";
 import { MatrixA2AHandler, requestSignal } from "./gateway.js";
+import { agentCardRoute } from "./agent-card.js";
 import { ConnectorStore } from "./store.js";
 import { SdkMatrixTransport } from "./transport.js";
 import { decodeRequest, mxid } from "./protocol.js";
@@ -159,7 +161,7 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
   const userBuilder: UserBuilder = async () => ({ isAuthenticated: true, userName: connector.userId });
   function suite(target: string) {
     const handler = new MatrixA2AHandler(connector, target, publicBaseUrl);
-    return { card: agentCardHandler({ agentCardProvider: handler, cache: { maxAge: 0 } }),
+    return { card: agentCardRoute(handler),
       rest: restHandler({ requestHandler: handler, userBuilder }), rpc: jsonRpcHandler({ requestHandler: handler, userBuilder }) };
   }
   const route = (kind: "card" | "rest" | "rpc"): RequestHandler => (req, res, next) => {
@@ -222,5 +224,8 @@ export async function runConnector(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  runConnector().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "startup_failed"}\n`); process.exitCode = 1; });
+  if (Number(process.versions.node.split(".")[0]) < 24) { process.stderr.write("The communication service requires Node.js 24 or newer.\n"); process.exitCode = 1; }
+  else if (process.argv.includes("--version")) process.stdout.write(JSON.stringify({ version: "0.6.0", component: "connector" }) + "\n");
+  else if (process.argv.includes("--help")) process.stdout.write("Agent Router communication service (Node 24). Start it with agent-router connect; use agent-router --help for agent commands.\n");
+  else runConnector().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "startup_failed"}\n`); process.exitCode = 1; });
 }

@@ -1,6 +1,6 @@
 {
   "name": "@agent-router/server",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -13,12 +13,12 @@
     "test": "vitest run",
     "dev": "tsx watch src/matrix/index.ts",
     "start": "node dist/matrix/index.js",
-    "matrix": "node dist/cli/matrix.js",
     "matrix:connect": "node dist/matrix/index.js",
     "matrix:demo-agent": "node dist/matrix/demo-agent.js",
     "matrix:lab:init": "node scripts/matrix/lab-init.mjs",
     "matrix:lab:check": "node scripts/matrix/lab-check.mjs",
-    "cli": "node dist/cli/matrix.js"
+    "cli": "./bin/agent-router",
+    "build:cli": "sh scripts/build-cli.sh"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
@@ -36,7 +36,7 @@
     "vitest": "^4.1.11"
   },
   "bin": {
-    "agent-router": "dist/cli/matrix.js"
+    "agent-router-connector": "dist/matrix/index.js"
   },
   "files": [
     "dist",

@@ -11,9 +11,11 @@ Agent Router welcomes focused bug reports, documentation improvements, tests, an
 
 ## Development setup
 
-Requirements are Node.js 24 and Docker Compose v2.
+Requirements are Go 1.25+ (the module selects the tested toolchain), Node.js 24 for the communication service, and Docker Compose v2 for real federation checks.
 
 ```sh
+go test -race ./...
+sh scripts/build-cli.sh
 npm ci
 npm run typecheck
 npm test

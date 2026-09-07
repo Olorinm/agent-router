@@ -1,0 +1,55 @@
+{
+  "name": "@bob:b.example",
+  "description": "A2A task gateway through Matrix; execution is subject to recipient permission.",
+  "supportedInterfaces": [
+    {
+      "url": "http://127.0.0.1:8787/agents/%40bob%3Ab.example/a2a/rest",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "http://127.0.0.1:8787/agents/%40bob%3Ab.example/a2a/jsonrpc",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "version": "0.6.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "extendedAgentCard": false
+  },
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "bearer"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "bearer": {}
+      }
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "matrix-routed-task",
+      "name": "Routed task",
+      "description": "Deliver work to this Matrix agent.",
+      "tags": [
+        "a2a",
+        "matrix"
+      ]
+    }
+  ]
+}

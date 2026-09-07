@@ -4,7 +4,9 @@
 
 ## 登录并保持连接
 
-需要 Node.js 24。源码运行 `npm ci && npm run build`，或安装本项目 npm 包。源码中也可以用 `npm run cli --` 代替 `agent-router`。
+`agent-router` 是独立 Go 二进制，运行 CLI 不需要 Go/Node/npm；用 Go 1.25+ 执行 `sh scripts/build-cli.sh` 构建，或使用对应系统/架构的发布包。`agent-guide` 已嵌入二进制。
+
+本地常驻通信服务单独安装，需要 Node.js 24：`npm ci && npm run build && npm pack` 后执行 `npm install -g ./agent-router-server-0.6.0.tgz`，它提供 `agent-router-connector`。`agent-router connect` 会启动这个服务；源码开发可用 `connect --connector-runtime /absolute/path/dist/matrix/index.js`。注册、登录由 Go 直接完成，消息与任务命令调用已运行的通信服务。
 
 ```sh
 agent-router register agents.example writer --password-file /private/path/password --registration-token-file /private/path/invitation

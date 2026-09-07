@@ -4,7 +4,7 @@ A CLI for sending requests to remote agents, receiving work, returning results a
 
 The receiving agent still uses its own model, files, tools and permissions. For example, a running Codex session can call this CLI to receive a request, work in its own workspace and send the answer back. Your local files and model conversation are not automatically copied to the remote agent.
 
-**Version 0.5 supports the complete CLI send/claim/reply path without a separate A2A execution server.** `connect` keeps the network connection running; it does not launch a model. Automatically starting Codex or choosing/resuming its internal session is not part of the default CLI flow.
+**Version 0.6 provides a standalone Go CLI and supports the complete CLI send/claim/reply path without a separate A2A execution server.** `connect` keeps the network connection running; it does not launch a model. Automatically starting Codex or choosing/resuming its internal session is not part of the default CLI flow.
 
 中文说明：[Agent 接入与操作指南](docs/guides/agent-connect.md) · [Matrix 账号与部署指南](docs/guides/matrix.md)
 
@@ -14,19 +14,32 @@ This example uses two machines and two accounts on the same homeserver. Accounts
 
 ### 1. Install the CLI on both machines
 
-Requires Node.js 24 or newer. Build and install from this repository:
+The CLI is a standalone Go binary for macOS/Linux (amd64 and arm64). Running it does not require Go, Node or npm. To build from source, use Go 1.25 or newer (the module selects the tested Go toolchain):
 
 ```sh
 git clone https://github.com/Olorinm/agent-router.git
 cd agent-router
-npm ci
-npm run build
-npm pack
-npm install -g ./agent-router-server-0.5.0.tgz
+sh scripts/build-cli.sh
+install -m 0755 bin/agent-router /usr/local/bin/agent-router
+agent-router --version
 agent-router --help
 ```
 
-You can also copy the built `.tgz` to another machine with Node.js 24 and run the same `npm install -g` command there. From the source directory, `npm run cli --` can replace `agent-router` without a global install.
+You can copy `bin/agent-router` to another machine with the same OS and architecture, or build all four release archives with `sh scripts/package-cli.sh`. `agent-guide` is embedded in the binary. Source-tree commands can use `./bin/agent-router` directly.
+
+The **communication service is a separate component**. Install it once on each machine that will keep a local connector running; this component requires Node.js 24:
+
+```sh
+npm ci
+npm run build
+npm pack
+npm install -g ./agent-router-server-0.6.0.tgz
+agent-router-connector --version
+```
+
+The npm package installs `agent-router-connector`; the user-facing `agent-router` command comes from the Go binary. `connect` starts the installed service in the foreground. In a source checkout, use `agent-router connect --connector-runtime "$PWD/dist/matrix/index.js"` instead of installing the service globally. `AGENT_ROUTER_NODE` can select the Node executable for this source-entry mode.
+
+Registration/login and account lookup run directly in Go. Messaging and execution commands call the authenticated gateway of the running service. That service keeps the existing Matrix/A2A SDKs, synchronization and durable execution state. A client using an already deployed gateway only needs the Go binary, `CONNECTOR_URL` and a private `CONNECTOR_API_TOKEN_FILE`; that gateway must belong to its intended agent identity. Use HTTPS when accessing it across machines.
 
 ### 2. Register and keep each connector running
 
@@ -173,6 +186,8 @@ Complete state ownership and DNS/TLS instructions are in the [deployment guide](
 ## Verification and boundaries
 
 ```sh
+go test -race ./...
+sh scripts/build-cli.sh
 npm run typecheck
 npm test
 npm run build
@@ -182,6 +197,6 @@ The [0.5 CLI execution report](docs/verification/matrix-cli-work-2026-09-07.md) 
 
 This is alpha software. E2EE/key recovery, SSO/OAuth, a graphical client and distributed execution failover are not implemented. The [acceptance checklist](docs/verification/matrix-client-acceptance.md) distinguishes native client capabilities from the CLI execution flow. A dedicated two-homeserver lab validates federation on one physical host; it is not a production load or independent-public-node test.
 
-Version 0.5 uses Matrix exclusively. The previous custom Router protocol, Go CLI, registry, JWT federation, RabbitMQ and associated database migrations have been removed. No legacy account or task migration is provided.
+Version 0.6 uses Matrix exclusively. The current Go CLI uses the existing Matrix/A2A gateway and account profiles. The previous custom Router protocol, its old Go implementation, registry, JWT federation, RabbitMQ and associated database migrations remain retired. No legacy Router account or task migration is provided. See the [Go CLI architecture decision](docs/architecture/decisions/0003-go-cli.md) for component and distribution boundaries.
 
 Code is Apache-2.0. Synapse is an independently deployed upstream dependency with its own license. See [architecture](docs/architecture/decisions/0002-matrix-communication.md) and [security](SECURITY.md).

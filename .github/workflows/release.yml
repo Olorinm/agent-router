@@ -1,4 +1,4 @@
-name: Release Matrix CLI
+name: Release Go CLI and connector
 on:
   push:
     tags: ["v*"]
@@ -7,18 +7,23 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: 24, cache: npm }
+      - run: go test -race ./...
       - run: npm ci
+      - run: sh scripts/build-cli.sh
       - run: npm test
       - run: npm run build
-      - run: npm pack
-      - name: Publish package
+      - run: sh scripts/package-cli.sh
+      - run: npm pack --pack-destination state/release
+      - name: Publish CLI binaries and separate connector package
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" ./*.tgz --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" state/release/*.tar.gz state/release/SHA256SUMS state/release/*.tgz --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
