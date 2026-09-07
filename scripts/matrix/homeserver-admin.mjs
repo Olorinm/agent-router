@@ -23,6 +23,8 @@ if (command === "bootstrap") {
     const { nonce } = await request("/_synapse/admin/v1/register");
     const username = `operator_${randomBytes(8).toString("hex")}`, password = randomBytes(32).toString("hex");
     const secret = readFileSync(join(root, "secrets/registration"), "utf8").trim();
+    // Synapse requires this keyed, nonce-bound registration MAC; it is not a stored password hash.
+    // https://element-hq.github.io/synapse/latest/admin_api/register_api.html
     const mac = createHmac("sha1", secret).update([nonce, username, password, "admin"].join("\0")).digest("hex");
     const result = await request("/_synapse/admin/v1/register", { nonce, username, password, admin: true, mac });
     writeFileSync(credentials, JSON.stringify({ user_id: result.user_id, access_token: result.access_token }), { mode: 0o600, flag: "wx" });

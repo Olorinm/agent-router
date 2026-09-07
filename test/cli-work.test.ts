@@ -203,6 +203,9 @@ describe("CLI-only peers through the existing Matrix/A2A adapter", () => {
     cleanup.push(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
     const address = server.address() as { port: number }; const base = `http://127.0.0.1:${address.port}`;
     expect((await fetch(base + "/api/inbox")).status).toBe(401);
+    for (const token of ["short", "synthetic-tokem", "synthetic-token-too-long"]) {
+      expect((await fetch(base + "/api/inbox", { headers: { Authorization: `Bearer ${token}` } })).status).toBe(401);
+    }
     const post = (path: string, body: object) => fetch(base + path, { method: "POST", headers: { Authorization: "Bearer synthetic-token", "Content-Type": "application/json" }, body: JSON.stringify(body) });
     expect((await post("/api/work/claim", { worker: "w", wait: 90 })).status).toBe(400);
     const claim = await (await post("/api/work/claim", { worker: "w" })).json() as { claimId: string };

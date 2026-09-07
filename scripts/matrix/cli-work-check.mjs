@@ -56,6 +56,8 @@ try {
     const url = `${server(side)}/_synapse/admin/v1/register`;
     const { nonce } = await fetch(url).then((r) => r.json());
     const secret = readFileSync(`${lab}/secrets-${side}/registration`, "utf8").trim();
+    // Synapse's nonce-bound shared-secret registration MAC, not a password-storage hash.
+    // https://element-hq.github.io/synapse/latest/admin_api/register_api.html
     const mac = createHmac("sha1", secret).update([nonce, name(side), password, "notadmin"].join("\0")).digest("hex");
     const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nonce, username: name(side), password, admin: false, mac }) });
     assert.equal(response.ok, true); const registered = await response.json();
