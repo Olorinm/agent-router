@@ -1,156 +1,180 @@
 # Matrix 接入与部署
 
-新链路使用 Matrix 通信、官方 A2A 调用执行端、本地连接器保存权限和任务关联。普通 Agent 只需要一个 Matrix 账号和一个出站连接器；独立域运营者部署 Synapse 等兼容 homeserver。用户不必为每个 Agent 部署 Synapse。
+当前版本只使用 Matrix。独立域运营者部署 Synapse/PostgreSQL/Caddy；普通 Agent 注册到现有 homeserver，运行出站连接器。本项目不再提供旧 Router、JWT 联邦、RabbitMQ 或旧身份/任务迁移。
 
-## 注册、登录和连接 Agent
+## 安装、注册、登录
 
-注册、登录、设备和令牌由 homeserver 的原生 Matrix API 管理。CLI 使用官方 Matrix SDK；不另外创建 Router 密码或账号系统。需要 Node.js 24 和可访问的 homeserver。
+需要 Node.js 24。源码运行 `npm ci && npm run build`，以下 `agent-router` 命令可替换为 `npm run cli --` 或 `npm run matrix --`。安装命令行可运行 `npm pack`，再 `npm install -g ./agent-router-server-0.4.0.tgz`。旧 Go/Homebrew 发布物不属于当前实现。
 
 ```sh
-npm ci
-npm run build
-npm run matrix -- register agents.example writer
-# 已有账号则直接登录：
-npm run matrix -- login '@writer:agents.example'
-npm run matrix -- whoami
+agent-router register agents.example writer
+agent-router login '@writer:agents.example'
+agent-router whoami
+agent-router discover agents.example
 ```
 
-密码在终端中隐藏输入；注册会再次确认密码。服务器要求邀请码时，CLI 再提示输入邀请码，由服务器校验。使用域名或完整 Matrix ID 时会先读取 `/.well-known/matrix/client`；显式提供 `https://...` 则直接使用该服务地址。`discover SERVER` 可以检查服务发现和登录方式。
+注册和登录都走官方 Matrix API。密码隐藏输入；注册确认两次。原生邀请码使用隐藏输入或 `--registration-token-file PATH`；自动化密码使用 `--password-file PATH` 或 `--password-stdin`。不要把秘密放入参数值。
 
-登录成功后，设备 token 和本机网关凭证自动保存在 `~/.config/agent-router/matrix/default/session.json`，文件权限为 `0600`、目录为 `0700`，不保存密码。可用 `MATRIX_CONFIG_DIR` 指定根目录，用 `--profile NAME` 选择另一个 Agent 的独立配置；这些凭证采用本地私有文件存储。
+域名和 Matrix ID 会通过 well-known 发现 homeserver；显式 HTTPS URL 或 `--homeserver URL` 可以选择具体入口。只支持密码登录、registration-token/dummy 注册验证。SSO/OAuth、邮件验证及 CAPTCHA 交互未接入，遇到不支持的流程明确报错。
 
-绑定本地或远端 A2A 执行端，然后启动：
+设备 access/refresh token 自动保存到 `~/.config/agent-router/matrix/default/session.json`，目录 0700、文件 0600，不保存密码。`--profile NAME` 选择独立本地配置；`MATRIX_CONFIG_DIR` 指定配置根目录。`logout` 撤销设备 token，保留本地执行记录。连接器持有 profile 锁，先停止它再登录、退出或修改绑定。
+
+## 上线与权限
 
 ```sh
-npm run matrix -- bind http://127.0.0.1:8080/.well-known/agent-card.json --endpoint-token-file secrets/agent
-npm run matrix -- connect
+# 可先绑定一个本机或远程的 A2A 执行端；只收发通信时可省略。
+agent-router bind http://127.0.0.1:8080/.well-known/agent-card.json --endpoint-token-file secrets/agent
+agent-router connect
 ```
 
-`bind` 先验证 Agent Card 和接口所在 origin，不会执行任务。loopback 执行端自动允许本地连接；其他内网执行端需加 `--allow-local`。只发送请求时可省略 `bind`。`connect` 在前台运行，Ctrl-C 停止；账号已登录不代表执行器已经上线。同一 profile 只运行一个连接器，更换后端仍需显式处理已有上下文。
-
-另一个终端可直接使用 `doctor`、`contacts`、`send` 等命令，自动读取同一 profile，无需复制 token。多 Agent 在同一设备上运行时，为每个 profile 配置不同端口：
+`bind` 验证官方 Agent Card，不执行任务。Loopback 地址允许本地 HTTP，其他内网地址需显式 `--allow-local`。连接器主动向 Matrix 发起 HTTPS 同步，无需公网入站。`connect` 是前台进程，可由操作者自己的进程管理器常驻运行。另一个终端使用下面的命令。
 
 ```sh
-npm run matrix -- configure --connector-url http://127.0.0.1:8788 --profile editor
-npm run matrix -- connect --profile editor
-npm run matrix -- doctor --profile editor
-```
-
-停止连接器后，`logout` 会调用 Matrix `/logout` 撤销当前设备登录，再移除本地的 access/refresh token。联系人、任务历史、网关凭证和后端绑定保留；重新 `login`、`connect` 后继续使用原上下文。正在运行的连接器会阻止其他进程修改该 profile 的登录或绑定；进程异常退出后可以恢复。不要让多个 profile 同时执行同一个 Matrix 身份。
-
-自动化支持 `--password-stdin` 或 `--password-file PATH`，邀请码使用 `--registration-token-file PATH`；不要把密码或 token 当作参数值。服务器提供 refresh token 时，连接器通过官方 SDK 自动续期并原子保存新凭证。密码登录、`m.login.registration_token` 和 `m.login.dummy` 注册验证已接入；当前 CLI 尚未接入 SSO/OAuth、邮箱或 CAPTCHA 的交互。额外注册验证需在兼容 Matrix 客户端完成，之后只有服务器支持密码登录时才能使用本 CLI 的 `login`。仅支持 SSO/OAuth 的服务器尚不能通过这个登录入口接入；CLI 会明确报出不支持，不会跳过服务器要求。
-
-## 使用预配置 token 接入 homeserver
-
-容器及已有自动化仍可使用环境变量配置。需要 Matrix 账号的 access token，以及一个可选的 A2A v1 执行端。连接器通过 HTTPS 出站同步，A2A 执行端可以只在本机监听。没有执行端时，连接器仍可作为发送任务的网关。
-
-```sh
-npm ci
-npm run build
-cp .env.matrix.example .env.matrix
-```
-
-编辑 `.env.matrix` 中的 homeserver URL、Matrix ID 和执行端 URL。把三类凭证分别放入指定文件，权限设为 `0600`：Matrix access token、自己生成的至少 16 字符的网关 API token、执行端 bearer token。不要把它们写进房间消息或提交到 Git。
-
-启动连接器：
-
-```sh
-node --env-file=.env.matrix dist/matrix/index.js
-```
-
-另一个终端中，以下命令都使用同一份私有配置：
-
-```sh
-node --env-file=.env.matrix dist/cli/matrix.js doctor
-node --env-file=.env.matrix dist/cli/matrix.js status
-node --env-file=.env.matrix dist/cli/matrix.js contact-add '@writer:other.example' --note 'Writer'
-node --env-file=.env.matrix dist/cli/matrix.js send '@writer:other.example' '请写一段简介'
-```
-
-仅添加联系人时，接收和执行许可都为 `ask`。双方可以分别设置：
-
-```sh
-# 接受此联系人的房间邀请，消息进入请求箱，仍需逐条批准执行。
-node --env-file=.env.matrix dist/cli/matrix.js contact-add '@writer:other.example' --allow-receive
-# 明确允许自动接收和自动执行。
-node --env-file=.env.matrix dist/cli/matrix.js contact-add '@writer:other.example' --allow-receive --allow-execution
-```
-
-`contact-add` 是覆盖更新：省略许可选项会将相应许可改回 `ask`。`--block` 阻止接收及执行。`MATRIX_ALLOWED_SENDERS` 只用于首次配置时同时授予两项许可，不会覆盖已经保存的联系人选择。
-
-以下示例使用环境变量配置；已登录的 profile 可以将命令前缀替换为 `npm run matrix --`。显式选择 profile 时使用其账号、网关和后端，不继承其他环境配置的 token 或 `MATRIX_ALLOWED_SENDERS` 授权。
-
-陌生联系人第一次联系时，用户先看到房间邀请。接受后，发送方才将首条请求从持久 outbox 发布到 Matrix；请求进入接收方的请求箱，批准后才调用 Agent：
-
-```sh
-node --env-file=.env.matrix dist/cli/matrix.js invites
-node --env-file=.env.matrix dist/cli/matrix.js invite-accept 'ROOM_ID'
-node --env-file=.env.matrix dist/cli/matrix.js requests
-node --env-file=.env.matrix dist/cli/matrix.js approve 'REQUEST_ID'
+agent-router doctor
+agent-router contact-add '@editor:other.example' --note Editor --tag writing
+agent-router contact-add '@editor:other.example' --note Editor --allow-receive
+agent-router requests
+agent-router approve 'REQUEST_ID'
 # 或 reject 'REQUEST_ID'
 ```
 
-从列表完整复制 ID，包括 JSON 形式请求 ID 中的括号和引号。CLI 会正确编码路径。授权接收、保存联系人、批准执行是独立操作。
+联系人资料保存到 Matrix 私有 account data，备注与标签会在其他设备恢复。每个联系人独立保存，修改不同联系人不会覆盖整个通讯录。对同一联系人同时编辑遵循 Matrix 最后写入值；`m.direct` 等标准聚合数据沿用原生客户端语义。
 
-`send` 默认等待完成或需要补充输入，并输出官方 A2A JSON；`--detach` 返回已排队任务。任务和上下文 ID 会显示在输出中。后续新任务使用相同 `--context-id`；补充某个未完成任务时同时指定 `--task-id`：
+接收许可和执行许可保存在本机适配层，默认 `ask`。仅加联系人不会接受邀请或自动执行；`--allow-receive` 自动接受邀请；再加 `--allow-execution` 才允许自动执行。`contact-add` 会覆盖当前许可，未指定的许可恢复为 `ask`。Matrix 同步联系人不会授予另一设备执行权限。
 
 ```sh
-node --env-file=.env.matrix dist/cli/matrix.js send '@writer:other.example' '继续上一轮的风格' --context-id CONTEXT_ID
-node --env-file=.env.matrix dist/cli/matrix.js send '@writer:other.example' '补充的信息' --context-id CONTEXT_ID --task-id TASK_ID
-node --env-file=.env.matrix dist/cli/matrix.js get '@writer:other.example' TASK_ID
-node --env-file=.env.matrix dist/cli/matrix.js list '@writer:other.example'
-node --env-file=.env.matrix dist/cli/matrix.js cancel '@writer:other.example' TASK_ID
+agent-router contacts
+agent-router contact-remove '@editor:other.example'
+agent-router block '@editor:other.example'
+agent-router blocked
+agent-router unblock '@editor:other.example'
 ```
 
-重复提交同一操作时，保持 `--message-id` 和消息内容一致。终态任务不能续写；应在同一上下文下创建新任务。离线取消会持久排队；等待超时不表示取消已经成功，也不会撤回取消请求。
+屏蔽使用 Matrix `m.ignored_user_list`，会跨设备同步；连接器在执行前也检查屏蔽。解除屏蔽后，需要重新授予执行许可。删除联系人会撤销本机联系人的许可，但保留房间历史；删除联系人不会解除原生屏蔽。
 
-## 官方 A2A 客户端
+## 用户资料和目录
 
-网关地址为 `http://127.0.0.1:8787/agents/{URL 编码的 Matrix ID}/`，末尾的 `/` 必须保留。Card 位于其下的 `.well-known/agent-card.json`。Card 和所有任务接口需要网关 API token。
+```sh
+agent-router profile-set 'My writing agent'
+agent-router lookup '@editor:other.example'
+agent-router find editor
+```
 
-CLI 优先使用 `CONNECTOR_URL`，然后使用 `PUBLIC_BASE_URL`，否则连接本机 8787。所选地址应与 Card 中接口的 origin 一致；CLI 不会将网关凭证转发到其他 origin。
+这些命令直接调用 Matrix，无需启动连接器。搜索范围由 homeserver 的 user_directory/search 决定，至少受其原生可见范围约束，不提供全联邦名单。公开 Matrix 身份资料和本机 Agent 执行许可是不同概念。这里没有额外实现一套 private/unlisted/directory 身份隐藏协议，也不会声称本机拒绝执行能让 Matrix ID 从协议层消失。
 
-使用官方 SDK 时，给 `DefaultAgentCardResolver` 和传输工厂都配置带凭证的 `fetchImpl`。示例可直接参考 `src/cli/matrix.ts`。提供 REST、JSON-RPC、SSE、get/list/subscribe/cancel；push notifications 和 extended Card 不支持。该 Card 描述路由能力，当前没有同步远端 Agent 技能目录。
+## 邀请、普通消息和任务
 
-## 容器运行连接器
+```sh
+agent-router say '@editor:other.example' '你好'
+agent-router invites
+agent-router invite-accept 'ROOM_ID'
+# 不接受这个房间：
+agent-router invite-reject 'ROOM_ID'
+```
 
-使用 `deploy/matrix/compose.connector.yaml`。预先创建 `state/matrix`，使其可由容器 UID 1000 写入；凭证文件也必须可由该 UID 读取。把本机执行端 URL 改为容器可达地址，例如 `http://host.docker.internal:8080/.well-known/agent-card.json`。允许访问本机执行端只对显式配置的固定 origin 生效。
+`say` 发送标准 `m.room.message` 文本，可与普通 Matrix 客户端互通，不会自动执行 Agent。首次联系时正文先保存在发送端持久 outbox，接收方接受房间邀请后才发布。接受邀请不会自动添加联系人或允许执行任务。
+
+```sh
+agent-router send '@editor:other.example' '请写一段介绍'
+agent-router conversations
+agent-router say '@editor:other.example' '补充说明' --context-id CONTEXT_ID
+agent-router send '@editor:other.example' '继续上一轮' --context-id CONTEXT_ID
+```
+
+`send` 发起结构化 A2A 执行请求；对方默认在 `requests` 中逐条批准。默认等待终态或 input-required，`--detach` 只等任务排队。一般 Matrix 客户端不会处理这些 A2A 扩展事件。
+
+不传 context ID 时创建新房间；`conversation-open MATRIX_ID` 可显式创建。`conversations` 包含自己发起与接收的私聊。双方都可使用各自显示的 context ID，在同一个房间主动发消息或新任务。私聊关联保存到原生 `m.direct`；运行时上下文按房间和认证发送者关联。
+
+```sh
+agent-router send '@editor:other.example' '补充任务所需信息' --context-id CONTEXT_ID --task-id TASK_ID
+agent-router get '@editor:other.example' TASK_ID
+agent-router list '@editor:other.example'
+agent-router cancel '@editor:other.example' TASK_ID
+```
+
+终态 Task 不能续写；在同一 context 创建新任务即可。重复提交同一操作时使用相同 `--message-id` 和内容。取消、补充输入和任务 ID 都属于原发起方的命名空间。跨域 Task/Artifact/SSE、离线补收和去重通过官方 A2A SDK 验证。接受结果不明时保留 `uncertain`，不能据超时自动重复执行。
+
+## 历史、已读和新消息
+
+```sh
+agent-router history 'ROOM_ID'
+agent-router history 'ROOM_ID' --from PAGINATION_TOKEN
+agent-router read 'ROOM_ID'
+agent-router read 'ROOM_ID' 'EVENT_ID'
+agent-router watch
+agent-router watch --since CURSOR --room 'ROOM_ID'
+agent-router leave 'ROOM_ID'
+```
+
+历史从 Matrix 查询，返回原生事件和下一页 token；已读写入 `m.fully_read` 和服务器支持的私有已读回执。会话列表同时显示本地缓存未读事件数量和 homeserver 提供的通知数量。`watch` 输出带 cursor 的 JSON 行；默认只看启动后的事件，`--since 0` 从本地缓存开始，可指定房间。该 cursor 属于当前本地缓存，不能跨设备混用。
+
+`leave` 和拒绝邀请均使用原生离房 API；本地已缓存的历史保留。联系人资料、房间关联、屏蔽和已读标记会通过 Matrix 同步。加密房间可以显示其存在和加密事件，但当前连接器不解密、不在其中发送或执行任务。
+
+## 换设备与执行记录
+
+新设备登录并运行不绑定执行端的连接器后，可恢复 Matrix 联系人、私聊和历史。通信缓存的首次同步不会自动运行历史任务；下载的旧请求标记为 `history_restored_without_execution_state`，需先核对执行结果。它不是自动迁移执行记录。
+
+一个 Matrix 身份只运行一个执行连接器；其他设备可以作为不绑定执行端的通信客户端。把执行器搬到新机器仍需一致地转移连接器 SQLite、执行端任务数据库和真实模型 session。重新登录不会自动恢复丢失的模型历史。后端 URL 已绑定时不能随意更换，避免把旧上下文交给另一个执行端。
+
+同机多个 profile 应配置不同端口：
+
+```sh
+agent-router configure --connector-url http://127.0.0.1:8788 --profile second
+agent-router connect --profile second
+```
+
+## 容器与官方 A2A 客户端
+
+`.env.matrix.example` 和 `deploy/matrix/compose.connector.yaml` 可用于容器，不依赖交互式 profile。环境变量中的 Matrix、网关、执行端凭证各自使用私有文件。`MATRIX_ALLOWED_SENDERS` 只在首次创建该身份的本地授权记录时明确授予接收和执行许可；普通 profile 不继承它。
 
 ```sh
 docker compose -f deploy/matrix/compose.connector.yaml up -d --build
 ```
 
-网关只映射到宿主机 loopback。如果需要外部 A2A 客户端访问，部署自己的 HTTPS 入口并设置对应 `PUBLIC_BASE_URL`；不要将 bearer token 放在未加密的公网连接上。连接器不需要公网入站才能接收 Matrix 消息。
+网关默认只绑定本机，路径是 `http://127.0.0.1:8787/agents/{URL 编码的 Matrix ID}/`，末尾斜线不能省略。网关 token 与 Matrix token 分离。官方 A2A 客户端需为 Agent Card 解析器和 REST/JSON-RPC 传输都配置固定 origin 的认证 fetch。支持 send/get/list/cancel/subscribe/SSE，不支持 push notification 或 extended Card。
 
-## 可复现的双 homeserver 验收
+## 部署独立域
 
-`deploy/matrix/compose.lab.yaml` 包含两套独立 Synapse/PostgreSQL、两个连接器和两个确定性 A2A 执行端。它使用私有测试域名、专用 CA 和 Docker 网络，不是公网域名部署模板。测试证书有效期为 30 天。联邦与客户端均验证 TLS 证书；房间内容未做端到端加密。
+先把 DNS 指向服务器并开放 HTTPS 443，再初始化：
 
-Linux/Docker 主机上先用 Node.js 24 和 OpenSSL 生成测试配置。若主机没有 Node，可在其他机器运行初始化，再将本项目及 `state/matrix-lab` 安全复制到测试主机。
+```sh
+node scripts/matrix/homeserver-init.mjs agents.example
+export MATRIX_SERVER_NAME=agents.example
+sudo chown -R 991:991 state/matrix-homeserver/synapse
+sudo chown -R 0:0 state/matrix-homeserver/secrets state/matrix-homeserver/invitations
+sudo chown 0:0 state/matrix-homeserver
+docker compose build admin
+docker compose up -d --wait
+docker compose run --rm admin bootstrap
+docker compose run --rm admin invite first-user 1 24
+```
+
+在重启后也要保留 `MATRIX_SERVER_NAME` 设置，可写入私有 `.env`。数据库只在内部网络；Synapse 在 Caddy 后提供标准客户端与联邦 API，admin API 不公开。管理员工具直接使用 Synapse 原生 API，邀请码写入 `state/matrix-homeserver/invitations/first-user`，一次使用、24 小时有效，不打印秘密。
+
+server name、数据库及签名密钥共同组成服务身份，升级时保留。所有持久数据位于 `state/matrix-homeserver`；Caddy 证书在两个命名卷中。没有旧 Router 或 RabbitMQ 服务。
+
+## 实际验收
+
+同机双 Synapse 使用私有测试域、专用 CA 和隔离数据库，不能当成两个独立公网物理节点。
 
 ```sh
 npm run matrix:lab:init
 sudo chown -R 991:991 state/matrix-lab/synapse-a state/matrix-lab/synapse-b
 sudo chown 991:991 state/matrix-lab/tls/a.key state/matrix-lab/tls/b.key
-sudo chown -R 1000:1000 state/matrix-lab/connector-a state/matrix-lab/connector-b \
-  state/matrix-lab/agent-a state/matrix-lab/agent-b state/matrix-lab/secrets-a state/matrix-lab/secrets-b
+sudo chown -R 1000:1000 state/matrix-lab/connector-a state/matrix-lab/connector-b state/matrix-lab/agent-a state/matrix-lab/agent-b state/matrix-lab/secrets-a state/matrix-lab/secrets-b
 docker compose -f deploy/matrix/compose.lab.yaml build connector-a
-docker compose -f deploy/matrix/compose.lab.yaml up -d pg-a pg-b synapse-a synapse-b
-# 等两台 Synapse 健康后注册专用测试身份；重复运行会保留已有令牌。
+docker compose -f deploy/matrix/compose.lab.yaml up -d --wait pg-a pg-b synapse-a synapse-b
 docker compose -f deploy/matrix/compose.lab.yaml run --rm check node scripts/matrix/lab-register.mjs
 docker compose -f deploy/matrix/compose.lab.yaml up -d agent-a agent-b connector-a connector-b
 bash scripts/matrix/lab-verify.sh
+docker compose -f deploy/matrix/compose.lab.yaml run --rm check node scripts/matrix/client-check.mjs
 ```
 
-检查 Docker 网络 `172.30.247.0/24` 不与现有网络冲突。若更改网段，应同时修改生成配置的 `ip_range_whitelist`。验收容器拥有读取测试密钥和写证据的权限；运行中的连接器不具备这些额外权限。所有数据库和 homeserver 端口保持在 Docker 网络内，网关仅映射宿主机 `127.0.0.1:18781/18782`。
+检查 `172.30.247.0/24` 不与现有网络冲突。两个测试域的 CA 有效期 30 天；Synapse/数据库没有发布公网端口，两个网关只映射本机 18781/18782。原生客户端验收创建合成账号及另一设备登录，验证后撤销测试设备令牌，原始证据保存在忽略提交的 state 中。
 
-结果保存在 `state/matrix-lab/verification.json`，包含合成任务标识。脚本会停启连接器和测试 Agent；不要对生产身份或生产任务运行。它不删除卷或覆盖密钥。若镜像下载需代理，可以用官方 `crane pull` 获取并校验镜像后 `docker load`，无需改变已有 Docker daemon 的网络配置。
+公开 HTTPS 原生账号验收使用 `scripts/matrix/auth-check.mjs`，设置 `MATRIX_TEST_HOMESERVER`、`MATRIX_TEST_INVITATION_FILE`（允许两次注册）和 `MATRIX_AUTH_CHECK_DIR`。
 
-## 真实 Codex 会话恢复验证
-
-基础验收不需要模型账户。可选的 `compose.codex.lab.yaml` 从现有 `examples/codex-employee` 镜像复用官方 CLI，在另一份可写会话目录中执行。经操作者授权，将 Codex 认证配置置于 `state/matrix-lab/codex-b/home/auth.json`，目录和文件归 UID 1000、权限分别为 `0700/0600`。不要复制其他人的会话历史。
-
-通过 `CODEX_RUNTIME_IMAGE` 指定已有镜像，按需设置 `MATRIX_CODEX_HTTPS_PROXY` 和 `MATRIX_CODEX_EGRESS_NETWORK`，然后：
+可选 Codex 会话验收使用独立的 `deploy/matrix/Dockerfile.codex-fixture`，不依赖旧员工镜像。经操作者授权提供自己的 Codex 认证到 `state/matrix-lab/codex-b/home/auth.json`，目录/文件归 UID 1000 且权限 0700/0600，然后：
 
 ```sh
 docker compose -f deploy/matrix/compose.lab.yaml -f deploy/matrix/compose.codex.lab.yaml build agent-b
@@ -160,37 +184,4 @@ docker compose -f deploy/matrix/compose.lab.yaml -f deploy/matrix/compose.codex.
 docker compose -f deploy/matrix/compose.lab.yaml run --rm check node scripts/matrix/lab-check.mjs codex-resume
 ```
 
-第一轮只提供随机标记；第二轮不重复该标记，要求恢复记忆，并核对两轮的运行时 session ID 完全相同。驱动持久化 `A2A context → Codex session`，通过官方 `exec resume` 恢复，不使用 `--ephemeral`。该示例提供只读沙箱；它仍是验收 fixture，不是完整生产 Agent 的工具授权系统。
-
-## 独立域部署与旧系统迁移
-
-### 启用原生注册登录服务
-
-`deploy/matrix/compose.homeserver.yaml` 提供独立 Synapse/PostgreSQL。它使用正式 DNS server name、正常联邦校验和原生注册邀请码；不使用验收环境的 `.test` 域名、私有 CA 或放宽的限流配置。
-
-```sh
-node scripts/matrix/homeserver-init.mjs agents.example
-sudo chown -R 991:991 state/matrix-homeserver/synapse
-# operator 容器使用 UID 0；从其他机器复制 state 时，保留属主和权限。
-docker compose -f deploy/matrix/compose.homeserver.yaml up -d --wait
-docker compose -f deploy/matrix/compose.homeserver.yaml run --rm admin bootstrap
-docker compose -f deploy/matrix/compose.homeserver.yaml run --rm admin invite first-user 1 24
-```
-
-管理员工具需要本项目的 `agent-router-matrix:lab` 镜像，可用 `Dockerfile.matrix` 构建。使用普通用户运行初始化时，应让 `secrets`、`invitations` 及 state 根目录归 operator 的 UID 0，Synapse 目录归 UID 991，并保持 `0700/0600` 权限。数据库端口不对外发布；`MATRIX_EDGE_NETWORK` 指定现有反向代理网络，默认与 Router 的 `agent-router-edge` 共用。
-
-邀请码通过 Synapse admin API 创建，写入 `state/matrix-homeserver/invitations/first-user`，默认一次使用、24 小时有效；命令不会打印邀请码或管理凭证。将邀请码交给对应用户即可注册，不需要把管理员共享密钥交给用户。
-
-若复用已有 Router HTTPS 域名，`deploy/matrix/Caddyfile.router-with-matrix` 为 Matrix 客户端、联邦、服务发现增加路由，其他路径仍交给 Router；`/_synapse/admin/*` 不公开。应用前先备份并验证实际运行的 Caddy 配置。单文件 bind mount 若已指向旧 inode，需要修正挂载，不能仅凭宿主机同名文件判断加载结果。独立部署时可按同样路径规则配置自己的 HTTPS 反向代理。
-
-账号入口部署后，用一个允许两次注册的测试邀请码运行 `scripts/matrix/auth-check.mjs`：设置 `MATRIX_TEST_HOMESERVER=https://agents.example`、`MATRIX_TEST_INVITATION_FILE` 和可写的 `MATRIX_AUTH_CHECK_DIR`。脚本创建合成账号、启动本地测试 Agent 和连接器，验证原生注册、登录、权限审批、令牌撤销、重新登录后的任务历史与会话恢复，最后退出测试设备登录。
-
-### 旧身份与历史
-
-独立域运营者部署标准 homeserver、数据库、TLS 和 Matrix 域名发现；两个 homeserver 可位于不同机器或云服务商。参考 [Synapse 安装文档](https://element-hq.github.io/synapse/latest/setup/installation.html) 配置实际域名及受信任证书。测试环境的 `.test`、私有 CA、较高限流阈值和内网白名单不能原样作为公网配置。
-
-新链路不再需要自定义 Router JWT 联邦或跨域 RabbitMQ。旧 `writer@domain` 注册身份、认证令牌和任务历史不会自动变成 Matrix 账号。为新会话显式选择 Matrix 身份；旧任务继续在原路径查询、完成或取消。原 Go CLI、`compose.yaml` 和 `Dockerfile` 留作旧部署兼容；Node 默认入口已经指向 Matrix，旧入口为 `npm run start:legacy`。
-
-在实际公网域名、账号归属、历史迁移和活跃任务处理明确之前，不替换原线上入口，不同时从两条路径执行同一项工作。备份时要同时保留 homeserver 数据库/签名密钥、Matrix token、连接器 SQLite 数据库（包括一致的 WAL 快照）以及运行时会话目录。一个 Matrix 身份只运行一个主动执行连接器；不能靠复制数据库或令牌实现多机容灾。
-
-还未实现 E2EE、联系人图形界面、全局目录、自动旧数据迁移，以及接受结果不明时的自动核对。`requests` 会显式列出 `uncertain`；先核对执行端实际状态，不能据超时重新执行有副作用的操作。完整协议和边界见 [Matrix 应用事件规范](../spec/matrix-events-v1.md)。
+该驱动验证持久 session 恢复，采用只读沙箱，提示模型只回答文本，不是通用桌面任务接管工具。完成后恢复普通确定性 Agent。完整协议见 [事件规范](../spec/matrix-events-v1.md)。

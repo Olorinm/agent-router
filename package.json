@@ -1,6 +1,6 @@
 {
   "name": "@agent-router/server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -8,44 +8,45 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "tsx watch src/matrix/index.ts",
     "start": "node dist/matrix/index.js",
-    "start:legacy": "node dist/index.js",
-    "dev:legacy": "tsx watch src/index.ts",
-    "demo": "node scripts/demo.mjs",
-    "migrate": "node dist/cli/migrate.js",
-    "check:integration": "node dist/cli/integration-check.js",
-    "bootstrap:verifier": "node dist/cli/bootstrap-verifier.js",
-    "federation:keygen": "node dist/cli/federation-keygen.js",
-    "federation:jwks": "node dist/cli/federation-jwks.js",
-    "send": "node dist/cli/send.js",
     "matrix": "node dist/cli/matrix.js",
     "matrix:connect": "node dist/matrix/index.js",
     "matrix:demo-agent": "node dist/matrix/demo-agent.js",
     "matrix:lab:init": "node scripts/matrix/lab-init.mjs",
-    "matrix:lab:check": "node scripts/matrix/lab-check.mjs"
+    "matrix:lab:check": "node scripts/matrix/lab-check.mjs",
+    "cli": "node dist/cli/matrix.js"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
-    "amqplib": "^2.0.1",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.7.0",
     "ipaddr.js": "^2.5.0",
-    "jose": "^6.2.10",
     "matrix-js-sdk": "^42.3.0",
-    "pg": "^8.23.0",
     "undici": "^8.10.1",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^24.13.3",
-    "@types/pg": "^8.23.1",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
-  }
+  },
+  "bin": {
+    "agent-router": "dist/cli/matrix.js"
+  },
+  "files": [
+    "dist",
+    "docs/guides",
+    "scripts/matrix",
+    "README.md",
+    "LICENSE",
+    "src",
+    "examples/echo-agent/src",
+    "examples/echo-agent/package.json",
+    "examples/echo-agent/tsconfig.json"
+  ]
 }

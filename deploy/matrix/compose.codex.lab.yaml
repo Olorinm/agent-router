@@ -5,8 +5,6 @@ services:
     build:
       context: ../..
       dockerfile: deploy/matrix/Dockerfile.codex-fixture
-      args:
-        CODEX_RUNTIME_IMAGE: ${CODEX_RUNTIME_IMAGE:-codex-verifier-employee:latest}
     environment:
       DEMO_RUNTIME: codex
       DEMO_STORE_PATH: /codex-state/agent.sqlite

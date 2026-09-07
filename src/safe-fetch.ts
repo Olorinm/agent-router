@@ -6,7 +6,7 @@ import { resolveSafeEndpoint } from "./endpoint-policy.js";
 const MAX_DISPATCHERS = 100;
 
 /**
- * Fetches untrusted Router and Agent URLs without following redirects. DNS is
+ * Fetches untrusted Agent URLs without following redirects. DNS is
  * resolved and checked immediately before the connection, then the connection
  * is pinned to one of those checked addresses to prevent DNS rebinding.
  */

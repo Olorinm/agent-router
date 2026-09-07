@@ -1,7 +1,7 @@
-# Optional lab extension. Supply an image built from examples/codex-employee.
-ARG CODEX_RUNTIME_IMAGE=codex-verifier-employee:latest
-FROM ${CODEX_RUNTIME_IMAGE} AS codex
+# Optional standalone Codex session conformance fixture.
 FROM agent-router-matrix:lab
-COPY --from=codex /app/node_modules/@openai /app/node_modules/@openai
-COPY --from=codex /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-ENV CODEX_BIN=/app/node_modules/@openai/codex/bin/codex.js
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN npm install --prefix /opt/codex --omit=dev @openai/codex@0.152.1 && npm cache clean --force
+ENV CODEX_BIN=/opt/codex/node_modules/@openai/codex/bin/codex.js
+USER node

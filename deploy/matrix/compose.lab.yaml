@@ -3,7 +3,7 @@ x-runtime: &runtime
   image: agent-router-matrix:lab
   build:
     context: ../..
-    dockerfile: Dockerfile.matrix
+    dockerfile: Dockerfile
   restart: unless-stopped
   read_only: true
   cap_drop: [ALL]

@@ -2,8 +2,6 @@ node_modules/
 dist/
 .env
 .env.*
-!.env.example
-!.env.demo
 !.env.matrix.example
 coverage/
 *.log
@@ -12,7 +10,6 @@ secrets/*
 state/
 .codex/
 auth.json
-.agent-router.json
 *.pem
 *.key
 *.p12
@@ -23,3 +20,4 @@ auth.json
 *.dump
 *.sql.gz
 .DS_Store
+*.tgz

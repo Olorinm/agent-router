@@ -6,7 +6,7 @@ import express, { type RequestHandler } from "express";
 import { z } from "zod";
 import { agentCardHandler, jsonRpcHandler, restHandler, type UserBuilder } from "@a2a-js/sdk/server/express";
 import { A2ABackend } from "./backend.js";
-import { MatrixConnector, type Contact } from "./connector.js";
+import { MatrixConnector, delay, type Contact } from "./connector.js";
 import { MatrixA2AHandler, requestSignal } from "./gateway.js";
 import { ConnectorStore } from "./store.js";
 import { SdkMatrixTransport } from "./transport.js";
@@ -58,22 +58,63 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
       protocolErrors: connector.store.entries("protocol_errors").slice(-20).map((r) => r.value) });
   });
   app.get("/api/contacts", (_req, res) => res.json({ data: connector.contacts() }));
-  app.post("/api/contacts", (req, res) => {
+  const social = () => { if (!connector.social) throw new Error("native_matrix_client_unavailable"); return connector.social; };
+  app.post("/api/contacts", async (req, res) => {
     const contact = z.object({ address: mxid, note: z.string().max(500).default(""),
+      tags: z.array(z.string().max(80)).max(32).default([]),
       receive: z.enum(["allow", "ask", "deny"]).default("ask"),
       execution: z.enum(["allow", "ask", "deny"]).default("ask") }).strict().parse(req.body);
-    connector.setContact(contact); res.status(201).json({ data: contact });
+    await connector.updateContact(contact);
+    if (contact.receive === "deny" && connector.social) await connector.social.block(contact.address, true);
+    res.status(201).json({ data: connector.contact(contact.address) });
   });
-  app.delete("/api/contacts/:address", (req, res) => { connector.store.delete("contacts", req.params.address); res.status(204).end(); });
+  app.delete("/api/contacts/:address", async (req, res) => { await connector.removeContact(mxid.parse(req.params.address)); res.status(204).end(); });
+  app.get("/api/blocked", (_req, res) => res.json({ data: social().blocked() }));
+  app.post("/api/blocked/:address", async (req, res) => { await social().block(mxid.parse(req.params.address), true); res.status(204).end(); });
+  app.delete("/api/blocked/:address", async (req, res) => { await social().block(mxid.parse(req.params.address), false); res.status(204).end(); });
   app.get("/api/requests", (_req, res) => res.json({ data: connector.pending() }));
   app.post("/api/requests/:id/approve", (req, res) => { connector.approve(req.params.id); res.status(204).end(); });
   app.post("/api/requests/:id/reject", (req, res) => { connector.deny(req.params.id); res.status(204).end(); });
   app.get("/api/invites", (_req, res) => res.json({ data: connector.store.entries("invites").map((r) => r.value) }));
   app.post("/api/invites/:room/accept", async (req, res) => {
     if (!connector.store.get("invites", req.params.room)) { res.status(404).json({ error: "invite_not_found" }); return; }
-    await connector.transport.join(req.params.room); res.status(204).end();
+    if (connector.social) await connector.social.accept(req.params.room); else await connector.transport.join(req.params.room);
+    res.status(204).end();
   });
-  app.get("/api/conversations", (_req, res) => res.json({ data: connector.store.entries("conversations").map((r) => r.value) }));
+  app.post("/api/invites/:room/reject", async (req, res) => { await social().leave(req.params.room); res.status(204).end(); });
+  app.get("/api/conversations", (_req, res) => res.json({ data: connector.social?.conversations() ?? connector.store.entries("conversations").map((r) => r.value) }));
+  app.post("/api/conversations", async (req, res) => {
+    const body = z.object({ address: mxid }).strict().parse(req.body);
+    res.status(201).json(await connector.conversation(body.address));
+  });
+  app.post("/api/messages", async (req, res) => {
+    const body = z.object({ address: mxid, text: z.string().min(1), contextId: z.string().min(1).optional(), messageId: z.string().min(1).max(255).optional() }).strict().parse(req.body);
+    res.status(202).json(await connector.say(body.address, body.text, body.contextId, body.messageId));
+  });
+  app.get("/api/rooms/:room/history", async (req, res) => {
+    const from = z.string().optional().parse(req.query.from);
+    res.json(await social().history(req.params.room, from));
+  });
+  app.post("/api/rooms/:room/read", async (req, res) => {
+    const body = z.object({ eventId: z.string().optional() }).strict().parse(req.body ?? {});
+    await social().read(req.params.room, body.eventId); res.status(204).end();
+  });
+  app.post("/api/rooms/:room/leave", async (req, res) => { await social().leave(req.params.room); res.status(204).end(); });
+  app.get("/api/events", async (req, res) => {
+    let cursor = z.coerce.number().int().min(0).safeParse(req.query.since ?? connector.store.get("meta", "timeline_cursor") ?? 0);
+    if (!cursor.success) { res.status(400).json({ error: "invalid_cursor" }); return; }
+    const room = z.string().optional().parse(req.query.room);
+    const client = social(); let after = cursor.data;
+    res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }); res.flushHeaders();
+    while (!res.destroyed) {
+      const entries = client.entries(after, room);
+      for (const entry of entries) {
+        after = entry.cursor; res.write(`id: ${after}\ndata: ${JSON.stringify(entry)}\n\n`);
+      }
+      if (!entries.length) res.write(": keepalive\n\n");
+      await delay(1000);
+    }
+  });
   const handlers = new Map<string, ReturnType<typeof suite>>();
   const userBuilder: UserBuilder = async () => ({ isAuthenticated: true, userName: connector.userId });
   function suite(target: string) {
@@ -105,7 +146,7 @@ export async function runConnector(): Promise<void> {
   let stopping = false;
   const stop = async () => {
     if (stopping) return; stopping = true;
-    try { server?.close(); await connector?.stop(); await backend?.close(); store?.close(); }
+    try { server?.close(); server?.closeAllConnections(); await connector?.stop(); await backend?.close(); store?.close(); }
     finally { release?.(); }
   };
   try {
@@ -125,7 +166,7 @@ export async function runConnector(): Promise<void> {
     const transport = new SdkMatrixTransport(url.toString(), token, userId, profile && profiles ? profileClient(profile, profiles) : undefined);
     connector = new MatrixConnector(userId, store, transport, backend, Number(process.env.MATRIX_POLL_MS ?? "1000"));
     for (const address of (profile ? "" : process.env.MATRIX_ALLOWED_SENDERS ?? "").split(",").filter(Boolean)) {
-      if (!connector.contact(address)) connector.setContact({ address, note: "Provisioned receive and execution permission", receive: "allow", execution: "allow" } satisfies Contact);
+      if (!store.get("policies", address)) await connector.updateContact({ address, note: "Provisioned receive and execution permission", receive: "allow", execution: "allow" } satisfies Contact);
     }
     const address = profile ? connectorAddress(profile.connectorUrl) : undefined;
     const port = address ? Number(address.port || "80") : Number(process.env.PORT ?? "8787");

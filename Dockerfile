@@ -1,10 +1,10 @@
 FROM node:24-bookworm-slim AS build
-WORKDIR /build
+WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-COPY migrations ./migrations
+COPY scripts/build.mjs ./scripts/build.mjs
 RUN npm run build
 
 FROM node:24-bookworm-slim
@@ -12,9 +12,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY --from=build /build/dist ./dist
-COPY --from=build /build/migrations ./migrations
-RUN chown -R node:node /app
+COPY --from=build /app/dist ./dist
+COPY scripts/matrix ./scripts/matrix
+COPY docs/guides ./docs/guides
 USER node
-EXPOSE 8080
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/matrix/index.js"]

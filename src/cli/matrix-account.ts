@@ -41,8 +41,23 @@ async function password(options: AccountOptions, confirm: boolean): Promise<stri
 }
 
 export async function accountCommand(command: string, args: string[], options: AccountOptions): Promise<boolean> {
-  if (!["register", "login", "logout", "whoami", "bind", "configure", "discover"].includes(command)) return false;
+  if (!["register", "login", "logout", "whoami", "bind", "configure", "discover", "find", "lookup", "profile-set"].includes(command)) return false;
   const store = new ProfileStore(options.profile);
+  if (["find", "lookup", "profile-set"].includes(command)) {
+    const profile = store.require();
+    const client = authClient(profile.homeserver, { accessToken: profile.accessToken!, userId: profile.userId });
+    try {
+      if (command === "find") {
+        if (!args[0]?.trim()) throw new Error("Usage: matrix find SEARCH_TEXT");
+        output(await client.searchUserDirectory({ term: args[0], limit: 50 }));
+      } else if (command === "lookup") output({ userId: args[0] ?? profile.userId, ...await client.getProfileInfo(args[0] ?? profile.userId) });
+      else {
+        if (!args[0]?.trim() || args[0].length > 255) throw new Error("Usage: matrix profile-set DISPLAY_NAME (1-255 characters)");
+        await client.setDisplayName(args[0]); output({ userId: profile.userId, displayname: args[0] });
+      }
+    } catch (error) { throw authError(error); } finally { client.http.abort(); }
+    return true;
+  }
   if (command === "discover") {
     if (!args[0]) throw new Error("Usage: matrix discover SERVER_OR_MATRIX_ID");
     const homeserver = await discoverHomeserver(args[0], options["allow-http"]);
