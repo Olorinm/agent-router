@@ -6,11 +6,12 @@ import express, { type RequestHandler } from "express";
 import { z } from "zod";
 import { agentCardHandler, jsonRpcHandler, restHandler, type UserBuilder } from "@a2a-js/sdk/server/express";
 import { A2ABackend } from "./backend.js";
+import { WorkError } from "./cli-work.js";
 import { MatrixConnector, delay, type Contact } from "./connector.js";
 import { MatrixA2AHandler, requestSignal } from "./gateway.js";
 import { ConnectorStore } from "./store.js";
 import { SdkMatrixTransport } from "./transport.js";
-import { mxid } from "./protocol.js";
+import { decodeRequest, mxid } from "./protocol.js";
 import { ProfileStore, connectorAddress } from "./profile.js";
 import { authError, profileClient } from "./auth.js";
 
@@ -52,7 +53,7 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
         counts[collection][value.status] = (counts[collection][value.status] ?? 0) + 1;
       }
     }
-    res.json({ userId: connector.userId, lastSyncAt: connector.lastSyncAt, lastError: connector.lastError, counts,
+    res.json({ userId: connector.userId, execution: connector.cli ? "cli" : "a2a", lastSyncAt: connector.lastSyncAt, lastError: connector.lastError, counts,
       outboxErrors: connector.store.entries<{ status: string; error?: string }>("outbox")
         .filter((r) => r.value.status === "queued" && r.value.error).map((r) => ({ id: r.id, error: r.value.error })),
       protocolErrors: connector.store.entries("protocol_errors").slice(-20).map((r) => r.value) });
@@ -73,8 +74,46 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
   app.post("/api/blocked/:address", async (req, res) => { await social().block(mxid.parse(req.params.address), true); res.status(204).end(); });
   app.delete("/api/blocked/:address", async (req, res) => { await social().block(mxid.parse(req.params.address), false); res.status(204).end(); });
   app.get("/api/requests", (_req, res) => res.json({ data: connector.pending() }));
-  app.post("/api/requests/:id/approve", (req, res) => { connector.approve(req.params.id); res.status(204).end(); });
-  app.post("/api/requests/:id/reject", (req, res) => { connector.deny(req.params.id); res.status(204).end(); });
+  app.post("/api/requests/:id/approve", (req, res) => {
+    if (connector.cli?.has(req.params.id)) connector.cli.approve(req.params.id); else connector.approve(req.params.id);
+    res.status(204).end();
+  });
+  app.post("/api/requests/:id/reject", (req, res) => {
+    if (connector.cli?.has(req.params.id)) connector.cli.reject(req.params.id); else connector.deny(req.params.id);
+    res.status(204).end();
+  });
+  const work = () => { if (!connector.cli) throw new WorkError("execution_is_bound_to_a2a_service"); return connector.cli; };
+  app.get("/api/inbox", (req, res) => {
+    const all = z.enum(["true", "false"]).default("false").parse(req.query.all) === "true";
+    res.json({ data: work().list(all), requests: connector.pending().filter((r) => r.request.operation === "send").map((r) => ({
+      id: r.id, from: r.sender, conversation: r.room, status: r.status === "uncertain" ? "uncertain" : "approval_required",
+      reason: r.error ?? null, input: r.request.body.message, contextId: decodeRequest(r.request.body).message!.contextId,
+    })) });
+  });
+  app.get("/api/work/:id", (req, res) => res.json(work().inspect(req.params.id)));
+  app.post("/api/work/claim", async (req, res) => {
+    const body = z.object({ worker: z.string().trim().min(1).max(160), id: z.string().min(1).max(255).optional(),
+      wait: z.number().int().min(0).max(60).default(0) }).strict().parse(req.body);
+    const deadline = Date.now() + body.wait * 1000;
+    do {
+      if (res.destroyed) return;
+      await connector.work();
+      const result = work().claim(body.worker, body.id);
+      if (result) { res.json(result); return; }
+      if (Date.now() >= deadline) break;
+      await delay(250);
+    } while (!res.destroyed);
+    if (!res.destroyed) res.json(null);
+  });
+  app.post("/api/work/:id/update", async (req, res) => {
+    const body = z.object({ action: z.enum(["progress", "reply", "need-input", "fail", "cancelled"]),
+      text: z.string().max(32000).default(""), data: z.record(z.string(), z.unknown()).optional() }).strict().parse(req.body);
+    if (body.action !== "cancelled" && !body.text.trim() && !(body.action === "reply" && body.data)) {
+      throw new WorkError("message_required", 400);
+    }
+    const result = work().update(req.params.id, body.action, body.text, body.data);
+    await connector.work(); res.json(result);
+  });
   app.get("/api/invites", (_req, res) => res.json({ data: connector.store.entries("invites").map((r) => r.value) }));
   app.post("/api/invites/:room/accept", async (req, res) => {
     if (!connector.store.get("invites", req.params.room)) { res.status(404).json({ error: "invite_not_found" }); return; }
@@ -133,6 +172,7 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
   app.use("/agents/:address/a2a/jsonrpc", route("rpc"));
   app.use((_req, res) => res.status(404).json({ error: "not_found" }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (error instanceof WorkError) { res.status(error.status).json({ error: error.message }); return; }
     res.status(error instanceof z.ZodError ? 400 : 500).json({ error: error instanceof z.ZodError ? "invalid_request" : "operation_failed" });
   });
   return app;
@@ -156,10 +196,7 @@ export async function runConnector(): Promise<void> {
     const userId = mxid.parse(profile?.userId ?? required("MATRIX_USER_ID"));
     store = new ConnectorStore(profiles?.databasePath ?? process.env.MATRIX_STORE_PATH ?? "state/matrix.sqlite", userId);
     const cardUrl = profile ? profile.backend?.cardUrl : process.env.A2A_AGENT_CARD_URL;
-    if (store.get<string>("meta", "backend") && store.get<string>("meta", "backend") !== (cardUrl ?? "")) {
-      throw new Error("backend_changed_use_explicit_context_migration_or_new_store");
-    }
-    store.set("meta", "backend", cardUrl ?? "");
+    store.bindExecution(cardUrl);
     backend = cardUrl ? new A2ABackend(cardUrl, profile?.backend?.token ?? secret("A2A_ENDPOINT_TOKEN", false),
       profile ? profile.backend!.allowLocal : process.env.A2A_ALLOW_LOCAL === "true") : undefined;
     const token = profile?.accessToken ?? secret("MATRIX_ACCESS_TOKEN");

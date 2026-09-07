@@ -83,7 +83,7 @@ try {
   await ready("a", a); await ready("b", b);
   await assert.rejects(cli("b", "logout"), /Profile is in use/);
   await cli("b", "contact-add", profile("a").userId, "--allow-receive");
-  const request = await cli("a", "send", profile("b").userId, "onboarding approval", "--detach");
+  const request = await cli("a", "send", profile("b").userId, "onboarding approval");
   const pending = await until(async () => (await cli("b", "requests")).data.find((x) => x.request.taskId === request.id));
   const diagnostics = await fetch("http://127.0.0.1:18880/diagnostics", { headers: { Authorization: `Bearer ${agentToken}` } }).then((r) => r.json());
   assert.equal(diagnostics.invocations.length, 0);
@@ -96,7 +96,7 @@ try {
   pass("saved_login_connect_bind_request_approval_and_task_result");
   await cli("b", "contact-add", profile("a").userId, "--allow-receive", "--allow-execution");
   const marker = `ONBOARDING_${suffix}`;
-  const memory = await cli("a", "send", profile("b").userId, `remember ${marker}`);
+  const memory = await cli("a", "send", profile("b").userId, `remember ${marker}`, "--wait", "90");
   assert.equal(memory.status.state, "TASK_STATE_COMPLETED");
   const old = { a: profile("a"), b: profile("b") };
   await stop(a); await stop(b);
@@ -114,7 +114,7 @@ try {
   a = start(["dist/cli/matrix.js", "connect", "--profile", profileName("a")]);
   b = start(["dist/cli/matrix.js", "connect", "--profile", profileName("b")]);
   await ready("a", a); await ready("b", b);
-  assert.equal(artifact(await cli("a", "send", profile("b").userId, "recall", "--context-id", memory.contextId)), marker);
+  assert.equal(artifact(await cli("a", "send", profile("b").userId, "recall", "--context-id", memory.contextId, "--wait", "90")), marker);
   assert.equal((await cli("a", "get", profile("b").userId, request.id)).status.state, "TASK_STATE_COMPLETED");
   pass("contacts_task_history_and_context_survive_logout_login_and_connector_restart");
   await stop(a); await stop(b); await stop(fixture);

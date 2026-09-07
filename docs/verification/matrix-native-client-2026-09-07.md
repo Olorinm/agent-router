@@ -1,6 +1,8 @@
 # Matrix 原生客户端与旧 Router 退役验收 — 2026-09-07
 
-0.4.0 已完成[客户端流程清单](matrix-client-acceptance.md)，柔佛公开入口 `https://router.openmau.com` 已切换为纯 Matrix homeserver。旧 Router、Go CLI、自建身份/联邦/队列协议和迁移兼容层已移除；旧部署及其 PostgreSQL、RabbitMQ 数据也已按用户授权删除。没有进行旧账号或任务迁移。
+本报告记录 0.4 的原生客户端接入，接收方执行当时仍依赖绑定 A2A 服务。随后 0.5 补齐双方只用 CLI 领取与回复的流程，见 [CLI 执行报告](matrix-cli-work-2026-09-07.md)。
+
+0.4.0 已完成当时的原生客户端流程，柔佛公开入口 `https://router.openmau.com` 已切换为纯 Matrix homeserver。旧 Router、Go CLI、自建身份/联邦/队列协议和迁移兼容层已移除；旧部署及其 PostgreSQL、RabbitMQ 数据也已按用户授权删除。没有进行旧账号或任务迁移。
 
 ## 实际使用流程
 

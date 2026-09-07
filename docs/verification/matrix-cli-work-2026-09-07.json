@@ -1,0 +1,253 @@
+{
+  "version": "0.5.0",
+  "date": "2026-09-07",
+  "local": {
+    "typecheck": "passed",
+    "tests": {
+      "files": 5,
+      "total": 79,
+      "cliWorkTests": 14
+    },
+    "build": "passed",
+    "package": {
+      "name": "agent-router-server-0.5.0.tgz",
+      "sha256": "115b08a8fe203a972715f8d697952d63afd58c9dd91a6e9f511dbc6eb86de75c",
+      "isolatedInstall": "passed",
+      "sourceBuildAndGuidesMatch": true,
+      "globalInstallVersion": "0.5.0",
+      "interactiveZshHelpAndGuide": "passed",
+      "launcher": "/opt/homebrew/opt/node@24/bin/node",
+      "defaultNodeAndPathUnchanged": true
+    }
+  },
+  "cliOnlyConformance": {
+    "checkedAt": "2026-09-07T09:26:58.420Z",
+    "syntheticDataOnly": true,
+    "twoHomeservers": true,
+    "executionServersStarted": 0,
+    "bothPeersUseCliOnly": true,
+    "testDevicesLoggedOut": true,
+    "passes": [
+      {
+        "name": "both_cli_only_default_send_approval_exclusive_claim_progress_and_idempotent_result",
+        "at": "2026-09-07T09:23:55.637Z"
+      },
+      {
+        "name": "same_conversation_both_directions_and_input_required_continuation",
+        "at": "2026-09-07T09:24:04.780Z"
+      },
+      {
+        "name": "connector_restart_preserves_claim_and_result_correlation",
+        "at": "2026-09-07T09:24:43.888Z"
+      },
+      {
+        "name": "cancellation_before_claim_and_acknowledged_cancellation_during_execution",
+        "at": "2026-09-07T09:24:52.397Z"
+      },
+      {
+        "name": "offline_delivery_and_explicit_failure_return_through_the_same_adapter",
+        "at": "2026-09-07T09:25:32.928Z"
+      }
+    ]
+  },
+  "a2aServiceRegression": {
+    "passes": [
+      {
+        "name": "bidirectional_federation_official_rest_and_jsonrpc",
+        "at": "2026-09-07T09:17:23.792Z"
+      },
+      {
+        "name": "message_id_retry_executes_once",
+        "at": "2026-09-07T09:17:25.082Z"
+      },
+      {
+        "name": "same_context_across_two_a2a_tasks",
+        "at": "2026-09-07T09:17:27.391Z"
+      },
+      {
+        "name": "input_required_continuation_and_artifact",
+        "at": "2026-09-07T09:17:30.201Z"
+      },
+      {
+        "name": "cancel_after_execution_starts",
+        "at": "2026-09-07T09:17:32.294Z"
+      },
+      {
+        "name": "invitation_then_request_inbox_then_explicit_execution_approval",
+        "at": "2026-09-07T09:17:35.584Z"
+      },
+      {
+        "name": "official_a2a_sse_task_artifact_status",
+        "at": "2026-09-07T09:17:38.500Z"
+      },
+      {
+        "name": "cancel_unapproved_request_closes_inbox_without_execution",
+        "at": "2026-09-07T09:17:41.274Z"
+      },
+      {
+        "name": "queued_while_destination_connector_offline",
+        "at": "2026-09-07T09:17:52.287Z"
+      },
+      {
+        "name": "offline_delivery_after_connector_restart",
+        "at": "2026-09-07T09:17:54.851Z"
+      },
+      {
+        "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+        "at": "2026-09-07T09:18:07.922Z"
+      },
+      {
+        "name": "cancel_requested_while_destination_offline",
+        "at": "2026-09-07T09:18:20.138Z"
+      },
+      {
+        "name": "cancel_before_execution_prevents_backend_invocation",
+        "at": "2026-09-07T09:18:22.117Z"
+      },
+      {
+        "name": "history_gap_prepared_with_120_events",
+        "at": "2026-09-07T09:18:40.924Z"
+      },
+      {
+        "name": "limited_sync_history_gap_recovered",
+        "at": "2026-09-07T09:18:42.897Z"
+      }
+    ]
+  },
+  "nativeClientRegression": {
+    "checkedAt": "2026-09-07T09:23:53.670Z",
+    "syntheticDataOnly": true,
+    "twoHomeservers": true,
+    "passes": [
+      {
+        "name": "native_private_contacts_and_local_execution_permissions_are_separate",
+        "at": "2026-09-07T09:19:19.969Z"
+      },
+      {
+        "name": "standard_matrix_text_and_direct_rooms_work_bidirectionally_without_execution",
+        "at": "2026-09-07T09:19:43.674Z"
+      },
+      {
+        "name": "native_remote_profile_and_visible_user_directory_search",
+        "at": "2026-09-07T09:21:01.208Z"
+      },
+      {
+        "name": "event_watch_and_native_read_marker",
+        "at": "2026-09-07T09:21:03.975Z"
+      },
+      {
+        "name": "approved_task_and_peer_initiated_task_share_original_matrix_room",
+        "at": "2026-09-07T09:21:10.959Z"
+      },
+      {
+        "name": "fresh_device_restores_contacts_and_room_history_without_reexecuting_old_tasks_and_can_resume_peer_context",
+        "at": "2026-09-07T09:21:31.062Z"
+      },
+      {
+        "name": "native_blocking_syncs_across_devices_and_unblocking_does_not_grant_execution",
+        "at": "2026-09-07T09:21:35.878Z"
+      },
+      {
+        "name": "contact_removal_keeps_history_and_unknown_invitation_can_be_rejected_natively",
+        "at": "2026-09-07T09:22:12.899Z"
+      }
+    ]
+  },
+  "publicMatrix": {
+    "origin": "https://router.openmau.com",
+    "clientVersionsHttpStatus": 200,
+    "discovery": {
+      "httpStatus": 200,
+      "body": {
+        "m.homeserver": {
+          "base_url": "https://router.openmau.com"
+        }
+      }
+    }
+  },
+  "deployment": {
+    "host": "Johor",
+    "directory": "/opt/agent-router-matrix-lab",
+    "deployedCommitFile": "state/DEPLOYED_COMMIT",
+    "sourceVerification": "SHA-256 of every tracked source file against deployment manifest",
+    "images": [
+      {
+        "id": "sha256:0104583648d2fa3a1bbf130dedd758c3ba66c4c780cbd939ca1828d11d55d11f",
+        "tags": [
+          "agent-router-matrix:lab"
+        ]
+      },
+      {
+        "id": "sha256:fe099938de20135345f74007128afbc2f6203477946fec4c5e6daeb41bd2cd7d",
+        "tags": [
+          "agent-router-matrix:cli-work"
+        ]
+      }
+    ],
+    "containers": [
+      {
+        "name": "agent-router-matrix-lab-connector-a-1",
+        "status": "Up 50 seconds"
+      },
+      {
+        "name": "agent-router-matrix-lab-connector-b-1",
+        "status": "Up 50 seconds"
+      },
+      {
+        "name": "agent-router-matrix-lab-agent-a-1",
+        "status": "Up 50 seconds"
+      },
+      {
+        "name": "agent-router-matrix-lab-agent-b-1",
+        "status": "Up 50 seconds"
+      },
+      {
+        "name": "agent-router-matrix-caddy-1",
+        "status": "Up About an hour"
+      },
+      {
+        "name": "agent-router-matrix-synapse-1",
+        "status": "Up About an hour (healthy)"
+      },
+      {
+        "name": "agent-router-matrix-postgres-1",
+        "status": "Up About an hour (healthy)"
+      },
+      {
+        "name": "agent-router-matrix-lab-synapse-b-1",
+        "status": "Up 3 hours (healthy)"
+      },
+      {
+        "name": "agent-router-matrix-lab-synapse-a-1",
+        "status": "Up 3 hours (healthy)"
+      },
+      {
+        "name": "agent-router-matrix-lab-pg-a-1",
+        "status": "Up 3 hours (healthy)"
+      },
+      {
+        "name": "agent-router-matrix-lab-pg-b-1",
+        "status": "Up 3 hours (healthy)"
+      }
+    ],
+    "finalCliSmoke": {
+      "at": "2026-09-07T09:27:06.515Z",
+      "state": "TASK_STATE_COMPLETED",
+      "artifact": "echo: final-cli-work-smoke",
+      "receiverHealth": "ready"
+    },
+    "originalRestoredServerModified": false,
+    "publicHomeserverDataPreserved": true
+  },
+  "scope": {
+    "bothHomeserversOnOnePhysicalHost": true,
+    "realModelUsedInCliOnlyTest": false,
+    "testWorkers": "Scripted agents invoking the delivered CLI",
+    "a2aExecutionServersInCliOnlyTest": 0,
+    "automaticModelWakeup": false,
+    "automaticClaimFailover": false,
+    "executionDevicesPerIdentity": 1,
+    "newWorktrees": 0,
+    "newReferenceRepositories": 0
+  }
+}

@@ -3,6 +3,7 @@ import { Message, SendMessageRequest, Task, TaskState, type SendMessageResult } 
 import type { ExecutionBackend } from "./backend.js";
 import { ConnectorStore } from "./store.js";
 import { MatrixSocial } from "./social.js";
+import { CliWork, WorkError } from "./cli-work.js";
 import type { MatrixTransport, SyncBatch } from "./transport.js";
 import { decodeRequest, decodeResult, digest, encodeResult, key, mxid, newTask, REQUEST_EVENT, requestSchema,
   RESPONSE_EVENT, responseSchema, sized, statusMessage, terminal, type RequestEvent, type ResponseEvent, type RoomEvent } from "./protocol.js";
@@ -31,9 +32,17 @@ export class MatrixConnector {
   lastSyncAt = 0;
   lastError = "";
   readonly social: MatrixSocial | undefined;
+  readonly cli: CliWork | undefined;
   constructor(readonly userId: string, readonly store: ConnectorStore, readonly transport: MatrixTransport,
     readonly backend: ExecutionBackend | undefined, readonly pollMs = 1_000) {
     mxid.parse(userId); this.social = transport.data ? new MatrixSocial(this, transport.data) : undefined;
+    if (!backend) {
+      this.cli = new CliWork(store, (sender) => {
+        const contact = this.contact(sender);
+        return contact?.receive === "deny" ? "deny" : contact?.execution ?? "ask";
+      });
+      this.backend = this.cli;
+    }
   }
 
   contact(address: string): Contact | undefined {
@@ -66,10 +75,11 @@ export class MatrixConnector {
     if (await this.transport.identity() !== this.userId) throw new Error("matrix_token_identity_mismatch");
     this.store.acquireLease(this.leaseOwner);
     await this.social?.bootstrap();
-    // A crash while the execution endpoint was accepting work has an ambiguous outcome.
-    // Do not replay it automatically without an accepted destination task ID.
+    // Local acceptance is transactional and deduplicated. External acceptance is ambiguous
+    // after a crash and cannot be replayed without an accepted destination task ID.
     for (const { id, value } of this.store.entries<Incoming>("incoming")) {
-      if (value.status === "sending") this.store.set("incoming", id, { ...value, status: "uncertain", error: "acceptance_unknown_after_restart" });
+      if (value.status === "sending") this.store.set("incoming", id, { ...value,
+        status: this.cli ? "queued" : "uncertain", ...(this.cli ? {} : { error: "acceptance_unknown_after_restart" }) });
     }
     this.running = true;
     this.heartbeat = setInterval(() => {
@@ -295,6 +305,8 @@ export class MatrixConnector {
     if (this.busy) return;
     this.busy = true;
     try {
+      this.cli?.reconcile();
+      this.publishCliEvents();
       const records = this.store.entries<Incoming>("incoming").map((r) => r.value);
       for (const record of records.filter((r) => r.status === "pending")) {
         if (this.contact(record.sender)?.receive === "deny" || this.contact(record.sender)?.execution === "deny") {
@@ -307,12 +319,23 @@ export class MatrixConnector {
         const current = this.store.get<Incoming>("incoming", record.id);
         if (current?.status === "queued") await this.execute(current);
       }
+      this.publishCliEvents();
       for (const { value } of this.store.entries<Incoming>("incoming")) {
+        if (this.cli) break;
         if (value.status !== "accepted" || !value.remoteTaskId || !this.backend) continue;
         try { this.acceptResult(value, await this.backend.get(value.remoteTaskId)); }
         catch (error) { this.lastError = errorCode(error); }
       }
     } finally { this.busy = false; }
+  }
+  private publishCliEvents(): void {
+    if (!this.cli) return;
+    for (const { id, value: task } of this.cli.events()) {
+      const matches = this.store.entries<Incoming>("incoming").map((r) => r.value).filter((r) => r.remoteTaskId === task.id);
+      if (!matches.length) continue;
+      for (const record of matches.filter((r) => r.status === "accepted")) this.acceptResult(record, task);
+      this.cli.ack(id);
+    }
   }
   private async execute(record: Incoming): Promise<void> {
     if (this.store.get("cancellations", this.bindingKey(record))) { this.cancelBeforeExecution(record); return; }
@@ -334,8 +357,11 @@ export class MatrixConnector {
     request.configuration = { acceptedOutputModes: request.configuration?.acceptedOutputModes ?? [],
       returnImmediately: true, historyLength: 20, taskPushNotificationConfig: undefined };
     this.store.set("incoming", record.id, { ...record, status: "sending" });
-    try { this.acceptResult(record, await this.backend.send(request)); }
+    try { this.acceptResult(record, await this.backend.send(request, { sender: record.sender, room: record.room, approved: Boolean(record.approved) })); }
     catch (error) {
+      if (this.cli && error instanceof WorkError) {
+        this.store.transaction(() => this.reject(record, error.message)); return;
+      }
       // A lost acceptance response can have already caused external side effects.
       this.store.set("incoming", record.id, { ...record, status: "uncertain", error: errorCode(error) });
       this.reply(record, undefined, { code: "acceptance_unknown", message: "Execution acceptance is unknown; automatic resending is disabled." });

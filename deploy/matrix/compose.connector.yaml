@@ -10,6 +10,7 @@ services:
       MATRIX_STORE_PATH: /state/connector.sqlite
       MATRIX_ACCESS_TOKEN_FILE: /run/secrets/matrix-access-token
       CONNECTOR_API_TOKEN_FILE: /run/secrets/connector-api-token
+      # Used only if .env.matrix explicitly selects an A2A service.
       A2A_ENDPOINT_TOKEN_FILE: /run/secrets/agent-endpoint-token
     ports: ["127.0.0.1:8787:8787"]
     volumes: [../../state/matrix:/state, ../../secrets:/run/secrets:ro]
