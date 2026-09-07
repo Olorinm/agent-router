@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-07T05:35:27.955Z",
+  "checked_at": "2026-09-07T05:40:49.082Z",
   "checkpoints": [
     {
       "name": "bidirectional_federation_official_rest_and_jsonrpc",
@@ -68,6 +68,10 @@
     {
       "name": "cancel_unapproved_request_closes_inbox_without_execution",
       "at": "2026-09-07T05:35:27.955Z"
+    },
+    {
+      "name": "shipped_cli_cross_domain_send_returns_completed_task_and_artifact",
+      "at": "2026-09-07T05:40:49.082Z"
     }
   ],
   "codex_context_session_count": 1,

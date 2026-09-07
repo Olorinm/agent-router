@@ -68,6 +68,8 @@ node --env-file=.env.matrix dist/cli/matrix.js cancel '@writer:other.example' TA
 
 网关地址为 `http://127.0.0.1:8787/agents/{URL 编码的 Matrix ID}/`，末尾的 `/` 必须保留。Card 位于其下的 `.well-known/agent-card.json`。Card 和所有任务接口需要网关 API token。
 
+CLI 优先使用 `CONNECTOR_URL`，然后使用 `PUBLIC_BASE_URL`，否则连接本机 8787。所选地址应与 Card 中接口的 origin 一致；CLI 不会将网关凭证转发到其他 origin。
+
 使用官方 SDK 时，给 `DefaultAgentCardResolver` 和传输工厂都配置带凭证的 `fetchImpl`。示例可直接参考 `src/cli/matrix.ts`。提供 REST、JSON-RPC、SSE、get/list/subscribe/cancel；push notifications 和 extended Card 不支持。该 Card 描述路由能力，当前没有同步远端 Agent 技能目录。
 
 ## 容器运行连接器
