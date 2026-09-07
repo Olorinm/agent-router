@@ -8,7 +8,7 @@ require (
 	github.com/a2aproject/a2a-go/v2 v2.5.0
 	github.com/spf13/pflag v1.0.9
 	golang.org/x/term v0.45.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.58.0
 )
 
