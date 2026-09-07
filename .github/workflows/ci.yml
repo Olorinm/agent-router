@@ -25,3 +25,21 @@ jobs:
       - run: npm --prefix examples/echo-agent ci
       - run: npm --prefix examples/echo-agent run typecheck
       - run: npm pack --dry-run
+
+  cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install and run the packaged CLI
+        run: |
+          cli_package=$(npm pack --silent)
+          npm install --prefix "$RUNNER_TEMP/agent-router-cli" "./$cli_package" --ignore-scripts --no-audit --no-fund
+          "$RUNNER_TEMP/agent-router-cli/node_modules/.bin/agent-router" --help
+          "$RUNNER_TEMP/agent-router-cli/node_modules/.bin/agent-router" agent-guide
