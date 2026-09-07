@@ -1,0 +1,187 @@
+{
+  "implementation": "Go CLI 0.6.0 with TypeScript Matrix/A2A service",
+  "codeCommit": "7fbbd31983b85f32379c29080e4832c7d8ee4244",
+  "pr": "https://github.com/Olorinm/agent-router/pull/17",
+  "syntheticDataOnly": true,
+  "region": "Johor",
+  "local": {
+    "goTestsAndRace": "passed",
+    "goVet": "passed",
+    "typescriptTests": 81,
+    "typescriptTypecheck": "passed",
+    "echoExampleTypecheck": "passed",
+    "platforms": [
+      "darwin/amd64",
+      "darwin/arm64",
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "cgoEnabled": false,
+    "runtimeAbsentFromCliPATH": "verified in unit and cross-language tests",
+    "installedMacCLI": "0.6.0 Go arm64",
+    "connectorPackageEntry": "installed symlink verified"
+  },
+  "cliExecution": {
+    "checkedAt": "2026-09-07T11:50:03.260Z",
+    "syntheticDataOnly": true,
+    "twoHomeservers": true,
+    "executionServersStarted": 0,
+    "bothPeersUseCliOnly": true,
+    "testDevicesLoggedOut": true,
+    "passes": [
+      {
+        "name": "both_cli_only_default_send_approval_exclusive_claim_progress_and_idempotent_result",
+        "at": "2026-09-07T11:47:41.251Z"
+      },
+      {
+        "name": "same_conversation_both_directions_and_input_required_continuation",
+        "at": "2026-09-07T11:47:46.431Z"
+      },
+      {
+        "name": "connector_restart_preserves_claim_and_result_correlation",
+        "at": "2026-09-07T11:48:24.105Z"
+      },
+      {
+        "name": "cancellation_before_claim_and_acknowledged_cancellation_during_execution",
+        "at": "2026-09-07T11:48:30.365Z"
+      },
+      {
+        "name": "offline_delivery_and_explicit_failure_return_through_the_same_adapter",
+        "at": "2026-09-07T11:49:08.435Z"
+      }
+    ]
+  },
+  "nativeClient": {
+    "checkedAt": "2026-09-07T11:52:06.597Z",
+    "syntheticDataOnly": true,
+    "twoHomeservers": true,
+    "passes": [
+      {
+        "name": "native_private_contacts_and_local_execution_permissions_are_separate",
+        "at": "2026-09-07T11:49:18.205Z"
+      },
+      {
+        "name": "standard_matrix_text_and_direct_rooms_work_bidirectionally_without_execution",
+        "at": "2026-09-07T11:49:20.245Z"
+      },
+      {
+        "name": "native_remote_profile_and_visible_user_directory_search",
+        "at": "2026-09-07T11:50:21.729Z"
+      },
+      {
+        "name": "event_watch_and_native_read_marker",
+        "at": "2026-09-07T11:50:23.805Z"
+      },
+      {
+        "name": "approved_task_and_peer_initiated_task_share_original_matrix_room",
+        "at": "2026-09-07T11:50:29.775Z"
+      },
+      {
+        "name": "fresh_device_restores_contacts_and_room_history_without_reexecuting_old_tasks_and_can_resume_peer_context",
+        "at": "2026-09-07T11:50:34.032Z"
+      },
+      {
+        "name": "native_blocking_syncs_across_devices_and_unblocking_does_not_grant_execution",
+        "at": "2026-09-07T11:50:36.088Z"
+      },
+      {
+        "name": "contact_removal_keeps_history_and_unknown_invitation_can_be_rejected_natively",
+        "at": "2026-09-07T11:51:11.505Z"
+      }
+    ]
+  },
+  "publicAccountOnboarding": {
+    "checkedAt": "2026-09-07T11:54:24.269Z",
+    "nativeMatrixAccounts": true,
+    "syntheticDataOnly": true,
+    "checkpoints": [
+      {
+        "name": "native_invitation_registration_login_identity_and_device_reuse",
+        "at": "2026-09-07T11:52:21.933Z"
+      },
+      {
+        "name": "saved_login_connect_bind_request_approval_and_task_result",
+        "at": "2026-09-07T11:52:26.519Z"
+      },
+      {
+        "name": "logout_revokes_server_tokens_and_relogin_preserves_profile_bindings",
+        "at": "2026-09-07T11:53:25.274Z"
+      },
+      {
+        "name": "contacts_task_history_and_context_survive_logout_login_and_connector_restart",
+        "at": "2026-09-07T11:53:29.422Z"
+      }
+    ]
+  },
+  "optionalA2AExecution": {
+    "checkedAt": "2026-09-07T12:11:44.864Z",
+    "sameHostTwoHomeservers": true,
+    "labJoinRate": {
+      "per_second": 100,
+      "burst_count": 1000
+    },
+    "publicRateLimitsUnchanged": true,
+    "passes": [
+      {
+        "name": "bidirectional_federation_official_rest_and_jsonrpc",
+        "at": "2026-09-07T12:10:05.099Z"
+      },
+      {
+        "name": "message_id_retry_executes_once",
+        "at": "2026-09-07T12:10:27.429Z"
+      },
+      {
+        "name": "same_context_across_two_a2a_tasks",
+        "at": "2026-09-07T12:10:29.993Z"
+      },
+      {
+        "name": "input_required_continuation_and_artifact",
+        "at": "2026-09-07T12:10:32.580Z"
+      },
+      {
+        "name": "cancel_after_execution_starts",
+        "at": "2026-09-07T12:10:34.834Z"
+      },
+      {
+        "name": "invitation_then_request_inbox_then_explicit_execution_approval",
+        "at": "2026-09-07T12:10:37.635Z"
+      },
+      {
+        "name": "official_a2a_sse_task_artifact_status",
+        "at": "2026-09-07T12:10:40.523Z"
+      },
+      {
+        "name": "cancel_unapproved_request_closes_inbox_without_execution",
+        "at": "2026-09-07T12:10:42.650Z"
+      },
+      {
+        "name": "queued_while_destination_connector_offline",
+        "at": "2026-09-07T12:10:53.617Z"
+      },
+      {
+        "name": "offline_delivery_after_connector_restart",
+        "at": "2026-09-07T12:10:56.621Z"
+      },
+      {
+        "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+        "at": "2026-09-07T12:11:09.620Z"
+      },
+      {
+        "name": "cancel_requested_while_destination_offline",
+        "at": "2026-09-07T12:11:21.820Z"
+      },
+      {
+        "name": "cancel_before_execution_prevents_backend_invocation",
+        "at": "2026-09-07T12:11:23.679Z"
+      },
+      {
+        "name": "history_gap_prepared_with_120_events",
+        "at": "2026-09-07T12:11:42.814Z"
+      },
+      {
+        "name": "limited_sync_history_gap_recovered",
+        "at": "2026-09-07T12:11:44.864Z"
+      }
+    ]
+  }
+}

@@ -195,7 +195,7 @@ npm test
 npm run build
 ```
 
-The [0.5 CLI execution report](docs/verification/matrix-cli-work-2026-09-07.md) verifies both peers using the CLI without an A2A server, including claims, approval, progress/results, clarification, cancellation and restart/offline recovery. The existing two-homeserver lab checks native client data and the optional A2A service path. A dedicated Codex fixture separately verifies real runtime session restoration.
+The [0.6 Go CLI report](docs/verification/go-cli-2026-09-07.md) records standalone binary, cross-language gateway, real account and federation checks. The [0.5 CLI execution report](docs/verification/matrix-cli-work-2026-09-07.md) verifies both peers using the CLI without an A2A server, including claims, approval, progress/results, clarification, cancellation and restart/offline recovery. The existing two-homeserver lab checks native client data and the optional A2A service path. A dedicated Codex fixture separately verifies real runtime session restoration.
 
 This is alpha software. E2EE/key recovery, SSO/OAuth, a graphical client and distributed execution failover are not implemented. The [acceptance checklist](docs/verification/matrix-client-acceptance.md) distinguishes native client capabilities from the CLI execution flow. A dedicated two-homeserver lab validates federation on one physical host; it is not a production load or independent-public-node test.
 
