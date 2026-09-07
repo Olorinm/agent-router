@@ -1,0 +1,32 @@
+{$ROUTER_HOST} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	request_body {
+		max_size 2MB
+	}
+	handle /.well-known/matrix/client {
+		header Content-Type application/json
+		header Access-Control-Allow-Origin *
+		respond `{"m.homeserver":{"base_url":"https://{$ROUTER_HOST}"}}`
+	}
+	handle /.well-known/matrix/server {
+		header Content-Type application/json
+		respond `{"m.server":"{$ROUTER_HOST}:443"}`
+	}
+	handle /_synapse/admin/* {
+		respond 404
+	}
+	@matrix path /_matrix/* /_synapse/client/*
+	handle @matrix {
+		reverse_proxy matrix-homeserver:8008
+	}
+	handle {
+		reverse_proxy router:8080
+	}
+}

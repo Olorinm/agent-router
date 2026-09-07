@@ -11,6 +11,8 @@ import { MatrixA2AHandler, requestSignal } from "./gateway.js";
 import { ConnectorStore } from "./store.js";
 import { SdkMatrixTransport } from "./transport.js";
 import { mxid } from "./protocol.js";
+import { ProfileStore, connectorAddress } from "./profile.js";
+import { authError, profileClient } from "./auth.js";
 
 function secret(name: string, required = true): string {
   const value = process.env[`${name}_FILE`] ? readFileSync(process.env[`${name}_FILE`]!, "utf8").trim() : process.env[name] ?? "";
@@ -96,33 +98,50 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
 }
 
 export async function runConnector(): Promise<void> {
-  const url = new URL(required("MATRIX_HOMESERVER_URL"));
-  if (url.protocol !== "https:" && process.env.MATRIX_ALLOW_HTTP !== "true") throw new Error("matrix_https_required");
-  const userId = mxid.parse(required("MATRIX_USER_ID"));
-  const store = new ConnectorStore(process.env.MATRIX_STORE_PATH ?? "state/matrix.sqlite", userId);
-  const cardUrl = process.env.A2A_AGENT_CARD_URL;
-  if (store.get<string>("meta", "backend") && store.get<string>("meta", "backend") !== (cardUrl ?? "")) {
-    throw new Error("backend_changed_use_explicit_context_migration_or_new_store");
-  }
-  store.set("meta", "backend", cardUrl ?? "");
-  const backend = cardUrl ? new A2ABackend(cardUrl, secret("A2A_ENDPOINT_TOKEN", false), process.env.A2A_ALLOW_LOCAL === "true") : undefined;
-  const transport = new SdkMatrixTransport(url.toString(), secret("MATRIX_ACCESS_TOKEN"), userId);
-  const connector = new MatrixConnector(userId, store, transport, backend, Number(process.env.MATRIX_POLL_MS ?? "1000"));
-  for (const address of (process.env.MATRIX_ALLOWED_SENDERS ?? "").split(",").filter(Boolean)) {
-    if (!connector.contact(address)) connector.setContact({ address, note: "Provisioned receive and execution permission", receive: "allow", execution: "allow" } satisfies Contact);
-  }
-  const port = Number(process.env.PORT ?? "8787");
-  const publicBaseUrl = (process.env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${port}`).replace(/\/$/, "");
-  const app = createConnectorApp(connector, secret("CONNECTOR_API_TOKEN"), publicBaseUrl);
-  await connector.start();
-  const server = app.listen(port, process.env.HOST ?? "127.0.0.1", () => process.stdout.write(JSON.stringify({ event: "matrix.listening", port }) + "\n"));
+  const profiles = process.env.MATRIX_PROFILE || !process.env.MATRIX_HOMESERVER_URL ? new ProfileStore() : undefined;
+  const release = profiles?.lock();
+  let store: ConnectorStore | undefined, backend: A2ABackend | undefined, connector: MatrixConnector | undefined;
+  let server: ReturnType<ReturnType<typeof createConnectorApp>["listen"]> | undefined;
   let stopping = false;
   const stop = async () => {
     if (stopping) return; stopping = true;
-    server.close(); await connector.stop(); await backend?.close(); store.close();
+    try { server?.close(); await connector?.stop(); await backend?.close(); store?.close(); }
+    finally { release?.(); }
   };
-  process.on("SIGTERM", () => void stop()); process.on("SIGINT", () => void stop());
+  try {
+    const profile = profiles?.require();
+    const url = new URL(profile?.homeserver ?? required("MATRIX_HOMESERVER_URL"));
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && (profile || process.env.MATRIX_ALLOW_HTTP === "true"))) throw new Error("matrix_https_required");
+    const userId = mxid.parse(profile?.userId ?? required("MATRIX_USER_ID"));
+    store = new ConnectorStore(profiles?.databasePath ?? process.env.MATRIX_STORE_PATH ?? "state/matrix.sqlite", userId);
+    const cardUrl = profile ? profile.backend?.cardUrl : process.env.A2A_AGENT_CARD_URL;
+    if (store.get<string>("meta", "backend") && store.get<string>("meta", "backend") !== (cardUrl ?? "")) {
+      throw new Error("backend_changed_use_explicit_context_migration_or_new_store");
+    }
+    store.set("meta", "backend", cardUrl ?? "");
+    backend = cardUrl ? new A2ABackend(cardUrl, profile?.backend?.token ?? secret("A2A_ENDPOINT_TOKEN", false),
+      profile ? profile.backend!.allowLocal : process.env.A2A_ALLOW_LOCAL === "true") : undefined;
+    const token = profile?.accessToken ?? secret("MATRIX_ACCESS_TOKEN");
+    const transport = new SdkMatrixTransport(url.toString(), token, userId, profile && profiles ? profileClient(profile, profiles) : undefined);
+    connector = new MatrixConnector(userId, store, transport, backend, Number(process.env.MATRIX_POLL_MS ?? "1000"));
+    for (const address of (profile ? "" : process.env.MATRIX_ALLOWED_SENDERS ?? "").split(",").filter(Boolean)) {
+      if (!connector.contact(address)) connector.setContact({ address, note: "Provisioned receive and execution permission", receive: "allow", execution: "allow" } satisfies Contact);
+    }
+    const address = profile ? connectorAddress(profile.connectorUrl) : undefined;
+    const port = address ? Number(address.port || "80") : Number(process.env.PORT ?? "8787");
+    const publicBaseUrl = address?.origin ?? (process.env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${port}`).replace(/\/$/, "");
+    const app = createConnectorApp(connector, profile?.gatewayToken ?? secret("CONNECTOR_API_TOKEN"), publicBaseUrl);
+    await connector.start();
+    await new Promise<void>((resolve, reject) => {
+      server = app.listen(port, address?.hostname.replace(/^\[|\]$/g, "") ?? process.env.HOST ?? "127.0.0.1", () => resolve());
+      server.once("error", reject);
+    });
+    process.stdout.write(JSON.stringify({ event: "matrix.listening", userId, port, ...(profiles ? { profile: profiles.name } : {}) }) + "\n");
+    const onSignal = () => { void stop().catch(() => { process.exitCode = 1; }); };
+    process.once("SIGTERM", onSignal); process.once("SIGINT", onSignal);
+  } catch (error) { await stop(); throw profiles ? authError(error) : error; }
 }
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   runConnector().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "startup_failed"}\n`); process.exitCode = 1; });
 }
