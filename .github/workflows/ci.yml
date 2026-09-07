@@ -27,7 +27,12 @@ jobs:
       - run: npm run build
       - run: npm --prefix examples/echo-agent ci
       - run: npm --prefix examples/echo-agent run typecheck
-      - run: npm pack --dry-run
+      - name: Install and verify the separate connector entry point
+        run: |
+          connector_package=$(npm pack --silent)
+          npm install --prefix "$RUNNER_TEMP/agent-router-connector" "./$connector_package" --ignore-scripts --no-audit --no-fund
+          "$RUNNER_TEMP/agent-router-connector/node_modules/.bin/agent-router-connector" --version | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{if(JSON.parse(data).component!=="connector")process.exit(1)})'
+
 
   cli:
     runs-on: ubuntu-latest
