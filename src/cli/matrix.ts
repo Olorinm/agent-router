@@ -10,7 +10,7 @@ import { accountCommand } from "./matrix-account.js";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   "context-id": { type: "string" }, "task-id": { type: "string" }, "message-id": { type: "string" },
-  detach: { type: "boolean", default: false }, "allow-execution": { type: "boolean", default: false },
+  "allow-execution": { type: "boolean", default: false },
   "allow-receive": { type: "boolean", default: false },
   note: { type: "string", default: "" },
   help: { type: "boolean", short: "h" }, profile: { type: "string" }, homeserver: { type: "string" },
@@ -18,6 +18,7 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   "device-name": { type: "string" }, "connector-url": { type: "string" }, "endpoint-token-file": { type: "string" },
   "allow-local": { type: "boolean" }, "allow-http": { type: "boolean" },
   tag: { type: "string", multiple: true }, from: { type: "string" }, since: { type: "string" }, room: { type: "string" },
+  worker: { type: "string" }, wait: { type: "string" }, all: { type: "boolean" }, "data-file": { type: "string" },
 } });
 let base: string, token: string;
 const authFetch: typeof fetch = (input, init) => {
@@ -28,20 +29,23 @@ const authFetch: typeof fetch = (input, init) => {
 };
 async function api(path: string, method = "GET", body?: object): Promise<void> {
   const res = await authFetch(base + path, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  if (!res.ok) throw new Error(`connector_http_${res.status}`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(error.error && /^[a-z0-9_]+$/.test(error.error) ? error.error : `connector_http_${res.status}`);
+  }
   if (res.status !== 204) process.stdout.write(JSON.stringify(await res.json(), null, 2) + "\n");
 }
 async function main(): Promise<void> {
   const [command, target, argument] = positionals;
   if (values.help || !command) {
-    process.stdout.write(`Matrix account and agent commands:
+    process.stdout.write(`Agent network CLI:
   register SERVER USERNAME       Register with the homeserver and save this device
   login @name:server             Log in and save credentials (password prompt)
   whoami | logout                Verify identity / revoke this device's login
   discover SERVER                Discover the homeserver and its login methods
   find TEXT | lookup [MATRIX_ID]  Native user directory and public profile
   profile-set DISPLAY_NAME       Update your Matrix display name
-  bind AGENT_CARD_URL            Connect this address to an A2A execution endpoint
+  bind AGENT_CARD_URL            Optional: delegate execution to an existing A2A service
   configure --connector-url URL  Choose a local gateway port
   connect                        Run the saved profile's connector in the foreground
   doctor | status | contacts | conversations
@@ -50,16 +54,26 @@ async function main(): Promise<void> {
   blocked | block MATRIX_ID | unblock MATRIX_ID
   invites | invite-accept ROOM_ID | invite-reject ROOM_ID
   requests | approve REQUEST_ID | reject REQUEST_ID
+  inbox [--all]                  See incoming work and requests awaiting approval
+  claim [WORK_ID] --worker NAME [--wait SECONDS]
+                                Claim work; retrying returns this worker's assignment
+  work WORK_OR_CLAIM_ID          Read input, history and cancellation state
+  progress CLAIM_ID TEXT         Report progress to the sender
+  reply CLAIM_ID TEXT [--data-file FILE]
+                                Return the result and complete the request
+  need-input CLAIM_ID TEXT       Ask the sender for missing input
+  fail CLAIM_ID TEXT             Report failure
+  cancelled CLAIM_ID             Confirm you have stopped canceled work
   conversation-open MATRIX_ID    Create a separate direct conversation
-  say MATRIX_ID TEXT [--context-id ID] [--message-id ID]
-                                Send ordinary Matrix text without invoking an agent
   history ROOM_ID [--from TOKEN] | read ROOM_ID [EVENT_ID] | leave ROOM_ID
   watch [--since CURSOR] [--room ROOM_ID]
                                 Observe new messages and task events as JSON lines
-  send MATRIX_ID TEXT [--context-id ID] [--task-id ID] [--detach]
-                                Request agent execution (subject to permission)
+  send MATRIX_ID TEXT [--context-id ID] [--task-id ID] [--wait SECONDS]
+                                Send to an agent; returns immediately unless --wait is set
   get MATRIX_ID TASK_ID | list MATRIX_ID | cancel MATRIX_ID TASK_ID
   agent-guide                    Print the complete self-onboarding guide
+
+Advanced Matrix interoperability: say MATRIX_ID TEXT emits a native text event.
 
 Use --profile NAME for separate local agent profiles (default: default).
 For automation: --password-stdin or --password-file PATH; --registration-token-file PATH.
@@ -78,6 +92,17 @@ bind accepts --endpoint-token-file PATH. Secrets are never accepted as argument 
   token = saved?.gatewayToken ?? (process.env.CONNECTOR_API_TOKEN_FILE ? readFileSync(process.env.CONNECTOR_API_TOKEN_FILE, "utf8").trim() : process.env.CONNECTOR_API_TOKEN ?? "");
   if (command === "doctor") return api("/health/ready");
   if (command === "status") return api("/api/status");
+  if (command === "inbox") return api(`/api/inbox?all=${Boolean(values.all)}`);
+  if (command === "work" && target) return api(`/api/work/${encodeURIComponent(target)}`);
+  if (command === "claim") {
+    if (!values.worker?.trim()) throw new Error("claim_requires_worker_name");
+    return api("/api/work/claim", "POST", { worker: values.worker, ...(target ? { id: target } : {}), wait: waitSeconds(60) });
+  }
+  if (["progress", "reply", "need-input", "fail", "cancelled"].includes(command) && target) {
+    const text = argument === "-" ? readFileSync(0, "utf8") : argument ?? "";
+    const data = values["data-file"] ? JSON.parse(readFileSync(values["data-file"], "utf8")) as unknown : undefined;
+    return api(`/api/work/${encodeURIComponent(target)}/update`, "POST", { action: command, text, ...(data ? { data } : {}) });
+  }
   if (command === "conversations") return api("/api/conversations");
   if (command === "conversation-open" && target) return api("/api/conversations", "POST", { address: target });
   if (command === "say" && target && argument) return api("/api/messages", "POST", { address: target,
@@ -121,7 +146,7 @@ bind accepts --endpoint-token-file PATH. Secrets are never accepted as argument 
   }
   if ((command === "approve" || command === "reject") && target) return api(`/api/requests/${encodeURIComponent(target)}/${command}`, "POST");
   if (!target || !["send", "get", "list", "cancel"].includes(command ?? "")) {
-    throw new Error("Usage: matrix connect | doctor | send MXID TEXT [--context-id ID] [--task-id ID] [--detach] | get MXID TASK_ID | list MXID | cancel MXID TASK_ID | contacts | contact-add MXID [--allow-execution] | requests | approve REQUEST_ID | invites | invite-accept ROOM_ID");
+    throw new Error("Unknown or incomplete command. Run agent-router --help.");
   }
   const client = await new ClientFactory({ cardResolver: new DefaultAgentCardResolver({ fetchImpl: authFetch }),
     transports: [new RestTransportFactory({ fetchImpl: authFetch }), new JsonRpcTransportFactory({ fetchImpl: authFetch })] })
@@ -137,17 +162,23 @@ bind accepts --endpoint-token-file PATH. Secrets are never accepted as argument 
     process.stdout.write(JSON.stringify(Task.toJSON(result), null, 2) + "\n"); return;
   }
   const text = argument === "-" ? readFileSync(0, "utf8") : argument;
+  const wait = waitSeconds(600);
   let result = await client.sendMessage({ message: Message.fromJSON({ role: "ROLE_USER", messageId: values["message-id"] ?? crypto.randomUUID(),
     contextId: values["context-id"] ?? "", taskId: values["task-id"] ?? "", parts: [{ text }] }),
     configuration: { returnImmediately: true, acceptedOutputModes: [], historyLength: 20, taskPushNotificationConfig: undefined }, metadata: {}, tenant: "" });
-  if (!("messageId" in result) && !values.detach) {
+  if (!("messageId" in result) && wait > 0) {
     process.stderr.write(`Task ${result.id}; context ${result.contextId}\n`);
-    const deadline = Date.now() + 600_000;
+    const deadline = Date.now() + wait * 1000;
     while (!terminal(result) && result.status?.state !== TaskState.TASK_STATE_INPUT_REQUIRED && result.status?.state !== TaskState.TASK_STATE_AUTH_REQUIRED) {
       if (Date.now() > deadline) throw new Error("wait_timed_out_task_remains_available");
       await delay(500); result = await client.getTask({ id: result.id, tenant: "", historyLength: 20 });
     }
   }
   process.stdout.write(JSON.stringify("messageId" in result ? Message.toJSON(result) : Task.toJSON(result), null, 2) + "\n");
+}
+function waitSeconds(max: number): number {
+  const value = Number(values.wait ?? "0");
+  if (!Number.isInteger(value) || value < 0 || value > max) throw new Error(`wait_must_be_between_0_and_${max}_seconds`);
+  return value;
 }
 main().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "command_failed"}\n`); process.exitCode = 1; });

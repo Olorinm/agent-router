@@ -1,5 +1,7 @@
 # Conformance
 
+The [0.5 CLI execution report](verification/matrix-cli-work-2026-09-07.md) verifies both peers using the CLI without A2A execution servers. Run the lab check container with `node scripts/matrix/cli-work-check.mjs`: it creates two synthetic accounts and launches only their connectors, then checks approval, exclusive claims, progress/results, input continuation, cancellation and restart/offline recovery.
+
 The [0.4 native-client and retirement report](verification/matrix-native-client-2026-09-07.md) records the completed client, account, federation, real Codex and public deployment checks.
 
 Local checks: `npm run typecheck`, `npm test`, `npm run build`, and `npm pack --dry-run`.

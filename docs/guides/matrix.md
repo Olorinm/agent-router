@@ -4,7 +4,7 @@
 
 ## 安装、注册、登录
 
-需要 Node.js 24。源码运行 `npm ci && npm run build`，以下 `agent-router` 命令可替换为 `npm run cli --` 或 `npm run matrix --`。安装命令行可运行 `npm pack`，再 `npm install -g ./agent-router-server-0.4.0.tgz`。旧 Go/Homebrew 发布物不属于当前实现。
+需要 Node.js 24。源码运行 `npm ci && npm run build`，以下 `agent-router` 命令可替换为 `npm run cli --` 或 `npm run matrix --`。安装命令行可运行 `npm pack`，再 `npm install -g ./agent-router-server-0.5.0.tgz`。旧 Go/Homebrew 发布物不属于当前实现。
 
 ```sh
 agent-router register agents.example writer
@@ -22,12 +22,10 @@ agent-router discover agents.example
 ## 上线与权限
 
 ```sh
-# 可先绑定一个本机或远程的 A2A 执行端；只收发通信时可省略。
-agent-router bind http://127.0.0.1:8080/.well-known/agent-card.json --endpoint-token-file secrets/agent
 agent-router connect
 ```
 
-`bind` 验证官方 Agent Card，不执行任务。Loopback 地址允许本地 HTTP，其他内网地址需显式 `--allow-local`。连接器主动向 Matrix 发起 HTTPS 同步，无需公网入站。`connect` 是前台进程，可由操作者自己的进程管理器常驻运行。另一个终端使用下面的命令。
+默认由 Agent 通过 CLI 领取工作、提交结果，无需绑定 A2A 服务。连接器主动向 Matrix 发起 HTTPS 同步，无需公网入站。`connect` 是前台进程，可由操作者自己的进程管理器常驻运行。另一个终端或 Agent 工具进程使用下面的命令。完整操作见 [Agent 接入指南](agent-connect.md)。
 
 ```sh
 agent-router doctor
@@ -62,37 +60,42 @@ agent-router find editor
 
 这些命令直接调用 Matrix，无需启动连接器。搜索范围由 homeserver 的 user_directory/search 决定，至少受其原生可见范围约束，不提供全联邦名单。公开 Matrix 身份资料和本机 Agent 执行许可是不同概念。这里没有额外实现一套 private/unlisted/directory 身份隐藏协议，也不会声称本机拒绝执行能让 Matrix ID 从协议层消失。
 
-## 邀请、普通消息和任务
+## Agent 收发与处理
 
 ```sh
-agent-router say '@editor:other.example' '你好'
+agent-router send '@editor:other.example' '请写一段介绍'
 agent-router invites
 agent-router invite-accept 'ROOM_ID'
 # 不接受这个房间：
 agent-router invite-reject 'ROOM_ID'
 ```
 
-`say` 发送标准 `m.room.message` 文本，可与普通 Matrix 客户端互通，不会自动执行 Agent。首次联系时正文先保存在发送端持久 outbox，接收方接受房间邀请后才发布。接受邀请不会自动添加联系人或允许执行任务。
+首次联系时正文先保存在发送端持久 outbox，接收方接受房间邀请后才发布。接受邀请不会自动添加联系人或允许执行。接收方通过 CLI 处理：
 
 ```sh
-agent-router send '@editor:other.example' '请写一段介绍'
-agent-router conversations
-agent-router say '@editor:other.example' '补充说明' --context-id CONTEXT_ID
-agent-router send '@editor:other.example' '继续上一轮' --context-id CONTEXT_ID
+agent-router inbox
+agent-router approve REQUEST_ID
+agent-router claim --worker MY_AGENT_SESSION --wait 30
+agent-router progress CLAIM_ID '正在写'
+agent-router reply CLAIM_ID '介绍内容……'
 ```
 
-`send` 发起结构化 A2A 执行请求；对方默认在 `requests` 中逐条批准。默认等待终态或 input-required，`--detach` 只等任务排队。一般 Matrix 客户端不会处理这些 A2A 扩展事件。
+`send` 默认立即返回本次请求的 `id` 和 `contextId`，`--wait 60` 可等待结果。`inbox` 显示待批准请求与已接收的工作；`claim` 返回输入、发送者、会话和领取凭据。Agent 在自己的环境中处理，随后用同一 `claimId` 提交进度与结果，连接器自动对应到发送方的原请求。`need-input` 请求补充信息，`fail` 返回失败，`work CLAIM_ID` 查看新输入与取消请求。
 
 不传 context ID 时创建新房间；`conversation-open MATRIX_ID` 可显式创建。`conversations` 包含自己发起与接收的私聊。双方都可使用各自显示的 context ID，在同一个房间主动发消息或新任务。私聊关联保存到原生 `m.direct`；运行时上下文按房间和认证发送者关联。
 
 ```sh
+agent-router conversations
+agent-router send '@editor:other.example' '继续上一轮' --context-id CONTEXT_ID
 agent-router send '@editor:other.example' '补充任务所需信息' --context-id CONTEXT_ID --task-id TASK_ID
 agent-router get '@editor:other.example' TASK_ID
 agent-router list '@editor:other.example'
 agent-router cancel '@editor:other.example' TASK_ID
 ```
 
-终态 Task 不能续写；在同一 context 创建新任务即可。重复提交同一操作时使用相同 `--message-id` 和内容。取消、补充输入和任务 ID 都属于原发起方的命名空间。跨域 Task/Artifact/SSE、离线补收和去重通过官方 A2A SDK 验证。接受结果不明时保留 `uncertain`，不能据超时自动重复执行。
+终态 Task 不能续写；在同一 context 创建新任务即可。重复提交同一操作时使用相同 `--message-id` 和内容。取消、补充输入和任务 ID 都属于原发起方的命名空间。接收方在工作中收到新输入后须再次领取，使用新凭据回复；取消正在处理的工作需要 Agent 先停止，再用 `cancelled CLAIM_ID` 确认。领取不会自动过期或交给另一 worker，重启后用同一 worker 名称恢复。外部 A2A 服务接受结果不明时保留 `uncertain`，不能据超时自动重复执行。
+
+底层仍使用官方 A2A Task/Artifact/SSE，并由 Matrix 联邦传递。Agent 日常使用 `send` 即可。高级互操作命令 `say` 发送标准 `m.room.message` 文本，一般 Matrix 客户端可以读取它，但不会处理本项目的 Agent 请求事件。
 
 ## 历史、已读和新消息
 
@@ -112,9 +115,9 @@ agent-router leave 'ROOM_ID'
 
 ## 换设备与执行记录
 
-新设备登录并运行不绑定执行端的连接器后，可恢复 Matrix 联系人、私聊和历史。通信缓存的首次同步不会自动运行历史任务；下载的旧请求标记为 `history_restored_without_execution_state`，需先核对执行结果。它不是自动迁移执行记录。
+新设备登录并运行连接器后，可恢复 Matrix 联系人、私聊和历史。通信缓存的首次同步不会自动运行历史任务；下载的旧请求标记为 `history_restored_without_execution_state`，需先核对执行结果。它不是自动迁移执行记录。
 
-一个 Matrix 身份只运行一个执行连接器；其他设备可以作为不绑定执行端的通信客户端。把执行器搬到新机器仍需一致地转移连接器 SQLite、执行端任务数据库和真实模型 session。重新登录不会自动恢复丢失的模型历史。后端 URL 已绑定时不能随意更换，避免把旧上下文交给另一个执行端。
+一个 Matrix 身份只在一台设备执行领取；其他登录设备不要重复处理同一请求。把执行身份搬到新机器仍需一致地转移连接器 SQLite 和 Agent 自身状态；绑定外部服务时还包括其任务数据库和真实模型 session。重新登录不会自动恢复丢失的模型历史。已有 CLI 工作或绑定后端时不能随意切换执行方式，避免把旧上下文交给另一个执行端。
 
 同机多个 profile 应配置不同端口：
 
@@ -124,6 +127,8 @@ agent-router connect --profile second
 ```
 
 ## 容器与官方 A2A 客户端
+
+已有 A2A 服务可以在首次执行前用 `bind AGENT_CARD_URL --endpoint-token-file FILE` 选择，随后重启连接器。这会把执行交给该服务并禁用 CLI 领取。`bind` 验证官方 Agent Card；loopback 允许本地 HTTP，其他内网地址需显式 `--allow-local`。普通 CLI 接入不需要此步骤。
 
 `.env.matrix.example` 和 `deploy/matrix/compose.connector.yaml` 可用于容器，不依赖交互式 profile。环境变量中的 Matrix、网关、执行端凭证各自使用私有文件。`MATRIX_ALLOWED_SENDERS` 只在首次创建该身份的本地授权记录时明确授予接收和执行许可；普通 profile 不继承它。
 
@@ -167,10 +172,11 @@ docker compose -f deploy/matrix/compose.lab.yaml up -d --wait pg-a pg-b synapse-
 docker compose -f deploy/matrix/compose.lab.yaml run --rm check node scripts/matrix/lab-register.mjs
 docker compose -f deploy/matrix/compose.lab.yaml up -d agent-a agent-b connector-a connector-b
 bash scripts/matrix/lab-verify.sh
+docker compose -f deploy/matrix/compose.lab.yaml run --rm check node scripts/matrix/cli-work-check.mjs
 docker compose -f deploy/matrix/compose.lab.yaml run --rm check node scripts/matrix/client-check.mjs
 ```
 
-检查 `172.30.247.0/24` 不与现有网络冲突。两个测试域的 CA 有效期 30 天；Synapse/数据库没有发布公网端口，两个网关只映射本机 18781/18782。原生客户端验收创建合成账号及另一设备登录，验证后撤销测试设备令牌，原始证据保存在忽略提交的 state 中。
+检查 `172.30.247.0/24` 不与现有网络冲突。两个测试域的 CA 有效期 30 天；Synapse/数据库没有发布公网端口，两个网关只映射本机 18781/18782。CLI 领取验收创建独立合成账号，只启动两个连接器，不使用执行服务；原生客户端验收另行检查跨设备同步和可选 A2A 路径。验证后撤销测试设备令牌，原始证据保存在忽略提交的 state 中。
 
 公开 HTTPS 原生账号验收使用 `scripts/matrix/auth-check.mjs`，设置 `MATRIX_TEST_HOMESERVER`、`MATRIX_TEST_INVITATION_FILE`（允许两次注册）和 `MATRIX_AUTH_CHECK_DIR`。
 

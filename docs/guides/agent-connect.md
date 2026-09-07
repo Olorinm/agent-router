@@ -1,70 +1,93 @@
-# Agent 自助接入
+# Agent 通过 CLI 接入
 
-这份指南供能运行 shell/CLI 的 Agent 直接使用。Matrix 身份、通信连接和实际推理运行时是三个独立对象。先获得身份和出站连接，再绑定执行端。不要把“登录成功”报告成“当前会话已经可以被远程唤醒”。
+双方 Agent 都可以只使用 `agent-router`。CLI 负责账号、收发、会话和权限，并把处理进度与结果接回原请求；Matrix 和 A2A 的传输转换由连接器完成。默认不需要 Agent Card、A2A 服务或公网端口。
 
-## 1. 获得身份
+## 登录并保持连接
 
-需要 Node.js 24 和本项目构建产物，或已安装的 `agent-router` 命令。源码中把下列 `agent-router` 替换为 `npm run cli --`。
+需要 Node.js 24。源码运行 `npm ci && npm run build`，或安装本项目 npm 包。源码中也可以用 `npm run cli --` 代替 `agent-router`。
 
 ```sh
 agent-router register agents.example writer --password-file /private/path/password --registration-token-file /private/path/invitation
 # 已有账号：
 agent-router login '@writer:agents.example' --password-file /private/path/password
-agent-router whoami
-```
-
-密码/邀请码文件由操作者提供，权限为 0600。也可以使用隐藏的终端输入，或用 `--password-stdin` 从标准输入传入密码。不要把凭证放在命令参数、模型回复或聊天消息中。登录后凭证自动保存；运行任务时不需要再次提供密码。
-
-## 2. 先接入通信
-
-```sh
 agent-router connect
 ```
 
-保持这个进程运行。在另一个进程中可调用 `find`、`lookup`、`contacts`、`say`、`history`、`watch`。连接器主动向 Matrix 发起 HTTPS 请求，本机不需要公网端口。`watch` 输出 JSON 行和可续接 cursor，便于 Agent 的工具循环读取新消息。普通 `say` 消息只用于通信，不会自动调用模型。
+密码/邀请码文件使用 0600 权限，也可用隐藏终端输入。`connect` 作为独立进程保持出站连接。在 Agent 的工具进程中使用下面的 CLI；多身份用 `--profile NAME`，同机多个连接器配置不同本机端口。
 
-## 3. 提供实际执行端
+## 发送、领取与回复
 
-如果已有 A2A v1 服务，验证其 Agent Card URL 和认证后绑定即可：
+发送方：
 
 ```sh
-# 先停止 connect，再绑定：
-agent-router bind http://127.0.0.1:8080/.well-known/agent-card.json --endpoint-token-file /private/path/endpoint-token
-agent-router connect
+agent-router send '@editor:other.example' '请检查这份报告'
 ```
 
-如果当前运行时没有 A2A 服务，需要编程 Agent 为它编写一个常驻适配器。参考 `examples/echo-agent/src/index.ts` 的官方 A2A SDK 接口，或 `src/matrix/demo-agent.ts` 的持久任务实现；后者是验收 fixture。适配器需要做到：
+默认立即返回发送回执，其中 `id` 用于查询本次处理，`contextId` 用于继续会话。无需把消息区分成普通聊天或执行协议。需要等结果时可加 `--wait 60`，之后也能用 `get ADDRESS ID` 查看结果。等待超时不会撤销请求；继续查询原 ID，避免重新发送造成另一项工作。
 
-- 发布官方 Agent Card 和 SDK 提供的 A2A 接口；本机监听即可。
-- 把收到的 Message 交给实际 Agent；保存 A2A context 到真实运行时 session 的关联。
-- 新任务可恢复同一 session，input-required 可补充输入；完成、失败、取消均返回明确状态。
-- 重启时保留任务和执行记录，避免盲目重复外部副作用。
-- 模型工具权限由运行时管理。通讯许可不会自动授予 shell、文件或部署权限。
+接收方：
 
-`src/matrix/runtime-codex.ts` 展示了 `exec resume` 会话恢复，但它是限制工具调用的验证驱动，不能直接接管一个任意正在运行的桌面任务。通用运行时必须实现自己的会话接入方式。
+```sh
+agent-router inbox
+agent-router invites
+agent-router invite-accept ROOM_ID
+# 如果 inbox 的 requests 中显示 approval_required：
+agent-router approve REQUEST_ID
+agent-router claim --worker MY_AGENT_SESSION --wait 30
+```
 
-## 4. 管理对方的权限
+`claim` 返回本次 `claimId`、发送者 `from`、会话 `conversation`、稳定的 `contextId`、当前 `input` 和最近 `history`。Agent 阅读内容，在自己的运行环境中处理，然后：
+
+```sh
+agent-router progress CLAIM_ID '正在检查'
+agent-router reply CLAIM_ID '检查完成，发现两个问题……'
+# 长文本可以从标准输入读取：
+agent-router reply CLAIM_ID - < result.txt
+# 也可以附带结构化 JSON 对象：
+agent-router reply CLAIM_ID '统计完成' --data-file result.json
+```
+
+发送方能从原请求收到进度、最终状态与结果。Agent 无需实现 A2A 接口。返回失败用 `fail CLAIM_ID TEXT`；需要对方补充信息用 `need-input CLAIM_ID TEXT`。一次领取只能结束一次，相同内容的重复提交不会再次发布结果。
+
+## 权限与邀请
+
+`inbox` 的 `requests` 是尚未批准的请求，`data` 是已接收的工作。默认不会隐式批准陌生请求。接受房间邀请、保存联系人、允许接收、允许执行分别操作：
 
 ```sh
 agent-router contact-add '@editor:other.example' --note Editor --allow-receive
-agent-router requests
-agent-router approve 'REQUEST_ID'
-# 明确授权长期自动执行时：
-agent-router contact-add '@editor:other.example' --note Editor --allow-receive --allow-execution
+agent-router approve REQUEST_ID
+# 获得持续授权时才设置：
+agent-router contact-add '@editor:other.example' --allow-receive --allow-execution
 ```
 
-联系人资料会跨设备同步；执行授权只在当前连接器生效。未知请求必须经批准才能运行。`block` 使用 Matrix 原生屏蔽，并在本地阻止执行；`unblock` 不恢复自动执行授权。
+只授予接收许可时，每条执行请求仍需批准。联系人资料在 Matrix 同步，执行授权留在设备上。已进入收件箱但执行许可被撤销的工作显示 `needsApproval`，可以用其 `id` 显式 `approve` 或 `reject`。屏蔽会阻止尚未领取的工作，并要求正在处理的 Agent 停止。
 
-## 5. 发送与续接
+## 会话、补充输入和取消
+
+发送方继续会话用返回的 `contextId`；对方也可用 `conversations` 列出的本地会话 ID 主动发送：
 
 ```sh
-agent-router say '@editor:other.example' '你好'
-agent-router send '@editor:other.example' '请完成这个任务'
-agent-router conversations
 agent-router send '@editor:other.example' '继续上一轮' --context-id CONTEXT_ID
-agent-router say '@editor:other.example' '我补充一点信息' --context-id CONTEXT_ID
+agent-router get '@editor:other.example' REQUEST_ID
+# 对方要求补充信息时，继续原请求：
+agent-router send '@editor:other.example' '补充内容' --task-id REQUEST_ID --context-id CONTEXT_ID
+agent-router cancel '@editor:other.example' REQUEST_ID
 ```
 
-`conversations` 同时列出自己发起和收到的私聊。双方可用各自显示的 context ID 在同一个 Matrix 房间主动发送；不要把一方的 A2A Task ID 当作另一方的本地 Task ID。已有未完成任务的补充输入使用原发起方的 `--task-id`。
+补充输入会产生新的领取凭据。`new_input_available_claim_again` 表示工作期间又收到输入，须再次 `claim --worker MY_AGENT_SESSION` 阅读更新，再使用新 `claimId` 回复。旧凭据不能覆盖新一轮结果。
 
-一台新设备可登录并恢复联系人、私聊和消息历史。恢复出来的旧执行请求带 `history_restored_without_execution_state`，需要核对后才能批准。迁移执行器还需要其本地数据库和真实运行时会话；不能通过复制 token 或同时启动多个执行连接器来实现。
+接收方处理期间用 `work CLAIM_ID` 检查新输入和 `cancelRequested`。收到取消后停止自己的处理或工具调用，再运行 `cancelled CLAIM_ID` 确认。CLI 不会替 Agent 杀死进程；正在处理的工作不会在确认前被虚报为已取消。未领取的请求可以直接取消。
+
+## 领取与恢复
+
+`--worker` 使用当前 Agent 会话的稳定名称，每个并发 Agent 必须不同。重复领取会返回该 worker 已持有的工作；一次只分配一项，同一 context 的工作也按顺序领取。没有可领取内容时返回 `null`，可再次等待。
+
+领取不因进程退出或超时自动转给另一 worker。重启后用同一名称恢复领取，先核对自身处理进度，避免重复产生外部副作用。结果已提交但命令响应丢失时，用同一 `claimId` 和相同内容重试；不要另起请求。当前没有自动接管失联 worker 的功能。
+
+一台新设备可恢复 Matrix 联系人和消息，但不会自动执行恢复出来的旧请求。迁移一个执行身份需要整体保留连接器 SQLite 和 Agent 自身的状态。一个身份只在一台设备执行领取；其他登录设备不要重复处理同一请求。
+
+`claim --wait 30` 可以作为 Agent 工具循环的一步；返回后交由这个正在运行的 Agent 处理。启动已退出的模型进程、把事件注入任意桌面会话仍由 Agent 宿主管理。
+
+## 已有 A2A 服务的可选接入
+
+如果已有长期运行的 A2A 服务，可以在停止连接器后运行 `bind AGENT_CARD_URL --endpoint-token-file FILE`，再 `connect`。这种配置把执行交给该服务，CLI 不再提供领取入口，以免双重执行。默认的 CLI 接入不需要此步骤。切换已有执行端还需要处理其上下文与未完成工作，不允许自动迁移。

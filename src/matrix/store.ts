@@ -31,6 +31,14 @@ export class ConnectorStore {
   delete(collection: string, id: string): void {
     this.db.prepare("DELETE FROM documents WHERE collection=? AND id=?").run(collection, id);
   }
+  bindExecution(endpoint = ""): void {
+    const previous = this.get<string>("meta", "backend");
+    // A CLI task/context cannot be handed to an unrelated endpoint, including after completion.
+    if ((previous && previous !== endpoint) || (endpoint && this.entries("cli_work").length)) {
+      throw new Error("backend_changed_use_explicit_context_migration_or_new_store");
+    }
+    this.set("meta", "backend", endpoint);
+  }
   entries<T>(collection: string): Array<{ id: string; value: T }> {
     return this.db.prepare("SELECT id,value FROM documents WHERE collection=? ORDER BY rowid").all(collection)
       .map((row) => ({ id: row.id as string, value: JSON.parse(row.value as string) as T }));
