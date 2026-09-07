@@ -31,7 +31,9 @@ for (const side of ["a", "b"]) {
     media_store_path: "/data/media", enable_registration: false, registration_shared_secret: registration,
     macaroon_secret_key: secret(), form_secret: secret(), enable_metrics: false, enable_search: false,
     suppress_key_server_warning: true, max_upload_size: "5M",
-    // Private disposable conformance lab: allow burst traffic for history-gap tests.
+    // Private disposable lab: allow repeated conversation creation and history-gap bursts.
+    // Public homeserver configuration retains its normal rate limits.
+    rc_joins: { local: { per_second: 100, burst_count: 1000 }, remote: { per_second: 100, burst_count: 1000 } },
     rc_message: { per_second: 100, burst_count: 1000 }, rc_invites: { per_room: { per_second: 100, burst_count: 1000 },
       per_user: { per_second: 100, burst_count: 1000 }, per_issuer: { per_second: 100, burst_count: 1000 } },
   });
