@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import express, { type RequestHandler } from "express";
 import { z } from "zod";
@@ -223,7 +222,7 @@ export async function runConnector(): Promise<void> {
   } catch (error) { await stop(); throw profiles ? authError(error) : error; }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   if (Number(process.versions.node.split(".")[0]) < 24) { process.stderr.write("The communication service requires Node.js 24 or newer.\n"); process.exitCode = 1; }
   else if (process.argv.includes("--version")) process.stdout.write(JSON.stringify({ version: "0.6.0", component: "connector" }) + "\n");
   else if (process.argv.includes("--help")) process.stdout.write("Agent Router communication service (Node 24). Start it with agent-router connect; use agent-router --help for agent commands.\n");
