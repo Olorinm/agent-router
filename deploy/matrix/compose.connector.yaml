@@ -1,0 +1,22 @@
+name: agent-router-matrix
+services:
+  connector:
+    build: { context: ../.., dockerfile: Dockerfile.matrix }
+    restart: unless-stopped
+    env_file: ../../.env.matrix
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      MATRIX_STORE_PATH: /state/connector.sqlite
+      MATRIX_ACCESS_TOKEN_FILE: /run/secrets/matrix-access-token
+      CONNECTOR_API_TOKEN_FILE: /run/secrets/connector-api-token
+      A2A_ENDPOINT_TOKEN_FILE: /run/secrets/agent-endpoint-token
+    ports: ["127.0.0.1:8787:8787"]
+    volumes: [../../state/matrix:/state, ../../secrets:/run/secrets:ro]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    mem_limit: 384m
+    pids_limit: 128

@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 !.env.demo
+!.env.matrix.example
 coverage/
 *.log
 secrets/*

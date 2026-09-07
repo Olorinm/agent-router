@@ -4,6 +4,8 @@
 - Federation profile: `1.0`
 - A2A wire protocol: `1.0`
 
+> Migration direction: [ADR 0002](0002-matrix-communication.md) selects Matrix for the future communication path. This ADR still describes the implemented Federation Profile 1.0; no runtime cutover or wire-contract change has occurred.
+
 ## Context
 
 A single Router provides authenticated Agent registration, official A2A v1 interfaces, a PostgreSQL Task ledger, and reliable RabbitMQ delivery. Independent operators also need to exchange work without a central directory or a second message protocol.

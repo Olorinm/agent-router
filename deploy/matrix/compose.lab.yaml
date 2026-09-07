@@ -1,0 +1,110 @@
+name: agent-router-matrix-lab
+x-runtime: &runtime
+  image: agent-router-matrix:lab
+  build:
+    context: ../..
+    dockerfile: Dockerfile.matrix
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  networks: [matrix]
+  mem_limit: 384m
+  pids_limit: 128
+x-connector-env: &connector-env
+  HOST: 0.0.0.0
+  PORT: "8787"
+  MATRIX_ACCESS_TOKEN_FILE: /secrets/matrix
+  CONNECTOR_API_TOKEN_FILE: /secrets/connector
+  A2A_ENDPOINT_TOKEN_FILE: /secrets/agent
+  MATRIX_STORE_PATH: /state/connector.sqlite
+  A2A_ALLOW_LOCAL: "true"
+  NODE_EXTRA_CA_CERTS: /tls/ca.crt
+  MATRIX_POLL_MS: "250"
+services:
+  pg-a:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    environment: { POSTGRES_USER: synapse, POSTGRES_DB: synapse, POSTGRES_PASSWORD_FILE: /run/secrets/password, POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C" }
+    volumes: [../../state/matrix-lab/pg-a:/var/lib/postgresql/data, ../../state/matrix-lab/secrets-a/postgres:/run/secrets/password:ro]
+    networks: [matrix]
+    mem_limit: 256m
+    healthcheck: { test: [CMD-SHELL, "pg_isready -U synapse"], interval: 5s, timeout: 5s, retries: 20 }
+  pg-b:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    environment: { POSTGRES_USER: synapse, POSTGRES_DB: synapse, POSTGRES_PASSWORD_FILE: /run/secrets/password, POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C" }
+    volumes: [../../state/matrix-lab/pg-b:/var/lib/postgresql/data, ../../state/matrix-lab/secrets-b/postgres:/run/secrets/password:ro]
+    networks: [matrix]
+    mem_limit: 256m
+    healthcheck: { test: [CMD-SHELL, "pg_isready -U synapse"], interval: 5s, timeout: 5s, retries: 20 }
+  synapse-a:
+    image: ghcr.io/element-hq/synapse:v1.160.0
+    restart: unless-stopped
+    volumes: [../../state/matrix-lab/synapse-a:/data, ../../state/matrix-lab/tls/a.crt:/tls/a.crt:ro, ../../state/matrix-lab/tls/a.key:/tls/a.key:ro, ../../state/matrix-lab/tls/ca.crt:/tls/ca.crt:ro]
+    networks: { matrix: { aliases: [matrix-a.test] } }
+    depends_on: { pg-a: { condition: service_healthy } }
+    mem_limit: 768m
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request,ssl; urllib.request.urlopen('https://matrix-a.test:8448/health',context=ssl.create_default_context(cafile='/tls/ca.crt'))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+  synapse-b:
+    image: ghcr.io/element-hq/synapse:v1.160.0
+    restart: unless-stopped
+    volumes: [../../state/matrix-lab/synapse-b:/data, ../../state/matrix-lab/tls/b.crt:/tls/b.crt:ro, ../../state/matrix-lab/tls/b.key:/tls/b.key:ro, ../../state/matrix-lab/tls/ca.crt:/tls/ca.crt:ro]
+    networks: { matrix: { aliases: [matrix-b.test] } }
+    depends_on: { pg-b: { condition: service_healthy } }
+    mem_limit: 768m
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request,ssl; urllib.request.urlopen('https://matrix-b.test:8448/health',context=ssl.create_default_context(cafile='/tls/ca.crt'))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+  agent-a:
+    <<: *runtime
+    command: [node, dist/matrix/demo-agent.js]
+    environment: { HOST: 0.0.0.0, PORT: "8080", PUBLIC_BASE_URL: "http://agent-a:8080", ENDPOINT_BEARER_TOKEN_FILE: /secrets/agent, DEMO_STORE_PATH: /state/agent.sqlite }
+    volumes: [../../state/matrix-lab/agent-a:/state, ../../state/matrix-lab/secrets-a:/secrets:ro]
+  agent-b:
+    <<: *runtime
+    command: [node, dist/matrix/demo-agent.js]
+    environment: { HOST: 0.0.0.0, PORT: "8080", PUBLIC_BASE_URL: "http://agent-b:8080", ENDPOINT_BEARER_TOKEN_FILE: /secrets/agent, DEMO_STORE_PATH: /state/agent.sqlite }
+    volumes: [../../state/matrix-lab/agent-b:/state, ../../state/matrix-lab/secrets-b:/secrets:ro]
+  connector-a:
+    <<: *runtime
+    environment:
+      <<: *connector-env
+      PUBLIC_BASE_URL: http://connector-a:8787
+      MATRIX_HOMESERVER_URL: https://matrix-a.test:8448
+      MATRIX_USER_ID: "@agent:matrix-a.test"
+      MATRIX_ALLOWED_SENDERS: "@agent:matrix-b.test"
+      A2A_AGENT_CARD_URL: http://agent-a:8080/.well-known/agent-card.json
+    volumes: [../../state/matrix-lab/connector-a:/state, ../../state/matrix-lab/secrets-a:/secrets:ro, ../../state/matrix-lab/tls/ca.crt:/tls/ca.crt:ro]
+    ports: ["127.0.0.1:18781:8787"]
+  connector-b:
+    <<: *runtime
+    environment:
+      <<: *connector-env
+      PUBLIC_BASE_URL: http://connector-b:8787
+      MATRIX_HOMESERVER_URL: https://matrix-b.test:8448
+      MATRIX_USER_ID: "@agent:matrix-b.test"
+      MATRIX_ALLOWED_SENDERS: "@agent:matrix-a.test"
+      A2A_AGENT_CARD_URL: http://agent-b:8080/.well-known/agent-card.json
+    volumes: [../../state/matrix-lab/connector-b:/state, ../../state/matrix-lab/secrets-b:/secrets:ro, ../../state/matrix-lab/tls/ca.crt:/tls/ca.crt:ro]
+    ports: ["127.0.0.1:18782:8787"]
+  check:
+    <<: *runtime
+    profiles: [tools]
+    restart: "no"
+    user: root
+    cap_add: [DAC_OVERRIDE, CHOWN]
+    command: [node, scripts/matrix/lab-check.mjs]
+    environment: { NODE_EXTRA_CA_CERTS: /lab/tls/ca.crt, MATRIX_LAB_DIR: /lab }
+    volumes: [../../state/matrix-lab:/lab, ../../scripts/matrix:/app/scripts/matrix:ro]
+networks:
+  matrix:
+    name: agent-router-matrix-lab
+    ipam: { config: [{ subnet: 172.30.247.0/24 }] }
