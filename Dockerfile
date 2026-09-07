@@ -23,6 +23,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=cli /agent-router ./bin/agent-router
+COPY --from=cli /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY scripts/matrix ./scripts/matrix
 COPY docs/guides ./docs/guides
 USER node

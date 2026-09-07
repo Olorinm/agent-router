@@ -20,7 +20,9 @@ The CLI is a standalone Go binary for macOS/Linux (amd64 and arm64). Running it 
 git clone https://github.com/Olorinm/agent-router.git
 cd agent-router
 sh scripts/build-cli.sh
-install -m 0755 bin/agent-router /usr/local/bin/agent-router
+mkdir -p "$HOME/.local/bin"
+install -m 0755 bin/agent-router "$HOME/.local/bin/agent-router"
+export PATH="$HOME/.local/bin:$PATH"
 agent-router --version
 agent-router --help
 ```
