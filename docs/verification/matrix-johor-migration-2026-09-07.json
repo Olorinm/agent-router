@@ -1,0 +1,176 @@
+{
+  "checked_at": "2026-09-07T06:09:07.859497+00:00",
+  "target": "agent-router-johor",
+  "deployment_directory": "/opt/agent-router-matrix-lab",
+  "matrix_containers": [
+    {
+      "name": "agent-router-matrix-lab-agent-b-1",
+      "image": "sha256:d1af7808d8d5cb04e371fc4b44ff80518ee8f2ca375469b2a46eb885536f7429",
+      "status": "running",
+      "health": null,
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-synapse-b-1",
+      "image": "sha256:1231c84d217f290e73db498f46a9af52aaafa38015502b4ebb7c111c8d097196",
+      "status": "running",
+      "health": "healthy",
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-synapse-a-1",
+      "image": "sha256:1231c84d217f290e73db498f46a9af52aaafa38015502b4ebb7c111c8d097196",
+      "status": "running",
+      "health": "healthy",
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-connector-a-1",
+      "image": "sha256:d1af7808d8d5cb04e371fc4b44ff80518ee8f2ca375469b2a46eb885536f7429",
+      "status": "running",
+      "health": null,
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-connector-b-1",
+      "image": "sha256:d1af7808d8d5cb04e371fc4b44ff80518ee8f2ca375469b2a46eb885536f7429",
+      "status": "running",
+      "health": null,
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-agent-a-1",
+      "image": "sha256:d1af7808d8d5cb04e371fc4b44ff80518ee8f2ca375469b2a46eb885536f7429",
+      "status": "running",
+      "health": null,
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-pg-a-1",
+      "image": "sha256:ae8a26b5b27ef277b46284a0faa2f0059e36a0b40b4064e3353e1bbaaaa2b214",
+      "status": "running",
+      "health": "healthy",
+      "restart_count": 0
+    },
+    {
+      "name": "agent-router-matrix-lab-pg-b-1",
+      "image": "sha256:ae8a26b5b27ef277b46284a0faa2f0059e36a0b40b4064e3353e1bbaaaa2b214",
+      "status": "running",
+      "health": "healthy",
+      "restart_count": 0
+    }
+  ],
+  "connectors_ready": true,
+  "original_router_service_ids_images_start_times_restart_counts_and_health_unchanged": true,
+  "original_router_services": [
+    "agent-router-router-1",
+    "agent-router-caddy-1",
+    "agent-router-rabbitmq-1",
+    "agent-router-postgres-1"
+  ],
+  "checkpoints": [
+    {
+      "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+      "at": "2026-09-07T06:02:16.734Z"
+    },
+    {
+      "name": "bidirectional_federation_official_rest_and_jsonrpc",
+      "at": "2026-09-07T06:02:41.567Z"
+    },
+    {
+      "name": "message_id_retry_executes_once",
+      "at": "2026-09-07T06:02:43.627Z"
+    },
+    {
+      "name": "same_context_across_two_a2a_tasks",
+      "at": "2026-09-07T06:02:46.167Z"
+    },
+    {
+      "name": "input_required_continuation_and_artifact",
+      "at": "2026-09-07T06:02:48.711Z"
+    },
+    {
+      "name": "cancel_after_execution_starts",
+      "at": "2026-09-07T06:02:50.961Z"
+    },
+    {
+      "name": "invitation_then_request_inbox_then_explicit_execution_approval",
+      "at": "2026-09-07T06:02:53.417Z"
+    },
+    {
+      "name": "official_a2a_sse_task_artifact_status",
+      "at": "2026-09-07T06:02:56.301Z"
+    },
+    {
+      "name": "cancel_unapproved_request_closes_inbox_without_execution",
+      "at": "2026-09-07T06:02:58.392Z"
+    },
+    {
+      "name": "queued_while_destination_connector_offline",
+      "at": "2026-09-07T06:03:09.353Z"
+    },
+    {
+      "name": "offline_delivery_after_connector_restart",
+      "at": "2026-09-07T06:03:12.393Z"
+    },
+    {
+      "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+      "at": "2026-09-07T06:03:25.270Z"
+    },
+    {
+      "name": "cancel_requested_while_destination_offline",
+      "at": "2026-09-07T06:03:37.476Z"
+    },
+    {
+      "name": "cancel_before_execution_prevents_backend_invocation",
+      "at": "2026-09-07T06:03:39.217Z"
+    },
+    {
+      "name": "history_gap_prepared_with_120_events",
+      "at": "2026-09-07T06:03:58.588Z"
+    },
+    {
+      "name": "limited_sync_history_gap_recovered",
+      "at": "2026-09-07T06:04:00.486Z"
+    },
+    {
+      "name": "real_codex_same_session_after_process_restart",
+      "at": "2026-09-07T06:04:58.141Z"
+    },
+    {
+      "name": "shipped_cli_cross_domain_send_on_johor",
+      "at": "2026-09-07T06:06:45.703Z"
+    }
+  ],
+  "snapshot": {
+    "at": "2026-09-07T06:06:23.984408+00:00",
+    "snapshot_entries": 5220,
+    "snapshot_manifest_sha256": "54adcd8455334ddfa08c13610cfa7b788ef2b04961a14576de7c13b6592610f0",
+    "snapshot_content_owner_mode_match": true,
+    "rollback_archive": "/opt/agent-router-matrix-lab/state/pre-migration-backup.tar.gz",
+    "rollback_archive_sha256": "ec880c07fcb088842151ab08660189e08e8cf9d1da4367a09ab6e7e4e91e253a",
+    "rollback_archive_verified": true,
+    "real_codex_migrated_session_verified": true,
+    "migrated_image_ids_match": true
+  },
+  "model_access": "direct_from_johor",
+  "default_backend": "deterministic_fixture",
+  "source_restoration": {
+    "at": "2026-09-07T06:08:00.624795+00:00",
+    "matrix_containers_removed": 8,
+    "matrix_image_ids_removed": 4,
+    "matrix_image_tags_removed": 6,
+    "matrix_build_cache_records_removed": 46,
+    "old_build_cache_records_preserved": 31,
+    "matrix_network_removed": true,
+    "matrix_directory_removed": true,
+    "original_services_preserved": [
+      "codex-verifier-employee-1",
+      "codex-verifier-proxy",
+      "codex-verifier-tunnel"
+    ],
+    "original_service_ids_images_start_times_restart_counts_and_health_unchanged": true
+  },
+  "synthetic_data_only": true,
+  "runtime_source_commit": "bb75177"
+}
