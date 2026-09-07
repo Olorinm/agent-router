@@ -11,7 +11,7 @@ const lab = process.env.MATRIX_LAB_DIR ?? "/lab";
 const root = resolve(process.env.MATRIX_CLIENT_CHECK_DIR ?? `${lab}/client-check`);
 mkdirSync(root, { recursive: true, mode: 0o700 });
 const suffix = randomBytes(5).toString("hex"), config = join(root, "profiles");
-const env = { ...process.env, MATRIX_CONFIG_DIR: config };
+const env = { ...process.env, MATRIX_CONFIG_DIR: config, AGENT_ROUTER_CONNECTOR_ENTRY: resolve("dist/matrix/index.js") };
 for (const key of ["MATRIX_PROFILE", "MATRIX_HOMESERVER_URL", "CONNECTOR_API_TOKEN", "CONNECTOR_API_TOKEN_FILE"]) delete env[key];
 const server = (side) => `https://matrix-${side === "c" ? "a" : side}.test:8448`;
 const name = (side) => `client_${side}_${suffix}`;
@@ -23,7 +23,8 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const passes = [], children = new Set();
 const pass = (name) => { passes.push({ name, at: new Date().toISOString() }); process.stdout.write(`PASS ${name}\n`); };
 function start(args, extra = {}) {
-  const child = spawn(process.execPath, args, { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
+  const executable = args[0]?.endsWith(".js") ? process.execPath : resolve(process.env.AGENT_ROUTER_CLI ?? "bin/agent-router");
+  const child = spawn(executable, args, { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = ""; child.stdout.on("data", (x) => { out += x; }); child.stderr.on("data", (x) => { err += x; });
   child.logs = () => ({ out, err }); children.add(child); return child;
 }
@@ -34,7 +35,7 @@ async function stop(child) {
   assert.notEqual(child.signalCode, "SIGKILL", "process failed to stop gracefully");
 }
 async function cli(side, ...args) {
-  const child = start(["dist/cli/matrix.js", ...args, "--profile", name(side)]);
+  const child = start([...args, "--profile", name(side)]);
   const timer = setTimeout(() => child.kill("SIGKILL"), 90000);
   const code = await new Promise((r, reject) => { child.once("exit", r); child.once("error", reject); }); clearTimeout(timer); children.delete(child);
   const { out, err } = child.logs();
@@ -83,8 +84,8 @@ try {
     ENDPOINT_BEARER_TOKEN_FILE: tokenFile, DEMO_STORE_PATH: join(root, `fixture-${suffix}.sqlite`) });
   await until(async () => (await fetch("http://127.0.0.1:18890/health/live")).ok);
   for (const side of ["a", "b"]) await cli(side, "bind", "http://127.0.0.1:18890/.well-known/agent-card.json", "--endpoint-token-file", tokenFile);
-  const a = start(["dist/cli/matrix.js", "connect", "--profile", name("a")]);
-  const b = start(["dist/cli/matrix.js", "connect", "--profile", name("b")]); await ready("a"); await ready("b");
+  const a = start(["connect", "--profile", name("a")]);
+  const b = start(["connect", "--profile", name("b")]); await ready("a"); await ready("b");
   await cli("a", "contact-add", B, "--note", "Editor", "--tag", "writing", "--allow-receive", "--allow-execution");
   await cli("b", "contact-add", A, "--allow-receive");
   assert.deepEqual(await account("a", contactType(B)), { version: 1, address: B, note: "Editor", tags: ["writing"] });
@@ -102,7 +103,7 @@ try {
   assert.equal((await cli("a", "lookup", B)).displayname, `Synthetic Editor ${suffix}`);
   await until(async () => (await cli("a", "find", suffix)).results.some((r) => r.user_id === B));
   pass("native_remote_profile_and_visible_user_directory_search");
-  const watch = start(["dist/cli/matrix.js", "watch", "--since", "0", "--room", first.room, "--profile", name("a")]);
+  const watch = start(["watch", "--since", "0", "--room", first.room, "--profile", name("a")]);
   await until(async () => watch.logs().out.includes("plain reply"));
   await cli("b", "say", A, "watch notification", "--context-id", bConversation.id);
   await until(async () => watch.logs().out.includes("watch notification")); await stop(watch);
@@ -120,7 +121,7 @@ try {
   await cli("c", "login", A, "--homeserver", server("a"), "--password-file", passwordFile);
   await cli("c", "configure", "--connector-url", "http://127.0.0.1:18893");
   const beforeRestore = (await diagnostics()).invocations.length;
-  const c = start(["dist/cli/matrix.js", "connect", "--profile", name("c")]); await ready("c");
+  const c = start(["connect", "--profile", name("c")]); await ready("c");
   const restored = (await cli("c", "contacts")).data.find((r) => r.address === B);
   assert.equal(restored.note, "Editor"); assert.deepEqual(restored.tags, ["writing"]); assert.equal(restored.execution, "ask");
   const cConversation = (await cli("c", "conversations")).data.find((r) => r.room === first.room); assert.ok(cConversation);

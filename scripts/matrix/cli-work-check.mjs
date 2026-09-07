@@ -9,7 +9,7 @@ const lab = process.env.MATRIX_LAB_DIR ?? "/lab";
 const root = resolve(process.env.MATRIX_WORK_CHECK_DIR ?? `${lab}/cli-work-check`);
 mkdirSync(root, { recursive: true, mode: 0o700 });
 const suffix = randomBytes(5).toString("hex"), config = join(root, "profiles");
-const env = { ...process.env, MATRIX_CONFIG_DIR: config };
+const env = { ...process.env, MATRIX_CONFIG_DIR: config, AGENT_ROUTER_CONNECTOR_ENTRY: resolve("dist/matrix/index.js") };
 for (const key of ["MATRIX_PROFILE", "MATRIX_HOMESERVER_URL", "CONNECTOR_API_TOKEN", "CONNECTOR_API_TOKEN_FILE", "A2A_AGENT_CARD_URL"]) delete env[key];
 const server = (side) => `https://matrix-${side}.test:8448`;
 const name = (side) => `work_${side}_${suffix}`;
@@ -20,12 +20,12 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const passes = [], children = new Set();
 const pass = (name) => { passes.push({ name, at: new Date().toISOString() }); process.stdout.write(`PASS ${name}\n`); };
 function start(args) {
-  const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(resolve(process.env.AGENT_ROUTER_CLI ?? "bin/agent-router"), args, { env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = ""; child.stdout.on("data", (x) => { out += x; }); child.stderr.on("data", (x) => { err += x; });
   child.logs = () => ({ out, err }); children.add(child); return child;
 }
 async function cli(side, ...args) {
-  const child = start(["dist/cli/matrix.js", ...args, "--profile", name(side)]);
+  const child = start([...args, "--profile", name(side)]);
   const timer = setTimeout(() => child.kill("SIGKILL"), 120000);
   const code = await new Promise((r, reject) => { child.once("exit", r); child.once("error", reject); }); clearTimeout(timer); children.delete(child);
   const { out, err } = child.logs(); assert.ok(!out.includes(password) && !err.includes(password));
@@ -67,8 +67,8 @@ try {
     assert.equal(profile(side).backend, undefined);
   }
   const A = profile("a").userId, B = profile("b").userId;
-  let a = start(["dist/cli/matrix.js", "connect", "--profile", name("a")]);
-  let b = start(["dist/cli/matrix.js", "connect", "--profile", name("b")]);
+  let a = start(["connect", "--profile", name("a")]);
+  let b = start(["connect", "--profile", name("b")]);
   await ready("a"); await ready("b");
   await cli("b", "contact-add", A, "--allow-receive");
   await cli("a", "contact-add", B, "--allow-receive", "--allow-execution");
@@ -102,7 +102,7 @@ try {
   pass("same_conversation_both_directions_and_input_required_continuation");
   const restart = await cli("a", "send", B, "restart request", "--context-id", sent.contextId);
   const owned = await cli("b", "claim", "--worker", "b-session", "--wait", "60");
-  await stop(b); b = start(["dist/cli/matrix.js", "connect", "--profile", name("b")]); await ready("b");
+  await stop(b); b = start(["connect", "--profile", name("b")]); await ready("b");
   assert.equal((await cli("b", "claim", "--worker", "b-session")).claimId, owned.claimId);
   assert.equal(await cli("b", "claim", "--worker", "other-session"), null);
   await cli("b", "reply", owned.claimId, "after restart"); await state("a", B, restart.id);
@@ -119,7 +119,7 @@ try {
   pass("cancellation_before_claim_and_acknowledged_cancellation_during_execution");
   await stop(b);
   const offline = await cli("a", "send", B, "offline request", "--context-id", sent.contextId);
-  b = start(["dist/cli/matrix.js", "connect", "--profile", name("b")]); await ready("b");
+  b = start(["connect", "--profile", name("b")]); await ready("b");
   const recovered = await cli("b", "claim", "--worker", "b-session", "--wait", "60");
   assert.ok(recovered.input.parts.some((p) => p.text === "offline request"));
   await cli("b", "reply", recovered.claimId, "received after reconnect"); await state("a", B, offline.id);

@@ -1,6 +1,10 @@
+import { execFile } from "node:child_process";
+import { createServer } from "node:http";
+import { promisify } from "node:util";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { ProfileStore } from "../src/matrix/profile.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { SendMessageRequest, TaskState, type Task } from "@a2a-js/sdk";
 import { ServerCallContext } from "@a2a-js/sdk/server";
@@ -211,5 +215,77 @@ describe("CLI-only peers through the existing Matrix/A2A adapter", () => {
     const claim = await (await post("/api/work/claim", { worker: "w" })).json() as { claimId: string };
     expect((await post(`/api/work/${claim.claimId}/update`, { action: "reply", text: "HTTP result" })).status).toBe(200);
     expect((await post(`/api/work/${claim.claimId}/update`, { action: "reply", text: "different" })).status).toBe(409);
+  });
+});
+
+
+describe("compiled Go CLI across the TypeScript service boundary", () => {
+  const execute = promisify(execFile);
+  async function serve(connector: MatrixConnector) {
+    const server = createServer();
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    server.on("request", createConnectorApp(connector, "synthetic-gateway-token", base));
+    cleanup.push(() => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }));
+    return base;
+  }
+  function environment(base: string) {
+    const env = { ...process.env, PATH: "/nonexistent", CONNECTOR_URL: base, CONNECTOR_API_TOKEN: "synthetic-gateway-token" };
+    delete env.MATRIX_PROFILE; delete env.CONNECTOR_API_TOKEN_FILE;
+    return env;
+  }
+  async function cli(base: string, ...args: string[]) {
+    const { stdout } = await execute(resolve("bin/agent-router"), args, { env: environment(base), timeout: 15000 });
+    return stdout ? JSON.parse(stdout) : undefined;
+  }
+  it("uses the official Go SDK for send/get/list/cancel and preserves continuation through claim/reply", async () => {
+    const { a, b, cycle } = peers();
+    const left = await serve(a), right = await serve(b);
+    const first = await cli(left, "send", B, "hello from Go", "--message-id", "go-idempotency");
+    expect(first.status.state).toBe("TASK_STATE_SUBMITTED");
+    expect((await cli(left, "send", B, "hello from Go", "--message-id", "go-idempotency")).id).toBe(first.id);
+    await cycle();
+    expect(await cli(right, "claim", "--worker", "bob")).toBeNull();
+    const pending = (await cli(right, "inbox")).requests[0];
+    await cli(right, "approve", pending.id); await cycle();
+    const claim = await cli(right, "claim", "--worker", "bob");
+    expect(claim.input.parts[0].text).toBe("hello from Go");
+    await cli(right, "progress", claim.claimId, "halfway"); await cycle();
+    expect((await cli(left, "get", B, first.id)).status.message.parts[0].text).toBe("halfway");
+    await cli(right, "need-input", claim.claimId, "more details"); await cycle();
+    await cli(right, "contact-add", A, "--allow-receive", "--allow-execution");
+    expect((await cli(left, "send", B, "details", "--context-id", first.contextId, "--task-id", first.id)).id).toBe(first.id); await cycle();
+    const continued = await cli(right, "claim", "--worker", "bob");
+    expect(continued.claimId).not.toBe(claim.claimId);
+    await cli(right, "reply", continued.claimId, "Go result"); await cycle();
+    const final = await cli(left, "get", B, first.id);
+    expect(final.status.state).toBe("TASK_STATE_COMPLETED");
+    expect(final.artifacts[0].parts[0].text).toBe("Go result");
+    expect((await cli(left, "list", B, "--context-id", first.contextId)).tasks.some((t: { id: string }) => t.id === first.id)).toBe(true);
+    await cli(right, "contact-add", A, "--allow-receive", "--allow-execution");
+    const followup = await cli(left, "send", B, "same conversation", "--context-id", first.contextId); await cycle();
+    expect(followup.contextId).toBe(first.contextId); expect(followup.id).not.toBe(first.id);
+    const active = await cli(right, "claim", "--worker", "bob");
+    const cancellation = cli(left, "cancel", B, followup.id);
+    void cancellation.catch(() => {});
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 20)); await cycle();
+      if ((await cli(right, "work", active.claimId)).cancelRequested) break;
+    }
+    expect((await cli(right, "work", active.claimId)).cancelRequested).toBe(true);
+    await cli(right, "cancelled", active.claimId); await cycle(); await cancellation;
+    expect((await cli(left, "get", B, followup.id)).status.state).toBe("TASK_STATE_CANCELED");
+  }, 30000);
+  it("refuses Go credential mutation while the Node connector owns the shared profile", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "go-node-profile-"));
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+    const store = new ProfileStore("agent", directory);
+    store.save({ version: 1, homeserver: "https://hs.example", userId: A, deviceId: "DEVICE", accessToken: "synthetic-access-token", gatewayToken: "synthetic-gateway-token", connectorUrl: "http://127.0.0.1:8787" });
+    const release = store.lock(); cleanup.push(release);
+    await expect(execute(resolve("bin/agent-router"), ["configure", "--connector-url", "http://127.0.0.1:8989", "--profile", "agent"], {
+      env: { ...environment("http://127.0.0.1:8787"), MATRIX_CONFIG_DIR: directory }, timeout: 10000,
+    })).rejects.toThrow("profile_is_in_use");
+    expect(store.require().connectorUrl).toBe("http://127.0.0.1:8787");
   });
 });

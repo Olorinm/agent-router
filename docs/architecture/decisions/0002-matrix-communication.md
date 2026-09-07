@@ -2,15 +2,15 @@
 
 - Status: accepted, implemented and verified against the complete client acceptance checklist
 - Date: 2026-09-07
-- Implementation: 0.5, Matrix transport and default CLI execution
+- Implementation: 0.6, Matrix transport, Go CLI and default CLI execution
 
 ## Decision
 
-Use unmodified Matrix homeservers for identities, rooms, persisted messages, client synchronization, federation and private account data. Synapse is the tested homeserver. Use the official Matrix SDK as the HTTP/authentication client and the official A2A SDK at execution and caller boundaries.
+Use unmodified Matrix homeservers for identities, rooms, persisted messages, client synchronization, federation and private account data. Synapse is the tested homeserver. The communication service uses the official Matrix SDK and the official A2A JavaScript SDK. The Go CLI uses standard Matrix account APIs and the official A2A Go SDK; see [ADR 0003](0003-go-cli.md).
 
 Both agents interact through our CLI. The default execution adapter stores requests in a persistent inbox and exposes claim/progress/reply operations. It converts those operations into official A2A Task states and Artifacts using the existing Matrix response transport. A separately hosted A2A service is an optional alternative, not a prerequisite. Users do not choose an A2A wire format to send work.
 
-The user explicitly removed the requirement to support the previous custom Router. Its Go CLI, account registry, JWT/JWKS federation, PostgreSQL task schema, RabbitMQ delivery, migration scripts and old compatibility data are removed. No automatic account, credential or task migration is provided.
+The user explicitly removed the requirement to support the previous custom Router. Its old custom-protocol Go CLI, account registry, JWT/JWKS federation, PostgreSQL task schema, RabbitMQ delivery, migration scripts and old compatibility data are removed. No automatic account, credential or task migration is provided.
 
 ## Ownership of data and behavior
 

@@ -18,7 +18,7 @@ export class MatrixA2AHandler implements A2ARequestHandler {
   async getAgentCard(): Promise<AgentCard> {
     const base = `${this.baseUrl}/agents/${encodeURIComponent(this.target)}`;
     return AgentCard.fromJSON({ name: this.target, description: "A2A task gateway through Matrix; execution is subject to recipient permission.",
-      version: "0.5.0", supportedInterfaces: [
+      version: "0.6.0", supportedInterfaces: [
         { url: `${base}/a2a/rest`, protocolBinding: "HTTP+JSON", protocolVersion: A2A_PROTOCOL_VERSION },
         { url: `${base}/a2a/jsonrpc`, protocolBinding: "JSONRPC", protocolVersion: A2A_PROTOCOL_VERSION },
       ], capabilities: { streaming: true, pushNotifications: false, extendedAgentCard: false },

@@ -1,12 +1,12 @@
 # Security policy
 
-Agent Router 0.5 is a Matrix client with a persistent CLI execution inbox and an optional A2A service adapter. Only the current Matrix implementation is maintained. The custom Router protocol and its credentials are no longer accepted.
+Agent Router 0.6 has a standalone Go CLI and a separate Matrix communication service with a persistent CLI execution inbox and an optional A2A service adapter. Only the current Matrix implementation is maintained. The custom Router protocol and its credentials are no longer accepted.
 
 Report vulnerabilities privately through the repository owner's GitHub security advisory channel. Do not include real credentials, prompts, Task content, database dumps or deployment identifiers in public issues.
 
 ## Credential and execution boundaries
 
-- Matrix passwords stay with the homeserver. Device access/refresh tokens, the gateway token and backend credentials are stored in private local profiles (0700 directories, 0600 files).
+- The Go CLI sends passwords to the selected homeserver over HTTPS and never persists them. Redirects and credential-bearing cross-origin requests are rejected. Device access/refresh tokens, the gateway token and backend credentials are stored in private local profiles (0700 directories, 0600 files).
 - Native account data stores contact metadata and direct rooms. Execution permission is local and is never granted by downloaded contact metadata.
 - Blocking uses Matrix ignored users and is enforced again before local execution. Unblocking requires renewed execution authorization.
 - Ordinary Matrix messages do not execute a model. A2A requests pass the receiver's permission checks.

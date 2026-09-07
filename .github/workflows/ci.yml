@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - run: sh scripts/build-cli.sh
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -28,18 +31,23 @@ jobs:
 
   cli:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Install and run the packaged CLI
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: sh scripts/build-cli.sh
+      - name: Run the standalone CLI without a language runtime on PATH
         run: |
-          cli_package=$(npm pack --silent)
-          npm install --prefix "$RUNNER_TEMP/agent-router-cli" "./$cli_package" --ignore-scripts --no-audit --no-fund
-          "$RUNNER_TEMP/agent-router-cli/node_modules/.bin/agent-router" --help
-          "$RUNNER_TEMP/agent-router-cli/node_modules/.bin/agent-router" agent-guide
+          PATH=/nonexistent ./bin/agent-router --version
+          PATH=/nonexistent ./bin/agent-router --help
+          PATH=/nonexistent ./bin/agent-router agent-guide
+      - run: sh scripts/package-cli.sh
+      - name: Verify Linux release archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent-router-cli"
+          tar -xzf state/release/agent-router_0.6.0_linux_amd64.tar.gz -C "$RUNNER_TEMP/agent-router-cli"
+          PATH=/nonexistent "$RUNNER_TEMP/agent-router-cli/agent-router" --version
+          (cd state/release && shasum -a 256 -c SHA256SUMS)
