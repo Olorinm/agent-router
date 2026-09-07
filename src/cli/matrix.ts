@@ -4,15 +4,20 @@ import { ClientFactory, DefaultAgentCardResolver, RestTransportFactory, JsonRpcT
 import { Message, Task, TaskState } from "@a2a-js/sdk";
 import { delay } from "../matrix/connector.js";
 import { terminal } from "../matrix/protocol.js";
+import { ProfileStore } from "../matrix/profile.js";
+import { accountCommand } from "./matrix-account.js";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   "context-id": { type: "string" }, "task-id": { type: "string" }, "message-id": { type: "string" },
   detach: { type: "boolean", default: false }, "allow-execution": { type: "boolean", default: false },
   "allow-receive": { type: "boolean", default: false },
   block: { type: "boolean", default: false }, note: { type: "string", default: "" },
+  help: { type: "boolean", short: "h" }, profile: { type: "string" }, homeserver: { type: "string" },
+  "password-stdin": { type: "boolean" }, "password-file": { type: "string" }, "registration-token-file": { type: "string" },
+  "device-name": { type: "string" }, "connector-url": { type: "string" }, "endpoint-token-file": { type: "string" },
+  "allow-local": { type: "boolean" }, "allow-http": { type: "boolean" },
 } });
-const base = (process.env.CONNECTOR_URL ?? process.env.PUBLIC_BASE_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
-const token = process.env.CONNECTOR_API_TOKEN_FILE ? readFileSync(process.env.CONNECTOR_API_TOKEN_FILE, "utf8").trim() : process.env.CONNECTOR_API_TOKEN ?? "";
+let base: string, token: string;
 const authFetch: typeof fetch = (input, init) => {
   const url = input instanceof Request ? input.url : input.toString();
   if (new URL(url).origin !== new URL(base).origin) throw new Error("gateway_origin_mismatch");
@@ -26,7 +31,33 @@ async function api(path: string, method = "GET", body?: object): Promise<void> {
 }
 async function main(): Promise<void> {
   const [command, target, argument] = positionals;
+  if (values.help || !command) {
+    process.stdout.write(`Matrix account and agent commands:
+  register SERVER USERNAME       Register with the homeserver and save this device
+  login @name:server             Log in and save credentials (password prompt)
+  whoami | logout                Verify identity / revoke this device's login
+  discover SERVER                Discover the homeserver and its login methods
+  bind AGENT_CARD_URL            Connect this address to an A2A execution endpoint
+  configure --connector-url URL  Choose a local gateway port
+  connect                        Run the saved profile's connector in the foreground
+  doctor | status | contacts | conversations
+  contact-add MATRIX_ID [--allow-receive] [--allow-execution] [--block]
+  invites | invite-accept ROOM_ID | requests | approve REQUEST_ID | reject REQUEST_ID
+  send MATRIX_ID TEXT [--context-id ID] [--task-id ID] [--detach]
+  get MATRIX_ID TASK_ID | list MATRIX_ID | cancel MATRIX_ID TASK_ID
+
+Use --profile NAME for separate local agent profiles (default: default).
+For automation: --password-stdin or --password-file PATH; --registration-token-file PATH.
+bind accepts --endpoint-token-file PATH. Secrets are never accepted as argument values.
+`); return;
+  }
+  if (values.profile) process.env.MATRIX_PROFILE = values.profile;
+  if (await accountCommand(command, positionals.slice(1), values)) return;
   if (command === "connect") { await (await import("../matrix/index.js")).runConnector(); return; }
+  const saved = values.profile || process.env.MATRIX_PROFILE || (!process.env.CONNECTOR_API_TOKEN && !process.env.CONNECTOR_API_TOKEN_FILE)
+    ? new ProfileStore(values.profile).require() : undefined;
+  base = (saved?.connectorUrl ?? process.env.CONNECTOR_URL ?? process.env.PUBLIC_BASE_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+  token = saved?.gatewayToken ?? (process.env.CONNECTOR_API_TOKEN_FILE ? readFileSync(process.env.CONNECTOR_API_TOKEN_FILE, "utf8").trim() : process.env.CONNECTOR_API_TOKEN ?? "");
   if (command === "doctor") return api("/health/ready");
   if (command === "status") return api("/api/status");
   if (command === "conversations") return api("/api/conversations");

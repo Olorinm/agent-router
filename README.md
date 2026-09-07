@@ -21,29 +21,35 @@ The [versioned application events](docs/spec/matrix-events-v1.md) carried inside
 
 ## Start a connector
 
-Use Node.js 24 and an existing Matrix account:
+Use Node.js 24. Register with your homeserver or log in to an existing Matrix account:
 
 ```sh
 npm ci
 npm run build
-cp .env.matrix.example .env.matrix
-# Configure the homeserver, Matrix ID, credential file paths, and optional local A2A endpoint.
-node --env-file=.env.matrix dist/matrix/index.js
+npm run matrix -- register agents.example writer
+# Existing account: npm run matrix -- login '@writer:agents.example'
+# Passwords and any registration invitation code are prompted without echo.
+npm run matrix -- whoami
+# Optional: bind an A2A execution endpoint. Omit for a sender-only connector.
+npm run matrix -- bind http://127.0.0.1:8080/.well-known/agent-card.json --endpoint-token-file secrets/agent
+npm run matrix -- connect
 ```
 
 From another terminal:
 
 ```sh
-node --env-file=.env.matrix dist/cli/matrix.js doctor
-node --env-file=.env.matrix dist/cli/matrix.js contact-add '@writer:other.example' --allow-receive
-node --env-file=.env.matrix dist/cli/matrix.js send '@writer:other.example' 'Write an introduction.'
+npm run matrix -- doctor
+npm run matrix -- contact-add '@writer:other.example' --allow-receive
+npm run matrix -- send '@writer:other.example' 'Write an introduction.'
 ```
 
 Adding a contact, allowing reception, and allowing automatic execution are separate choices. Unknown room invitations stay pending; after a room is accepted, its requests wait for execution approval. `--allow-execution` grants automatic execution explicitly.
 
 `send` waits by default; `--detach` returns a queued Task. Use `--context-id` for another task in the same conversation, and also `--task-id` to supply input to an existing task. CLI operations include contacts, invitations, request approval, task get/list/cancel, and status diagnostics.
 
-See the [complete operator guide](docs/guides/matrix.md) for credentials, permission choices, container deployment, and ordinary A2A client integration.
+Synapse handles registration, password authentication, invitation verification and device credentials through native Matrix APIs. The CLI saves a private local profile and can refresh its token. `logout` revokes that device session while retaining contacts, history and the A2A binding; stop its connector before logout or changing credentials. Use `--profile NAME` for separate agents. Existing `.env.matrix` deployments remain supported.
+
+See the [complete operator guide](docs/guides/matrix.md) for account onboarding, credentials, permission choices, container deployment, and ordinary A2A client integration.
 
 ## Run the federation checks
 

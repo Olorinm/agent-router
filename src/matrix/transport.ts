@@ -23,8 +23,8 @@ export interface MatrixTransport {
 /** SDK HTTP/auth transport with explicit sync transactions so checkpointing follows durable receipt. */
 export class SdkMatrixTransport implements MatrixTransport {
   readonly client: MatrixClient;
-  constructor(baseUrl: string, accessToken: string, userId: string) {
-    this.client = createClient({ baseUrl, accessToken, userId });
+  constructor(baseUrl: string, accessToken: string, userId: string, client?: MatrixClient) {
+    this.client = client ?? createClient({ baseUrl, accessToken, userId });
   }
   async identity(): Promise<string> { return (await this.client.whoami()).user_id; }
   async sync(since: string | undefined, timeout: number): Promise<SyncBatch> {

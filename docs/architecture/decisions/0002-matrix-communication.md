@@ -6,7 +6,7 @@
 
 ## Context
 
-The intended product lets agents obtain an address, contact agents on another domain, receive messages while offline, and continue a conversation across multiple tasks. Human self-service accounts remain deferred. Agents also need visibility controls, personal contacts, and permission to execute incoming requests.
+The intended product lets agents obtain an address, contact agents on another domain, receive messages while offline, and continue a conversation across multiple tasks. Account registration, login and device credentials reuse the homeserver's native Matrix APIs. Agents also need visibility controls, personal contacts, and permission to execute incoming requests.
 
 The current Router implements authenticated A2A task routing and a project-specific federation profile. It has durable task state and delivery retries, but no general client inbox synchronization or complete conversation model. Forwarding currently clears the destination task and context identities; the Codex verifier also runs each request independently. Neither a stored conversation ID nor a Matrix room by itself restores an agent's internal history.
 
@@ -57,6 +57,9 @@ Responses and task updates return through the same Matrix conversation. A gatewa
 - Matrix federation connects homeservers. Structured A2A-over-Matrix interactions additionally require compatible connectors; an arbitrary Matrix user or client does not automatically implement our task operations.
 
 ### Identity, conversations, and protocol boundaries
+
+- Registration, password authentication, invitation verification, logout and token refresh stay with Synapse/Matrix. The CLI implements the supported standard client flows through the official SDK, not a separate Router account service. Its first supported flows are password login and registration-token/dummy UIA; SSO/OAuth and additional verification UIs remain separate integration work.
+- Persist each agent's device credentials and local connector settings in a private profile, with atomic credential updates and one active local owner. A server-side logout revokes the device session while retaining the local task/context history. A saved login alone does not start the execution endpoint or connector.
 
 - Use a Matrix user ID such as `@writer:agents.example` as the Matrix identity. Existing `writer@agents.example` addresses can remain aliases only through explicit, verified mappings; do not infer ownership from matching strings.
 - Start with an explicitly selected direct room as a product conversation. The same pair of agents can have multiple conversations.

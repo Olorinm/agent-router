@@ -1,0 +1,177 @@
+{
+  "capturedAt": "2026-09-07T07:07:05.472213+00:00",
+  "ingress": {
+    "at": "2026-09-07T06:53:30.173898+00:00",
+    "https_client_discovery": true,
+    "https_server_discovery": true,
+    "matrix_password_login_advertised": true,
+    "public_admin_api_blocked": true,
+    "legacy_router_ready": true,
+    "legacy_backend_ids_start_times_restart_counts_health_unchanged": true,
+    "caddy_recreated_to_refresh_stale_config_file_mount": true
+  },
+  "accountOnboarding": {
+    "checkedAt": "2026-09-07T06:59:46.532Z",
+    "nativeMatrixAccounts": true,
+    "syntheticDataOnly": true,
+    "checkpoints": [
+      {
+        "name": "native_invitation_registration_login_identity_and_device_reuse",
+        "at": "2026-09-07T06:56:06.405Z"
+      },
+      {
+        "name": "saved_login_connect_bind_request_approval_and_task_result",
+        "at": "2026-09-07T06:56:15.443Z"
+      },
+      {
+        "name": "logout_revokes_server_tokens_and_relogin_preserves_profile_bindings",
+        "at": "2026-09-07T06:58:15.720Z"
+      },
+      {
+        "name": "contacts_task_history_and_context_survive_logout_login_and_connector_restart",
+        "at": "2026-09-07T06:58:21.614Z"
+      }
+    ]
+  },
+  "federationRegression": [
+    {
+      "name": "bidirectional_federation_official_rest_and_jsonrpc",
+      "at": "2026-09-07T07:02:52.624Z"
+    },
+    {
+      "name": "message_id_retry_executes_once",
+      "at": "2026-09-07T07:02:53.892Z"
+    },
+    {
+      "name": "same_context_across_two_a2a_tasks",
+      "at": "2026-09-07T07:02:56.261Z"
+    },
+    {
+      "name": "input_required_continuation_and_artifact",
+      "at": "2026-09-07T07:02:58.562Z"
+    },
+    {
+      "name": "cancel_after_execution_starts",
+      "at": "2026-09-07T07:03:00.731Z"
+    },
+    {
+      "name": "invitation_then_request_inbox_then_explicit_execution_approval",
+      "at": "2026-09-07T07:03:03.484Z"
+    },
+    {
+      "name": "official_a2a_sse_task_artifact_status",
+      "at": "2026-09-07T07:03:06.351Z"
+    },
+    {
+      "name": "queued_while_destination_connector_offline",
+      "at": "2026-09-07T07:03:19.330Z"
+    },
+    {
+      "name": "offline_delivery_after_connector_restart",
+      "at": "2026-09-07T07:03:22.094Z"
+    },
+    {
+      "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+      "at": "2026-09-07T07:03:35.006Z"
+    },
+    {
+      "name": "cancel_requested_while_destination_offline",
+      "at": "2026-09-07T07:03:47.179Z"
+    },
+    {
+      "name": "cancel_before_execution_prevents_backend_invocation",
+      "at": "2026-09-07T07:03:49.380Z"
+    },
+    {
+      "name": "history_gap_prepared_with_120_events",
+      "at": "2026-09-07T07:04:08.377Z"
+    },
+    {
+      "name": "limited_sync_history_gap_recovered",
+      "at": "2026-09-07T07:04:10.784Z"
+    },
+    {
+      "name": "cancel_unapproved_request_closes_inbox_without_execution",
+      "at": "2026-09-07T07:03:08.369Z"
+    }
+  ],
+  "services": [
+    {
+      "name": "agent-router-matrix-lab-connector-a-1",
+      "status": "Up 36 seconds"
+    },
+    {
+      "name": "agent-router-matrix-lab-connector-b-1",
+      "status": "Up 36 seconds"
+    },
+    {
+      "name": "agent-router-matrix-lab-agent-b-1",
+      "status": "Up 36 seconds"
+    },
+    {
+      "name": "agent-router-matrix-lab-agent-a-1",
+      "status": "Up 36 seconds"
+    },
+    {
+      "name": "agent-router-caddy-1",
+      "status": "Up 13 minutes"
+    },
+    {
+      "name": "agent-router-matrix-homeserver-synapse-1",
+      "status": "Up 20 minutes (healthy)"
+    },
+    {
+      "name": "agent-router-matrix-homeserver-postgres-1",
+      "status": "Up 20 minutes (healthy)"
+    },
+    {
+      "name": "agent-router-matrix-lab-synapse-b-1",
+      "status": "Up About an hour (healthy)"
+    },
+    {
+      "name": "agent-router-matrix-lab-synapse-a-1",
+      "status": "Up About an hour (healthy)"
+    },
+    {
+      "name": "agent-router-matrix-lab-pg-a-1",
+      "status": "Up About an hour (healthy)"
+    },
+    {
+      "name": "agent-router-matrix-lab-pg-b-1",
+      "status": "Up About an hour (healthy)"
+    },
+    {
+      "name": "agent-router-router-1",
+      "status": "Up 3 days (healthy)"
+    },
+    {
+      "name": "agent-router-rabbitmq-1",
+      "status": "Up 4 days (healthy)"
+    },
+    {
+      "name": "agent-router-postgres-1",
+      "status": "Up 4 days (healthy)"
+    }
+  ],
+  "desktop": {
+    "interactive_desktop_login": true,
+    "password_not_echoed": true,
+    "tokens_not_printed": true,
+    "desktop_whoami_and_logout": true
+  },
+  "localChecks": {
+    "vitestFiles": 15,
+    "vitestTests": 78,
+    "nativeAccountTests": 11,
+    "typecheck": true,
+    "build": true,
+    "postSanitizationAccountTests": 11
+  },
+  "finalDeployment": {
+    "image": "sha256:6296d343e5a56e96a98778865dc4ed68780ca3efcf0621cde65ef176e539db8c",
+    "bothLabConnectorsReady": true,
+    "publicHomeserverAndDatabaseHealthy": true,
+    "legacyRouterReady": true,
+    "publicClientDiscovery": true
+  }
+}

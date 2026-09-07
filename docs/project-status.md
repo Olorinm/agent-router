@@ -6,6 +6,10 @@ Agent Router is alpha software. Interfaces can still change between minor releas
 
 [ADR 0002](architecture/decisions/0002-matrix-communication.md) selects Matrix homeservers for communication and federation. The Matrix runtime is implemented: official Matrix SDK synchronization, SQLite inbox/outbox and execution ledger, separate reception/execution permissions, CLI, official A2A REST/JSON-RPC/SSE gateway, scoped context/task mappings, and a persistent runtime fixture with optional Codex session restoration. See the [operator guide](guides/matrix.md) and [application event profile](spec/matrix-events-v1.md).
 
+Native account onboarding is integrated: homeserver discovery, invitation-gated registration, password login, device identity verification, logout/revocation, refresh-token persistence, private local profiles and verified A2A backend binding. `connect` and task commands can use the saved login without manually copying access tokens. An independent public HTTPS homeserver deployment is available alongside the lab. SSO/OAuth, additional registration verification UIs and a graphical account screen have not been integrated into this CLI.
+
+The [account onboarding verification](verification/matrix-accounts-2026-09-07.md) records public HTTPS registration/login, desktop password input, logout and context restoration, plus the existing federation regression suite.
+
 The isolated two-Synapse/PostgreSQL conformance stack verifies bidirectional delivery, retries, contexts, input-required continuation, artifacts, cancellation, request approval, offline receipt, restart, and history gaps. It does not constitute a public multi-datacenter deployment, production cutover, or automatic migration of old identities and active tasks. E2EE, global discovery, GUI, distributed execution ownership, and automatic uncertain-acceptance reconciliation remain out of scope.
 
 ## Retained legacy runtime

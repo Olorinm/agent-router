@@ -41,6 +41,7 @@ export class A2ABackend implements ExecutionBackend {
   async send(request: SendMessageRequest): Promise<SendMessageResult> {
     return (await this.connect()).sendMessage(request, { signal: AbortSignal.timeout(30_000) });
   }
+  async verify(): Promise<void> { await this.connect(); }
   async get(taskId: string): Promise<Task> {
     return (await this.connect()).getTask({ id: taskId, tenant: "", historyLength: 20 }, { signal: AbortSignal.timeout(15_000) });
   }
