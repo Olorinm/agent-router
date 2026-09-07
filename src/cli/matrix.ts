@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { ClientFactory, DefaultAgentCardResolver, RestTransportFactory, JsonRpcTransportFactory } from "@a2a-js/sdk/client";
@@ -11,11 +12,12 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   "context-id": { type: "string" }, "task-id": { type: "string" }, "message-id": { type: "string" },
   detach: { type: "boolean", default: false }, "allow-execution": { type: "boolean", default: false },
   "allow-receive": { type: "boolean", default: false },
-  block: { type: "boolean", default: false }, note: { type: "string", default: "" },
+  note: { type: "string", default: "" },
   help: { type: "boolean", short: "h" }, profile: { type: "string" }, homeserver: { type: "string" },
   "password-stdin": { type: "boolean" }, "password-file": { type: "string" }, "registration-token-file": { type: "string" },
   "device-name": { type: "string" }, "connector-url": { type: "string" }, "endpoint-token-file": { type: "string" },
   "allow-local": { type: "boolean" }, "allow-http": { type: "boolean" },
+  tag: { type: "string", multiple: true }, from: { type: "string" }, since: { type: "string" }, room: { type: "string" },
 } });
 let base: string, token: string;
 const authFetch: typeof fetch = (input, init) => {
@@ -37,19 +39,35 @@ async function main(): Promise<void> {
   login @name:server             Log in and save credentials (password prompt)
   whoami | logout                Verify identity / revoke this device's login
   discover SERVER                Discover the homeserver and its login methods
+  find TEXT | lookup [MATRIX_ID]  Native user directory and public profile
+  profile-set DISPLAY_NAME       Update your Matrix display name
   bind AGENT_CARD_URL            Connect this address to an A2A execution endpoint
   configure --connector-url URL  Choose a local gateway port
   connect                        Run the saved profile's connector in the foreground
   doctor | status | contacts | conversations
-  contact-add MATRIX_ID [--allow-receive] [--allow-execution] [--block]
-  invites | invite-accept ROOM_ID | requests | approve REQUEST_ID | reject REQUEST_ID
+  contact-add MATRIX_ID [--note TEXT] [--tag TAG] [--allow-receive] [--allow-execution]
+  contact-remove MATRIX_ID       Remove a saved contact; keep room history
+  blocked | block MATRIX_ID | unblock MATRIX_ID
+  invites | invite-accept ROOM_ID | invite-reject ROOM_ID
+  requests | approve REQUEST_ID | reject REQUEST_ID
+  conversation-open MATRIX_ID    Create a separate direct conversation
+  say MATRIX_ID TEXT [--context-id ID] [--message-id ID]
+                                Send ordinary Matrix text without invoking an agent
+  history ROOM_ID [--from TOKEN] | read ROOM_ID [EVENT_ID] | leave ROOM_ID
+  watch [--since CURSOR] [--room ROOM_ID]
+                                Observe new messages and task events as JSON lines
   send MATRIX_ID TEXT [--context-id ID] [--task-id ID] [--detach]
+                                Request agent execution (subject to permission)
   get MATRIX_ID TASK_ID | list MATRIX_ID | cancel MATRIX_ID TASK_ID
+  agent-guide                    Print the complete self-onboarding guide
 
 Use --profile NAME for separate local agent profiles (default: default).
 For automation: --password-stdin or --password-file PATH; --registration-token-file PATH.
 bind accepts --endpoint-token-file PATH. Secrets are never accepted as argument values.
 `); return;
+  }
+  if (command === "agent-guide") {
+    process.stdout.write(readFileSync(new URL("../../docs/guides/agent-connect.md", import.meta.url), "utf8")); return;
   }
   if (values.profile) process.env.MATRIX_PROFILE = values.profile;
   if (await accountCommand(command, positionals.slice(1), values)) return;
@@ -61,14 +79,46 @@ bind accepts --endpoint-token-file PATH. Secrets are never accepted as argument 
   if (command === "doctor") return api("/health/ready");
   if (command === "status") return api("/api/status");
   if (command === "conversations") return api("/api/conversations");
+  if (command === "conversation-open" && target) return api("/api/conversations", "POST", { address: target });
+  if (command === "say" && target && argument) return api("/api/messages", "POST", { address: target,
+    text: argument === "-" ? readFileSync(0, "utf8") : argument, ...(values["context-id"] ? { contextId: values["context-id"] } : {}),
+    ...(values["message-id"] ? { messageId: values["message-id"] } : {}) });
   if (command === "contacts") return api("/api/contacts");
   if (command === "contact-add" && target) return api("/api/contacts", "POST", { address: target, note: values.note,
-    receive: values.block ? "deny" : values["allow-receive"] ? "allow" : "ask",
-    execution: values.block ? "deny" : values["allow-execution"] ? "allow" : "ask" });
+    receive: values["allow-receive"] ? "allow" : "ask",
+    execution: values["allow-execution"] ? "allow" : "ask", tags: values.tag ?? [] });
+  if (command === "blocked") return api("/api/blocked");
+  if ((command === "block" || command === "unblock") && target) return api(`/api/blocked/${encodeURIComponent(target)}`, command === "block" ? "POST" : "DELETE");
   if (command === "contact-remove" && target) return api(`/api/contacts/${encodeURIComponent(target)}`, "DELETE");
   if (command === "requests") return api("/api/requests");
   if (command === "invites") return api("/api/invites");
   if (command === "invite-accept" && target) return api(`/api/invites/${encodeURIComponent(target)}/accept`, "POST");
+  if (command === "invite-reject" && target) return api(`/api/invites/${encodeURIComponent(target)}/reject`, "POST");
+  if (command === "history" && target) return api(`/api/rooms/${encodeURIComponent(target)}/history${values.from ? `?from=${encodeURIComponent(values.from)}` : ""}`);
+  if (command === "read" && target) return api(`/api/rooms/${encodeURIComponent(target)}/read`, "POST", argument ? { eventId: argument } : {});
+  if (command === "leave" && target) return api(`/api/rooms/${encodeURIComponent(target)}/leave`, "POST");
+  if (command === "watch") {
+    const query = new URLSearchParams();
+    if (values.since) query.set("since", values.since);
+    if (values.room) query.set("room", values.room);
+    const abort = new AbortController();
+    const onSignal = () => abort.abort(); process.once("SIGINT", onSignal); process.once("SIGTERM", onSignal);
+    try {
+      const response = await authFetch(`${base}/api/events?${query}`, { signal: abort.signal });
+      if (!response.ok || !response.body) throw new Error(`connector_http_${response.status}`);
+      let pending = ""; const decoder = new TextDecoder();
+      for await (const chunk of response.body) {
+        pending += decoder.decode(chunk, { stream: true });
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
+          if (line.startsWith("data: ")) process.stdout.write(line.slice(6) + "\n");
+        }
+      }
+    } catch (error) { if (!abort.signal.aborted) throw error; }
+    finally { process.removeListener("SIGINT", onSignal); process.removeListener("SIGTERM", onSignal); }
+    return;
+  }
   if ((command === "approve" || command === "reject") && target) return api(`/api/requests/${encodeURIComponent(target)}/${command}`, "POST");
   if (!target || !["send", "get", "list", "cancel"].includes(command ?? "")) {
     throw new Error("Usage: matrix connect | doctor | send MXID TEXT [--context-id ID] [--task-id ID] [--detach] | get MXID TASK_ID | list MXID | cancel MXID TASK_ID | contacts | contact-add MXID [--allow-execution] | requests | approve REQUEST_ID | invites | invite-accept ROOM_ID");

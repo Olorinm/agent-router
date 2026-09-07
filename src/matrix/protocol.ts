@@ -20,7 +20,7 @@ export const responseSchema = z.object({
 }).strict().refine((v) => Boolean(v.result) !== Boolean(v.error), "exactly one result or error is required");
 export type RequestEvent = z.infer<typeof requestSchema>;
 export type ResponseEvent = z.infer<typeof responseSchema>;
-export interface RoomEvent { event_id: string; sender: string; type: string; content: Record<string, unknown>; state_key?: string; }
+export interface RoomEvent { event_id: string; sender: string; type: string; content: Record<string, unknown>; state_key?: string; redacts?: string; }
 export const terminal = (task: Task): boolean => [TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED,
   TaskState.TASK_STATE_CANCELED, TaskState.TASK_STATE_REJECTED].includes(task.status?.state ?? 0);
 export const key = (...parts: string[]): string => JSON.stringify(parts);

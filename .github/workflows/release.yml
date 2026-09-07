@@ -1,71 +1,24 @@
-name: Release CLI
-
+name: Release Matrix CLI
 on:
   push:
     tags: ["v*"]
-
 permissions:
   contents: read
-
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
+  package:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
-      - name: Build archive
-        working-directory: cli
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          name="agent-router_${version}_${GOOS}_${GOARCH}"
-          mkdir -p "dist/$name"
-          suffix=""
-          if [ "$GOOS" = windows ]; then suffix=".exe"; fi
-          go build -trimpath \
-            -ldflags "-s -w -X github.com/Olorinm/agent-router/cli/internal/command.Version=$version -X github.com/Olorinm/agent-router/cli/internal/command.Commit=$GITHUB_SHA" \
-            -o "dist/$name/agent-router$suffix" ./cmd/agent-router
-          cp ../LICENSE "dist/$name/LICENSE"
-          if [ "$GOOS" = windows ]; then
-            (cd dist && zip -qr "$name.zip" "$name")
-          else
-            tar -C dist -czf "dist/$name.tar.gz" "$name"
-          fi
-          rm -rf "dist/$name"
-          (cd dist && sha256sum * > "$name.sha256")
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: agent-router-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: cli/dist/*
-          if-no-files-found: error
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Publish GitHub release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm pack
+      - name: Publish package
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" ./*.tgz --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag

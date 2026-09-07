@@ -1,0 +1,297 @@
+{
+  "version": "0.4.0",
+  "date": "2026-09-07",
+  "compatibilityRequired": false,
+  "local": {
+    "testFiles": 4,
+    "testsPassed": 65,
+    "typecheck": true,
+    "build": true,
+    "echoAgentTypecheck": true,
+    "packageInstalledAndExecuted": true,
+    "packageContainsLegacyPaths": false,
+    "removedLegacyBlockFlagRejected": true,
+    "package": "agent-router-server-0.4.0.tgz",
+    "packageSha256": "9cc2feab9a3d0ab3ac4c92859e45dd10cfabb31a28902bcfecc0346c576bc8d1"
+  },
+  "nativeClient": {
+    "checkedAt": "2026-09-07T08:25:24.964Z",
+    "syntheticDataOnly": true,
+    "twoHomeservers": true,
+    "passes": [
+      {
+        "name": "native_private_contacts_and_local_execution_permissions_are_separate",
+        "at": "2026-09-07T08:21:09.810Z"
+      },
+      {
+        "name": "standard_matrix_text_and_direct_rooms_work_bidirectionally_without_execution",
+        "at": "2026-09-07T08:21:13.660Z"
+      },
+      {
+        "name": "native_remote_profile_and_visible_user_directory_search",
+        "at": "2026-09-07T08:22:31.276Z"
+      },
+      {
+        "name": "event_watch_and_native_read_marker",
+        "at": "2026-09-07T08:22:33.213Z"
+      },
+      {
+        "name": "approved_task_and_peer_initiated_task_share_original_matrix_room",
+        "at": "2026-09-07T08:22:40.727Z"
+      },
+      {
+        "name": "fresh_device_restores_contacts_and_room_history_without_reexecuting_old_tasks_and_can_resume_peer_context",
+        "at": "2026-09-07T08:23:02.232Z"
+      },
+      {
+        "name": "native_blocking_syncs_across_devices_and_unblocking_does_not_grant_execution",
+        "at": "2026-09-07T08:23:07.051Z"
+      },
+      {
+        "name": "contact_removal_keeps_history_and_unknown_invitation_can_be_rejected_natively",
+        "at": "2026-09-07T08:23:44.106Z"
+      }
+    ]
+  },
+  "federationAndCodex": {
+    "checkedAt": "2026-09-07T08:30:45.237779+00:00",
+    "passes": [
+      {
+        "name": "bidirectional_federation_official_rest_and_jsonrpc",
+        "at": "2026-09-07T08:24:23.286Z"
+      },
+      {
+        "name": "message_id_retry_executes_once",
+        "at": "2026-09-07T08:24:46.043Z"
+      },
+      {
+        "name": "same_context_across_two_a2a_tasks",
+        "at": "2026-09-07T08:24:48.353Z"
+      },
+      {
+        "name": "input_required_continuation_and_artifact",
+        "at": "2026-09-07T08:25:11.950Z"
+      },
+      {
+        "name": "cancel_after_execution_starts",
+        "at": "2026-09-07T08:25:14.046Z"
+      },
+      {
+        "name": "invitation_then_request_inbox_then_explicit_execution_approval",
+        "at": "2026-09-07T08:25:17.354Z"
+      },
+      {
+        "name": "official_a2a_sse_task_artifact_status",
+        "at": "2026-09-07T08:25:20.251Z"
+      },
+      {
+        "name": "cancel_unapproved_request_closes_inbox_without_execution",
+        "at": "2026-09-07T08:25:22.296Z"
+      },
+      {
+        "name": "queued_while_destination_connector_offline",
+        "at": "2026-09-07T08:25:33.247Z"
+      },
+      {
+        "name": "offline_delivery_after_connector_restart",
+        "at": "2026-09-07T08:26:18.998Z"
+      },
+      {
+        "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+        "at": "2026-09-07T08:26:32.021Z"
+      },
+      {
+        "name": "cancel_requested_while_destination_offline",
+        "at": "2026-09-07T08:26:44.244Z"
+      },
+      {
+        "name": "cancel_before_execution_prevents_backend_invocation",
+        "at": "2026-09-07T08:26:45.925Z"
+      },
+      {
+        "name": "history_gap_prepared_with_120_events",
+        "at": "2026-09-07T08:27:04.655Z"
+      },
+      {
+        "name": "limited_sync_history_gap_recovered",
+        "at": "2026-09-07T08:27:06.639Z"
+      },
+      {
+        "name": "real_codex_first_turn_persisted",
+        "at": "2026-09-07T08:28:44.715Z"
+      },
+      {
+        "name": "real_codex_same_session_after_process_restart",
+        "at": "2026-09-07T08:29:57.105Z"
+      }
+    ],
+    "testedImages": {
+      "agent-router-matrix:lab": "sha256:ae1d61a01cfd204c897cb3a762b327429d34c26785abdb899c51f61dbe5278fe",
+      "agent-router-matrix-codex:lab": "sha256:fe74bfd92b7213d2405fddbe7777fbd0b88dca97a8cffe432bec2decb57a6c8d"
+    }
+  },
+  "publicAccounts": {
+    "checkedAt": "2026-09-07T08:31:33.200Z",
+    "nativeMatrixAccounts": true,
+    "syntheticDataOnly": true,
+    "checkpoints": [
+      {
+        "name": "native_invitation_registration_login_identity_and_device_reuse",
+        "at": "2026-09-07T08:27:53.936Z"
+      },
+      {
+        "name": "saved_login_connect_bind_request_approval_and_task_result",
+        "at": "2026-09-07T08:28:02.983Z"
+      },
+      {
+        "name": "logout_revokes_server_tokens_and_relogin_preserves_profile_bindings",
+        "at": "2026-09-07T08:30:02.290Z"
+      },
+      {
+        "name": "contacts_task_history_and_context_survive_logout_login_and_connector_restart",
+        "at": "2026-09-07T08:30:08.159Z"
+      }
+    ]
+  },
+  "publicCutover": {
+    "startedAt": "2026-09-07T08:22:43.366024+00:00",
+    "serverName": "router.openmau.com",
+    "usersBefore": 3,
+    "usersAfter": 3,
+    "publicChecks": {
+      "/": 200,
+      "/_matrix/client/versions": 200,
+      "/_matrix/client/v3/login": 200,
+      "/.well-known/matrix/client": 200,
+      "/.well-known/matrix/server": 200,
+      "/health/ready": 200,
+      "/_synapse/admin/v1/users": 404,
+      "/v1/agents": 404,
+      "/.well-known/agent-router": 404
+    },
+    "completedAt": "2026-09-07T08:23:31.998762+00:00",
+    "retiredAt": "2026-09-07T08:24:55.411662+00:00",
+    "removedContainers": [
+      "agent-router-router-1",
+      "agent-router-postgres-1",
+      "agent-router-rabbitmq-1",
+      "agent-router-caddy-1",
+      "agent-router-matrix-homeserver-synapse-1",
+      "agent-router-matrix-homeserver-postgres-1"
+    ],
+    "removedVolumes": [
+      "agent-router-postgres-data",
+      "agent-router-rabbitmq-data"
+    ],
+    "removedPaths": [
+      "/opt/agent-router"
+    ],
+    "removedNetworks": [
+      "agent-router-backend",
+      "agent-router-outbound",
+      "agent-router-matrix-homeserver_database"
+    ],
+    "preservedVolumes": [
+      "agent-router-caddy-data",
+      "agent-router-caddy-config"
+    ],
+    "signingKeyUnchanged": true
+  },
+  "finalDeployment": {
+    "checkedAt": "2026-09-07T08:36:19.828369+00:00",
+    "runtimeImage": "sha256:de932a04c50c9c1fa991ef63b7c7bc4d423a17c2ae7068bdc3d36fa9ef28823f",
+    "containers": [
+      {
+        "name": "agent-router-matrix-postgres-1",
+        "running": true,
+        "health": "healthy"
+      },
+      {
+        "name": "agent-router-matrix-synapse-1",
+        "running": true,
+        "health": "healthy"
+      },
+      {
+        "name": "agent-router-matrix-caddy-1",
+        "running": true,
+        "health": null
+      },
+      {
+        "name": "agent-router-matrix-lab-pg-a-1",
+        "running": true,
+        "health": "healthy"
+      },
+      {
+        "name": "agent-router-matrix-lab-pg-b-1",
+        "running": true,
+        "health": "healthy"
+      },
+      {
+        "name": "agent-router-matrix-lab-synapse-a-1",
+        "running": true,
+        "health": "healthy"
+      },
+      {
+        "name": "agent-router-matrix-lab-synapse-b-1",
+        "running": true,
+        "health": "healthy"
+      },
+      {
+        "name": "agent-router-matrix-lab-connector-a-1",
+        "running": true,
+        "health": null
+      },
+      {
+        "name": "agent-router-matrix-lab-connector-b-1",
+        "running": true,
+        "health": null
+      },
+      {
+        "name": "agent-router-matrix-lab-agent-a-1",
+        "running": true,
+        "health": null
+      },
+      {
+        "name": "agent-router-matrix-lab-agent-b-1",
+        "running": true,
+        "health": null
+      }
+    ],
+    "connectors": {
+      "a": "ready",
+      "b": "ready"
+    },
+    "deliveredCliTask": "TASK_STATE_COMPLETED",
+    "expectedArtifactVerified": true,
+    "deterministicAgentRestored": true,
+    "retiredComponentsAbsent": true,
+    "publicMatrixHttpsHealthy": true
+  },
+  "installedCliDiscovery": {
+    "homeserver": "https://router.openmau.com",
+    "loginFlows": [
+      "m.login.password",
+      "m.login.application_service"
+    ]
+  },
+  "desktopCli": {
+    "oldHomebrewVersionRemoved": "0.3.0",
+    "installedNpmVersion": "0.4.0",
+    "command": "/opt/homebrew/bin/agent-router",
+    "runtime": "/opt/homebrew/opt/node@24/bin/node",
+    "defaultNodeUnchanged": true,
+    "interactiveShellHelpAndGuidePassed": true
+  },
+  "scope": {
+    "sameHostTwoHomeserverFederation": true,
+    "independentPublicPhysicalNodes": false,
+    "e2ee": false,
+    "ssoOauth": false,
+    "graphicalClient": false,
+    "universalRuntimeMigration": false,
+    "distributedExecutionOwnerFailover": false,
+    "originalRestoredServerModified": false,
+    "newWorktrees": [],
+    "newReferenceRepos": []
+  }
+}

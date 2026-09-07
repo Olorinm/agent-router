@@ -1,57 +1,11 @@
 # Conformance
 
-Conformance has two independent layers:
+The [0.4 native-client and retirement report](verification/matrix-native-client-2026-09-07.md) records the completed client, account, federation, real Codex and public deployment checks.
 
-1. A2A 1.0 wire behavior, implemented through the official SDK;
-2. Agent Router Federation Profile 1.0 behavior, implemented by the Router.
+Local checks: `npm run typecheck`, `npm test`, `npm run build`, and `npm pack --dry-run`.
 
-A product must not describe the second layer as A2A conformance.
+The real two-Synapse lab uses `deploy/matrix/compose.lab.yaml`. Run `bash scripts/matrix/lab-verify.sh` for A2A delivery, contexts, deduplication, permission, cancellation, SSE, offline/restart and history-gap checks. Run the check container with `node scripts/matrix/client-check.mjs` for native account data, ordinary text, directory, direct-room continuation, fresh-device recovery, blocking and read markers.
 
-## Required federation cases
+`scripts/matrix/auth-check.mjs` verifies native registration/login against an invitation-gated public HTTPS homeserver. It requires an invitation allowing two synthetic registrations. Optional Codex session verification is described in the [Matrix guide](guides/matrix.md).
 
-| Area | Required assertion |
-| --- | --- |
-| discovery | exact profile version accepted; unknown version rejected |
-| discovery safety | HTTP, redirects, unsafe addresses, and mismatched JWKS origins rejected |
-| keys | Ed25519 public JWKS accepted; private material and invalid `kid` rejected |
-| authentication | valid issuer, subject, audience, times, algorithm, and profile claim required |
-| replay | the second use of `(iss, jti)` rejected after durable first claim |
-| policy | unknown and blocked domains denied before remote fetching |
-| privacy | Card existence and capability data hidden before authentication and policy checks |
-| locality | a Router cannot be used to relay to a third domain |
-| delivery | official A2A client and server bindings exchange the Message |
-| idempotency | retries with the same `(issuer domain, target agent, messageId)` do not create duplicate work, while intentional fan-out to another Agent remains distinct |
-| accepted Task recovery | once a remote Task ID is stored, broker redelivery and recovery use that Task ID and never call `message/send` again |
-| return path | push callback origin and path match discovery and stored mapping |
-| recovery | failed push can recover through official Task polling |
-| cancellation | cancellation reaches the mapped remote Task |
-| ordering | late updates do not regress terminal Task state |
-
-## Current implementation coverage
-
-Automated tests cover cryptography, endpoint policy, federation JWT/JWKS exchange, replay rejection, Card protection, push serialization, Task stores, streaming, delivery, mapping, cancellation, and official Go-client/JS-server interoperability. A narrow Card decoder normalizes the current JS SDK's generated oneof and `StringList` JSON forms before handing the Card to the official Go SDK; it does not define an alternate Card model or A2A transport.
-
-Run the local suite:
-
-```sh
-npm ci
-npm run typecheck
-npm test
-npm run build
-```
-
-Run the full disposable PostgreSQL and RabbitMQ integration check only with both safeguards:
-
-```sh
-INTEGRATION_CHECK_CONFIRM=disposable-database \
-DATABASE_URL=postgres://.../agent_router_integration \
-npm run check:integration
-```
-
-The database name must end in `_integration`. Disposable queues are removed afterward.
-
-## Interoperability status
-
-The current implementation has not yet been tested against a separately developed implementation of Federation Profile 1.0. Until that happens, it should claim implementation coverage, not independent interoperability.
-
-Future language-neutral test vectors should include discovery documents, public JWKS fixtures, valid and invalid JWT claim sets, callback URL cases, Message idempotency cases, and Task ordering sequences. Fixtures must contain only synthetic keys and `.example` domains.
+Tests use synthetic accounts and dedicated fixture state. They may restart lab processes. Do not run them against production identities. The project-specific Matrix application events retain official A2A data objects and are documented in the [event profile](spec/matrix-events-v1.md).

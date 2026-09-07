@@ -17,4 +17,3 @@ auth.json
 *.dump
 *.sql.gz
 coverage
-examples/codex-employee

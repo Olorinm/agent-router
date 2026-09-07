@@ -1,88 +1,18 @@
-# Security Policy
+# Security policy
 
-Agent Router handles authenticated agent traffic, Task history, endpoint credentials, and federation signing keys. Treat every deployment as security-sensitive infrastructure.
+Agent Router 0.4 is a Matrix client and A2A execution connector. Only the current Matrix implementation is maintained. The custom Router protocol and its credentials are no longer accepted.
 
-## Supported versions
+Report vulnerabilities privately through the repository owner's GitHub security advisory channel. Do not include real credentials, prompts, Task content, database dumps or deployment identifiers in public issues.
 
-Agent Router is currently pre-1.0 alpha software. Security fixes are applied only to the latest release and the `main` branch.
+## Credential and execution boundaries
 
-| Version | Supported |
-| --- | --- |
-| latest `0.2.x` | yes |
-| earlier snapshots | no |
+- Matrix passwords stay with the homeserver. Device access/refresh tokens, the gateway token and backend credentials are stored in private local profiles (0700 directories, 0600 files).
+- Native account data stores contact metadata and direct rooms. Execution permission is local and is never granted by downloaded contact metadata.
+- Blocking uses Matrix ignored users and is enforced again before local execution. Unblocking requires renewed execution authorization.
+- Ordinary Matrix messages do not execute a model. A2A requests pass the receiver's permission checks.
+- New-device history recovery does not automatically replay historical requests. Unknown execution acceptance remains uncertain and is never blindly resent.
+- Run one execution connector per Matrix identity. Communication-only devices are supported; concurrent execution owners and automatic runtime migration are not.
+- Agent endpoints use fixed-origin authentication and DNS-rebinding protection. Explicit local bindings may use loopback HTTP; arbitrary public endpoint redirects and private addresses are rejected.
+- Rooms are currently unencrypted. HTTPS protects transport; homeserver operators can read room content. Encrypted rooms are rejected for task execution and sending until a crypto/key recovery implementation is provided.
 
-## Project maturity
-
-The project is alpha software and has not received an independent security audit. Deployment defaults do not replace an operator's threat model, network policy, backups, monitoring, or incident response.
-
-## Reporting a vulnerability
-
-Do not disclose a suspected vulnerability in a public issue. Contact the repository owner through a private GitHub security advisory or another private channel agreed by the operator. Include:
-
-- the affected commit or version;
-- the affected endpoint or component;
-- reproduction steps with secrets removed;
-- expected and observed behavior;
-- potential impact;
-- any suggested mitigation.
-
-Never include production tokens, private keys, Task contents, database dumps, hostnames, IP addresses, or user data unless the receiving private channel has been explicitly approved for that data.
-
-## Secrets that must stay outside Git
-
-- `.env` and environment-specific variants;
-- PostgreSQL and RabbitMQ passwords;
-- `MASTER_ENCRYPTION_KEY_BASE64`;
-- federation private keys and private JWKs;
-- Router-issued machine credentials;
-- one-time agent enrollment tokens;
-- remote agent endpoint credentials;
-- push-notification tokens;
-- identity-provider access tokens;
-- static administrator tokens;
-- Codex or other provider login state;
-- proxy subscriptions and node credentials;
-- database, RabbitMQ, and application state;
-- SSH keys, cloud credentials, and deployment inventories.
-
-Only public federation JWKs may be published. A private JWK contains a `d` member and must never be committed or supplied as an additional public rotation key.
-
-The checked-in `.env.demo` is an explicit exception containing only public, disposable values. It binds to loopback and must never be used as the basis for an Internet deployment.
-
-The CLI stores long-lived credentials in the operating-system credential store. Its profile file and optional `.agent-router.json` project link contain locations and identifiers only. Headless users should inject `AGENT_ROUTER_TOKEN` from their own secret manager and capture one-time registration output with `--json --no-store`.
-
-## Repository hygiene
-
-Before every public release:
-
-1. inspect tracked files and ignored files separately;
-2. scan the complete Git history, not only the working tree;
-3. check commit author metadata;
-4. search for real domains, IP addresses, absolute home paths, usernames, email addresses, tokens, private-key markers, database dumps, and login state;
-5. verify GitHub Secret Scanning and push protection are enabled;
-6. inspect generated archives and container build contexts;
-7. verify that examples use reserved `.example` domains and synthetic identities.
-
-Deleting a secret in a later commit does not remove it from Git history. If a real secret was ever committed, revoke or rotate it first, then purge the history and all remote references.
-
-## Deployment baseline
-
-- expose only the TLS ingress port;
-- keep PostgreSQL and RabbitMQ on an internal network;
-- leave private-address and plaintext-endpoint overrides disabled;
-- use a unique master encryption key per deployment;
-- store secrets with mode `0600` and restrict host access;
-- run the Router as a non-root, read-only container;
-- require explicit federation allowlists;
-- synchronize system clocks;
-- monitor authentication failures, replay rejection, queue age, retries, dead letters, and outbound destination errors;
-- back up the encrypted database and its encryption key through separate protected channels;
-- rotate credentials after any suspected host or log exposure.
-
-## Trust boundaries
-
-A valid federation JWT proves that a domain signed a claim. It does not independently prove the real-world identity of the remote `sub`. Apply quotas, blocks, abuse controls, and future billing at the issuer-domain boundary.
-
-Agent Cards, discovery documents, callbacks, and remote endpoints are untrusted network input. Do not disable destination validation to make an Internet endpoint work. Fix DNS, TLS, or routing instead.
-
-The Router stores Task content. A2A transport security does not provide end-to-end encryption from caller to worker through the Router. Operators can access data stored by their own Router and must protect it accordingly.
+Keep Matrix signing keys/databases, profile files, model login state, endpoint tokens, TLS state, SSH/cloud credentials and generated test state out of Git. Back up homeserver state and execution/runtime state consistently. Production stability and an independent security audit have not been claimed.

@@ -1,14 +1,39 @@
-{$ROUTER_HOST} {
-	encode zstd gzip
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "no-referrer"
-		-Server
-	}
-	request_body {
-		max_size 2MB
-	}
-	reverse_proxy router:8080
+{$MATRIX_SERVER_NAME} {
+    encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
+    request_body {
+        max_size 2MB
+    }
+    handle /.well-known/matrix/client {
+        header Content-Type application/json
+        header Access-Control-Allow-Origin *
+        respond `{"m.homeserver":{"base_url":"https://{$MATRIX_SERVER_NAME}"}}`
+    }
+    handle /.well-known/matrix/server {
+        header Content-Type application/json
+        respond `{"m.server":"{$MATRIX_SERVER_NAME}:443"}`
+    }
+    handle /_synapse/admin/* {
+        respond 404
+    }
+    @matrix path /_matrix/* /_synapse/client/*
+    handle @matrix {
+        reverse_proxy matrix-homeserver:8008
+    }
+    handle /health/ready {
+        rewrite * /health
+        reverse_proxy matrix-homeserver:8008
+    }
+    handle / {
+        header Content-Type application/json
+        respond `{"service":"Matrix homeserver","server":"{$MATRIX_SERVER_NAME}"}`
+    }
+    handle {
+        respond 404
+    }
 }

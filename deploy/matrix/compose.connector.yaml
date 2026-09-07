@@ -1,7 +1,7 @@
 name: agent-router-matrix
 services:
   connector:
-    build: { context: ../.., dockerfile: Dockerfile.matrix }
+    build: { context: ../.., dockerfile: Dockerfile }
     restart: unless-stopped
     env_file: ../../.env.matrix
     environment:

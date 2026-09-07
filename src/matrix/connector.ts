@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { Message, SendMessageRequest, Task, TaskState, type SendMessageResult } from "@a2a-js/sdk";
 import type { ExecutionBackend } from "./backend.js";
 import { ConnectorStore } from "./store.js";
+import { MatrixSocial } from "./social.js";
 import type { MatrixTransport, SyncBatch } from "./transport.js";
 import { decodeRequest, decodeResult, digest, encodeResult, key, mxid, newTask, REQUEST_EVENT, requestSchema,
   RESPONSE_EVENT, responseSchema, sized, statusMessage, terminal, type RequestEvent, type ResponseEvent, type RoomEvent } from "./protocol.js";
 
-export interface Contact { address: string; note: string; receive?: "allow" | "ask" | "deny"; execution: "allow" | "ask" | "deny"; }
+export interface Contact { address: string; note: string; tags?: string[]; receive?: "allow" | "ask" | "deny"; execution: "allow" | "ask" | "deny"; }
 export interface Conversation { id: string; room: string; peer: string; }
 export interface Outgoing {
   id: string; target: string; room: string; taskId: string; contextId: string; request: RequestEvent;
@@ -17,7 +18,7 @@ export interface Incoming {
   status: "pending" | "queued" | "sending" | "accepted" | "done" | "uncertain";
   remoteTaskId?: string; lastResult?: string; error?: string; approved?: boolean;
 }
-interface Outbox { room: string; type: string; content: object; status: "queued" | "sent"; attempts: number; nextAt: number; error?: string; }
+interface Outbox { room: string; type: string; content: object; recipient?: string; status: "queued" | "sent"; attempts: number; nextAt: number; error?: string; }
 interface Binding { remoteTaskId: string; remoteContextId: string; }
 
 export class MatrixConnector {
@@ -29,12 +30,33 @@ export class MatrixConnector {
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   lastSyncAt = 0;
   lastError = "";
+  readonly social: MatrixSocial | undefined;
   constructor(readonly userId: string, readonly store: ConnectorStore, readonly transport: MatrixTransport,
-    readonly backend: ExecutionBackend | undefined, readonly pollMs = 1_000) { mxid.parse(userId); }
+    readonly backend: ExecutionBackend | undefined, readonly pollMs = 1_000) {
+    mxid.parse(userId); this.social = transport.data ? new MatrixSocial(this, transport.data) : undefined;
+  }
 
-  contact(address: string): Contact | undefined { return this.store.get("contacts", address); }
-  setContact(contact: Contact): void { mxid.parse(contact.address); this.store.set("contacts", contact.address, contact); }
-  contacts(): Contact[] { return this.store.entries<Contact>("contacts").map((r) => r.value); }
+  contact(address: string): Contact | undefined {
+    const contact = this.store.get<Contact>("contacts", address);
+    if (this.social?.ignored(address)) return { address, note: contact?.note ?? "", ...contact, receive: "deny", execution: "deny" };
+    if (!contact) return undefined;
+    const policy = this.store.get<{ receive: Contact["receive"]; execution: Contact["execution"] }>("policies", address);
+    return { ...contact, receive: policy?.receive ?? "ask", execution: policy?.execution ?? "ask" };
+  }
+  setContact(contact: Contact): void {
+    mxid.parse(contact.address);
+    this.store.set("contacts", contact.address, { address: contact.address, note: contact.note, tags: contact.tags ?? [] });
+    this.store.set("policies", contact.address, { receive: contact.receive ?? "ask", execution: contact.execution });
+  }
+  contacts(): Contact[] { return this.store.entries<Contact>("contacts").map((r) => this.contact(r.id)!); }
+  async updateContact(contact: Contact): Promise<void> {
+    await this.social?.saveContact(contact);
+    this.setContact(contact);
+  }
+  async removeContact(address: string): Promise<void> {
+    await this.social?.removeContact(address);
+    this.store.delete("contacts", address); this.store.delete("policies", address);
+  }
   pending(): Incoming[] { return this.store.entries<Incoming>("incoming").map((r) => r.value).filter((r) => r.status === "pending" || r.status === "uncertain"); }
   task(id: string): Task | undefined { return this.store.get<Task>("tasks", id); }
   tasks(): Task[] { return this.store.entries<Task>("tasks").map((r) => r.value); }
@@ -43,6 +65,7 @@ export class MatrixConnector {
   async start(): Promise<void> {
     if (await this.transport.identity() !== this.userId) throw new Error("matrix_token_identity_mismatch");
     this.store.acquireLease(this.leaseOwner);
+    await this.social?.bootstrap();
     // A crash while the execution endpoint was accepting work has an ambiguous outcome.
     // Do not replay it automatically without an accepted destination task ID.
     for (const { id, value } of this.store.entries<Incoming>("incoming")) {
@@ -81,7 +104,8 @@ export class MatrixConnector {
 
   async acceptSync(batch: SyncBatch): Promise<void> {
     if (!batch.next_batch) throw new Error("matrix_sync_checkpoint_missing");
-    const prepared: Array<{ room: string; events: RoomEvent[]; encrypted: boolean }> = [];
+    const restoring = Boolean(this.social && !this.store.get("meta", "sync"));
+    const prepared: Array<{ room: string; events: RoomEvent[]; state: RoomEvent[]; encrypted: boolean }> = [];
     for (const [room, joined] of Object.entries(batch.rooms?.join ?? {})) {
       const timeline = joined.timeline;
       const state = await this.transport.state(room);
@@ -103,28 +127,36 @@ export class MatrixConnector {
         if (!finished) throw new Error("matrix_history_gap_exceeds_recovery_limit");
         events = [...older.reverse(), ...events];
       }
-      prepared.push({ room, events, encrypted });
+      prepared.push({ room, events, state, encrypted });
     }
     this.store.transaction(() => {
+      for (const event of batch.account_data?.events ?? []) this.social?.account(event);
       for (const [room, invite] of Object.entries(batch.rooms?.invite ?? {})) {
         const event = invite.invite_state.events.find((e) => e.type === "m.room.member" && e.state_key === this.userId);
-        if (event) this.store.set("invites", room, { room, sender: event.sender });
+        if (event && !this.social?.ignored(event.sender)) this.store.set("invites", room, { room, sender: event.sender });
+      }
+      for (const room of Object.keys(batch.rooms?.leave ?? {})) {
+        this.store.delete("invites", room);
+        this.store.set("room_info", room, { ...this.store.get<object>("room_info", room), room, joined: false });
       }
       for (const item of prepared) {
         this.store.set("rooms", item.room, { encrypted: item.encrypted });
         this.store.delete("invites", item.room);
-        for (const event of item.events) this.ingest(item.room, event, item.encrypted);
+        this.social?.room(item.room, item.state, item.events, batch.rooms?.join?.[item.room]);
+        for (const event of item.events) this.ingest(item.room, event, item.encrypted, restoring);
       }
       this.store.set("meta", "sync", batch.next_batch);
     });
     for (const { id, value } of this.store.entries<{ sender: string }>("invites")) {
-      if (this.contact(value.sender)?.receive === "allow") await this.transport.join(id);
+      if (this.contact(value.sender)?.receive === "allow") {
+        if (this.social) await this.social.accept(id); else await this.transport.join(id);
+      }
     }
   }
 
-  ingest(room: string, event: RoomEvent, encrypted = false): void {
+  ingest(room: string, event: RoomEvent, encrypted = false, restoredHistory = false): void {
     if (!event.event_id || !event.sender || !this.store.insert("seen", key(room, event.event_id), true)) return;
-    if (encrypted || event.sender === this.userId) return;
+    if (encrypted || event.sender === this.userId || this.social?.ignored(event.sender)) return;
     try {
       sized(event.content);
       if (event.type === REQUEST_EVENT) {
@@ -144,7 +176,8 @@ export class MatrixConnector {
         }
         const permission = this.contact(event.sender)?.receive === "deny" ? "deny" : this.contact(event.sender)?.execution ?? "ask";
         const record: Incoming = { id, room, sender: event.sender, eventId: event.event_id, request,
-          status: permission === "allow" || request.operation === "cancel" ? "queued" : "pending" };
+          status: !restoredHistory && (permission === "allow" || request.operation === "cancel") ? "queued" : "pending",
+          ...(restoredHistory ? { error: "history_restored_without_execution_state" } : {}) };
         this.store.set("incoming", id, record);
         if (permission === "deny" && request.operation === "send") this.reject(record, "sender_blocked");
       } else if (event.type === RESPONSE_EVENT) {
@@ -165,13 +198,36 @@ export class MatrixConnector {
     if (contextId) {
       const conversation = this.store.get<Conversation>("conversations", contextId);
       if (!conversation || conversation.peer !== target) throw new Error("conversation_not_found_for_target");
+      const info = this.store.get<{ encrypted?: boolean; joined?: boolean }>("room_info", conversation.room);
+      if (info?.encrypted) throw new Error("encrypted_room_requires_crypto_connector");
+      if (info?.joined === false) throw new Error("conversation_left");
+      await this.social?.direct(target, conversation.room);
       return conversation;
     }
     const id = randomUUID();
     const room = await this.transport.createRoom(target);
     const conversation = { id, room, peer: target };
     this.store.set("conversations", id, conversation);
+    await this.social?.direct(target, room);
     return conversation;
+  }
+
+  async say(target: string, text: string, contextId?: string, messageId: string = randomUUID()) {
+    if (!text.trim()) throw new Error("message_required");
+    const content = sized({ msgtype: "m.text", body: text });
+    const id = key("text", target, messageId);
+    const existing = this.store.get<{ contextId: string; room: string; hash: string }>("text_ids", id);
+    const hash = digest({ text, contextId });
+    if (existing) {
+      if (existing.hash !== hash) throw new Error("message_id_reused_with_different_payload");
+      return { messageId, contextId: existing.contextId, room: existing.room, queued: true };
+    }
+    const conversation = await this.conversation(target, contextId);
+    this.store.transaction(() => {
+      this.queue(id, conversation.room, "m.room.message", content, target);
+      this.store.set("text_ids", id, { contextId: conversation.id, room: conversation.room, hash });
+    });
+    return { messageId, contextId: conversation.id, room: conversation.room, queued: true };
   }
 
   enqueue(target: string, conversation: Conversation, task: Task, request: SendMessageRequest, operation: "send" | "cancel"): Outgoing {
@@ -187,9 +243,9 @@ export class MatrixConnector {
     this.queue(requestId, conversation.room, REQUEST_EVENT, envelope);
     return outgoing;
   }
-  private queue(id: string, room: string, type: string, content: object): void {
+  private queue(id: string, room: string, type: string, content: object, recipient?: string): void {
     sized(content);
-    this.store.insert("outbox", id, { room, type, content, status: "queued", attempts: 0, nextAt: 0 } satisfies Outbox);
+    this.store.insert("outbox", id, { room, type, content, ...(recipient ? { recipient } : {}), status: "queued", attempts: 0, nextAt: 0 } satisfies Outbox);
   }
   async flush(): Promise<void> {
     if (this.flushing) return;
@@ -202,7 +258,7 @@ export class MatrixConnector {
           if (state.some((e) => e.type === "m.room.encryption")) {
             throw new Error("encrypted_room_requires_crypto_connector");
           }
-          const recipient = (value.content as { recipient?: string }).recipient;
+          const recipient = value.recipient ?? (value.content as { recipient?: string }).recipient;
           if (!state.some((e) => e.type === "m.room.member" && e.state_key === recipient && e.content.membership === "join")) {
             // A concurrent remote join can leave an event on a DAG branch preceding that server's
             // membership. Wait for persisted membership before publishing the first request.
@@ -234,12 +290,17 @@ export class MatrixConnector {
     this.store.set("incoming", record.id, { ...record, status: "done", error: code });
   }
   private bindingKey(record: Incoming): string { return key(record.room, record.sender, record.request.taskId); }
-  private contextKey(record: Incoming): string { return key(record.room, record.sender, record.request.contextId); }
+  private contextKey(record: Incoming): string { return key(record.room, record.sender); }
   async work(): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     try {
       const records = this.store.entries<Incoming>("incoming").map((r) => r.value);
+      for (const record of records.filter((r) => r.status === "pending")) {
+        if (this.contact(record.sender)?.receive === "deny" || this.contact(record.sender)?.execution === "deny") {
+          this.store.transaction(() => this.reject(record, "sender_blocked"));
+        }
+      }
       // A cancellation delivered before its original send prevents execution, including after a restart.
       for (const record of records.filter((r) => r.status === "queued" && r.request.operation === "cancel")) await this.cancel(record);
       for (const record of records.filter((r) => r.status === "queued" && r.request.operation === "send")) {

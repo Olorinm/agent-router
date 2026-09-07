@@ -61,7 +61,7 @@ Incoming events, inbox records, and the `/sync` cursor commit in one SQLite tran
 
 The destination ledger transitions from `pending` to `queued`, then `sending`, then `accepted`/`done`. A timeout during acceptance, or a process crash in `sending`, becomes `uncertain`. It MUST NOT be automatically resent. Known destination task IDs are polled after restart. This prevents blind replay; it does not provide exactly-once external side effects. Profile 1 does not implement operator reconciliation of an unknown backend acceptance; inspect the endpoint and start a new operation only after resolving its outcome.
 
-Bindings are scoped by connector identity, room, authenticated sender, and logical task/context. Database metadata binds the execution endpoint URL; switching endpoint identity requires explicit migration or a new database. A native runtime driver separately persists the destination A2A context to its real session (the Codex fixture uses `exec resume`). A Matrix room alone cannot restore model context.
+Task bindings are scoped by connector identity, room, authenticated sender and source task. Runtime contexts are keyed by room and authenticated sender, so another communication device can continue the same room using its local conversation identifier. Database metadata binds the execution endpoint URL; switching endpoint identity requires explicit migration or a new database. A native runtime driver separately persists the destination A2A context to its real session (the Codex fixture uses `exec resume`). A Matrix room alone cannot restore model context.
 
 Cancellation is scoped to the original authenticated sender and room. A cancellation received before a queued send prevents invocation. After acceptance, the connector calls the mapped destination task's A2A cancellation operation. If acceptance is uncertain, cancellation is also unconfirmed; it must not report success. An offline cancellation remains queued even if the caller's HTTP wait expires.
 
@@ -73,6 +73,14 @@ The gateway API token authorizes its owner to initiate work and manage the conne
 
 ## Deployment limits
 
-One active connector process per identity/database is supported. A renewable database lease prevents ordinary duplicate starts sharing that database, with a 30-second stale lease period. Separate databases or cloned Matrix tokens are not a distributed ownership mechanism. Do not run two execution connectors for the same Matrix account. Retention, compaction, multi-device failover, key rotation, global discovery, ordinary Matrix chat UI, and automatic legacy history/account migration remain separate work.
+One active execution connector per identity is supported. Additional devices may use communication-only connectors without a backend. A renewable database lease prevents ordinary duplicate starts sharing that database, with a 30-second stale lease period. Separate databases or cloned Matrix tokens are not a distributed ownership mechanism. Do not run two execution connectors for the same Matrix account. Retention, compaction, execution failover, key rotation and global discovery remain separate work. The former custom Router protocol and its migration paths have been removed.
 
-Conformance: `test/matrix.test.ts` and `scripts/matrix/lab-verify.sh`. See the [operator guide](../guides/matrix.md) and [ADR 0002](../architecture/decisions/0002-matrix-communication.md).
+## Native client data and ordinary messages
+
+The client uses standard `m.direct`, `m.ignored_user_list`, `m.fully_read`, private read receipts, user profiles and user-directory APIs. Personal contact metadata uses global account data of type `io.agentrouter.contact.<sha256(JSON-encoded Matrix ID)>`, containing `{version:1,address,note,tags,deleted?}`. There are no execution credentials or permissions in these events. Deletion retains a tombstone, not room deletion. Local policy defaults to ask on a new device. Removing a contact revokes local policy; unblocking never restores automatic execution.
+
+Standard `m.room.message` text is stored and displayed but is not converted into an executable A2A request. Both participants may initiate ordinary messages or new A2A tasks in the same direct room. Native membership and the actual peer, not an arbitrary m.direct mapping, establish the conversation target.
+
+Account data, room/timeline cache and /sync checkpoints commit with durable receipt. On a new cache's initial sync, historical requests without an execution ledger are pending with `history_restored_without_execution_state`; they must not run automatically even when local policy otherwise permits that sender. Restoring communications is distinct from migrating runtime sessions or claiming execution ownership.
+
+Conformance: `test/matrix.test.ts`, `test/matrix-social.test.ts`, `scripts/matrix/lab-verify.sh` and `scripts/matrix/client-check.mjs`. See the [operator guide](../guides/matrix.md) and [ADR 0002](../architecture/decisions/0002-matrix-communication.md).
