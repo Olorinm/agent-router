@@ -1,197 +1,84 @@
 # Agent Router
 
-Durable, authenticated, and optionally federated routing for [A2A Protocol](https://a2a-protocol.org/latest/) agents.
+Matrix communication and federation for agents, with official [A2A 1.0](https://a2a-protocol.org/latest/specification/) execution interfaces.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![A2A](https://img.shields.io/badge/A2A-1.0-5b5bd6.svg)](https://a2a-protocol.org/latest/specification/)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](docs/project-status.md)
 
-Agent Router gives independently hosted agents stable addresses such as `writer@agents.example.com`. It publishes official A2A v1 interfaces for those addresses, persists Task state, and reliably delivers work to each agent's real A2A endpoint.
-
-It is infrastructure around A2A, not a fork of the A2A wire protocol.
-
-> **Status:** alpha. Local delivery is implemented and integration-tested. Federation is an experimental Agent Router profile, not an A2A, Matrix, or IETF standard. The project has not received an independent security audit.
-
-## Why Agent Router
-
-A2A defines Agent Cards, Messages, Tasks, Artifacts, streaming, cancellation, and push notifications. It deliberately leaves deployment concerns such as shared directories, stable domain addresses, offline delivery, and federation policy to operators.
-
-Agent Router supplies those operational pieces:
-
-- domain-scoped addresses and a private Agent registry;
-- official A2A v1 server and client transports;
-- durable Task and push-configuration stores in PostgreSQL;
-- transactional enqueueing and RabbitMQ delivery;
-- retries, dead letters, cancellation, and remote Task mapping;
-- optional domain discovery, JWT/JWKS authentication, and federated return delivery.
-- a standalone `agent-router` CLI for discovery, enrollment, directory search, and A2A calls.
-
-The result resembles a homeserver for agents. Agents can use different frameworks, live on different machines, and remain under independent administrative control.
+Give each agent a Matrix address such as `@writer:agents.example`. Its connector receives messages through outbound synchronization, applies local permissions, calls the agent's A2A endpoint, and returns Task updates through the same conversation. An ordinary agent does not need a public inbound endpoint or its own homeserver.
 
 ## Architecture
 
 ```text
-caller
-  |
-  | official A2A v1
-  v
-writer@agents.example.com
-  |
-  v
-+---------------- Agent Router ----------------+
-| A2A SDK handlers | registry | trust policy   |
-| PostgreSQL Task ledger + transactional Outbox |
-+----------------------+------------------------+
-                       |
-                       v
-                 RabbitMQ queue
-                       |
-                       v
-                Delivery Dispatcher
-                       |
-                       | official A2A v1
-                       v
-                 real agent endpoint
+A2A caller → connector A → Matrix homeserver A
+                                  ⇅ standard Matrix federation
+                          Matrix homeserver B ← connector B → A2A agent B
 ```
 
-The address names the Router responsible for the agent, not the machine that runs it. Callers use the Router-owned Agent Card and never need the private endpoint credential.
+Matrix owns identity, room membership, persistent events, offline history, and homeserver federation. Connectors own contacts, request approval, durable execution receipt, and the mapping between conversations, A2A tasks, and runtime sessions. A2A objects and REST/JSON-RPC/SSE bindings come from the official SDK.
 
-The Delivery Dispatcher is Router infrastructure, not an agent or an AI worker. It takes accepted queue items, calls the target through the official A2A client, records the remote Task ID, and releases its dispatcher slot. Task completion then arrives by A2A push notification or is recovered with `tasks/get`.
+The [versioned application events](docs/spec/matrix-events-v1.md) carried inside Matrix are an Agent Router profile, not a standardized A2A transport binding.
 
-## CLI
+## Start a connector
 
-Install the standalone binary with Homebrew, then use the four-command human workflow:
-
-```sh
-brew install Olorinm/tap/agent-router
-agent-router login agents.example.com
-agent-router invite writer worker.example.net
-```
-
-The worker operator receives the one-time invitation and runs:
-
-```sh
-agent-router join
-```
-
-The CLI prompts privately for the invitation and public Agent Card URL, discovers the Router, validates and registers the agent, and stores its machine credential. Calling an agent is then ordinary:
-
-```sh
-agent-router find writing
-agent-router send writer "Draft a two-sentence introduction."
-```
-
-`send` waits and prints the A2A result by default; `--detach` returns after Task acceptance. Profiles, raw enrollment administration, credential lifecycle commands, `--json`, stdin, and environment-secret inputs remain available for operators and headless containers. See the complete [CLI guide](docs/guides/cli.md).
-
-## Interoperability boundary
-
-| Layer | Authority | Implementation |
-| --- | --- | --- |
-| Message, Task, Part, Artifact, and Agent Card | A2A v1 | official `@a2a-js/sdk` types |
-| REST, JSON-RPC, SSE, cancellation, push, errors, and version checks | A2A v1 | official SDK handlers |
-| outbound agent calls | A2A v1 | official SDK `ClientFactory` |
-| registry, PostgreSQL adapters, queue bridge, and Task mapping | Agent Router | local implementation |
-| domain discovery, trust, and callbacks | Agent Router Federation Profile 1.0 | HTTPS, JWT, and JWKS |
-
-Agent Router does not introduce private Message or Task lookalikes. A2A operations use the endpoints and objects produced by the official SDK.
-
-This release targets A2A wire protocol 1.0 and currently resolves `@a2a-js/sdk` 1.1.0.
-
-## Try it locally
-
-The demo starts an isolated Router, PostgreSQL, RabbitMQ, and a deterministic A2A echo agent. It needs Docker Compose v2 and Node.js 24, but no domain, TLS certificate, external identity provider, or model account.
+Use Node.js 24 and an existing Matrix account:
 
 ```sh
 npm ci
-docker compose --env-file .env.demo -f compose.yaml -f compose.demo.yaml \
-  up --detach --build router echo-agent
-npm run demo
+npm run build
+cp .env.matrix.example .env.matrix
+# Configure the homeserver, Matrix ID, credential file paths, and optional local A2A endpoint.
+node --env-file=.env.matrix dist/matrix/index.js
 ```
 
-Expected result:
-
-```json
-{"address":"echo-...@local.test","result":"Echo: hello through the router"}
-```
-
-Remove the disposable stack and its data with:
+From another terminal:
 
 ```sh
-docker compose --env-file .env.demo -f compose.yaml -f compose.demo.yaml down --volumes
+node --env-file=.env.matrix dist/cli/matrix.js doctor
+node --env-file=.env.matrix dist/cli/matrix.js contact-add '@writer:other.example' --allow-receive
+node --env-file=.env.matrix dist/cli/matrix.js send '@writer:other.example' 'Write an introduction.'
 ```
 
-`.env.demo` contains public, intentionally insecure test values and binds the Router only to loopback. Never reuse it for an Internet deployment.
+Adding a contact, allowing reception, and allowing automatic execution are separate choices. Unknown room invitations stay pending; after a room is accepted, its requests wait for execution approval. `--allow-execution` grants automatic execution explicitly.
 
-## Production deployment
+`send` waits by default; `--detach` returns a queued Task. Use `--context-id` for another task in the same conversation, and also `--task-id` to supply input to an existing task. CLI operations include contacts, invitations, request approval, task get/list/cancel, and status diagnostics.
 
-The supported production profile uses Docker Compose with Caddy, PostgreSQL, and RabbitMQ. It exposes only HTTPS; the database and broker remain on an internal network.
+See the [complete operator guide](docs/guides/matrix.md) for credentials, permission choices, container deployment, and ordinary A2A client integration.
 
-Start with the [deployment guide](docs/guides/deployment.md), then review the [security policy](SECURITY.md) and [configuration reference](docs/reference/configuration.md).
+## Run the federation checks
 
-Administrator authentication supports:
+The reproducible lab deploys two unmodified Synapse servers, independent PostgreSQL databases, two connectors, and two persistent A2A agents. It uses TLS with a dedicated private CA and needs no model account.
 
-- a generic bearer-token UserInfo endpoint for shared deployments; or
-- a constant-time checked static administrator token for small, controlled installations.
+Follow the initialization steps in the [guide](docs/guides/matrix.md), then run:
 
-Neither mode depends on a particular account provider.
-
-## Federation
-
-Federation lets independently operated Routers exchange standard A2A Tasks without a central directory:
-
-```text
-worker@company-b.example
-        |
-        | /.well-known/agent-router
-        v
-Router A  <---- official A2A + short-lived JWT ---->  Router B
+```sh
+bash scripts/matrix/lab-verify.sh
 ```
 
-Federation is disabled by default. Both operators must explicitly allow the other domain. Agent Cards and task endpoints use the same access policy, and private agents are never exposed through a global list.
+It verifies both directions through official A2A clients, idempotency, same-context turns, input-required continuation, artifacts, cancellation before and after execution, invitation/request approval, SSE, connector/runtime restart, offline delivery, and limited-sync history recovery. An optional Codex fixture additionally verifies native session restoration after a process restart.
 
-The normative profile is [Agent Router Federation Profile 1.0](docs/spec/federation-v1.md). Its design lineage and differences from Matrix, AT Protocol, and ActivityPub are documented separately in [Design lineage](docs/design-lineage.md).
+## Scope and migration
 
-## Documentation
+This is an implemented alpha path. Profile 1 uses unencrypted Matrix rooms over TLS: homeserver operators can read message content. E2EE and key recovery, multi-device execution failover, a graphical inbox, remote skill discovery, and automatic migration of old identities/history are not implemented.
 
-| Document | Audience |
-| --- | --- |
-| [Local demo](docs/guides/local-demo.md) | first-time users |
-| [Production deployment](docs/guides/deployment.md) | operators |
-| [Register and call an agent](docs/guides/register-agent.md) | agent integrators |
-| [CLI](docs/guides/cli.md) | people, scripts, and agent operators |
-| [HTTP surface](docs/reference/http-api.md) | client and operations developers |
-| [Configuration](docs/reference/configuration.md) | operators |
-| [Federation Profile 1.0](docs/spec/federation-v1.md) | implementers |
-| [Conformance](docs/conformance.md) | interoperable implementations |
-| [Project status and versioning](docs/project-status.md) | adopters and contributors |
-| [ADR 0001](docs/architecture/decisions/0001-federation-v1.md) | architecture reviewers |
-| [Security policy](SECURITY.md) | operators and security researchers |
+One active connector serves one Matrix identity and one durable database. If backend acceptance is unknown after a network failure, it is recorded explicitly and never automatically executed again. This is not an exactly-once side-effect guarantee.
 
-## Repository map
+The default Node `start` and `dev` entrypoints now run Matrix. The previous Router server, Go CLI, root Dockerfile, and Compose stack remain available for existing tasks and rollback; use `npm run start:legacy`. Existing deployments and identities are not silently switched. Their documentation is preserved in the [legacy guide](docs/guides/legacy-router.md).
 
-```text
-src/                 server, stores, delivery dispatcher, and federation
-cli/                 standalone Go CLI using the official A2A Go SDK
-migrations/          PostgreSQL schema
-docs/spec/           interoperable Agent Router profiles
-docs/guides/         deployment and integration guides
-docs/reference/      APIs and configuration
-examples/echo-agent/ self-contained local demonstration agent
-examples/codex-employee/ isolated Codex-based end-to-end verifier
-deploy/              optional systemd integration
-```
+Synapse is deployed independently under its own AGPL/commercial licensing. This repository and the Matrix JavaScript SDK use Apache-2.0.
 
 ## Development
 
 ```sh
-npm ci
 npm run typecheck
 npm test
 npm run build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Protocol-affecting changes require an issue and an architecture decision or specification update before implementation.
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE).
+- [Matrix application event profile](docs/spec/matrix-events-v1.md)
+- [Matrix operator and migration guide](docs/guides/matrix.md)
+- [Architecture decision](docs/architecture/decisions/0002-matrix-communication.md)
+- [Project status](docs/project-status.md)
+- [Verification report](docs/verification/matrix-2026-09-07.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)

@@ -1,0 +1,75 @@
+{
+  "checked_at": "2026-09-07T05:35:27.955Z",
+  "checkpoints": [
+    {
+      "name": "bidirectional_federation_official_rest_and_jsonrpc",
+      "at": "2026-09-07T05:31:56.764Z"
+    },
+    {
+      "name": "message_id_retry_executes_once",
+      "at": "2026-09-07T05:31:58.043Z"
+    },
+    {
+      "name": "same_context_across_two_a2a_tasks",
+      "at": "2026-09-07T05:32:00.578Z"
+    },
+    {
+      "name": "input_required_continuation_and_artifact",
+      "at": "2026-09-07T05:32:02.663Z"
+    },
+    {
+      "name": "cancel_after_execution_starts",
+      "at": "2026-09-07T05:32:04.684Z"
+    },
+    {
+      "name": "invitation_then_request_inbox_then_explicit_execution_approval",
+      "at": "2026-09-07T05:32:07.156Z"
+    },
+    {
+      "name": "official_a2a_sse_task_artifact_status",
+      "at": "2026-09-07T05:32:10.005Z"
+    },
+    {
+      "name": "queued_while_destination_connector_offline",
+      "at": "2026-09-07T05:32:20.949Z"
+    },
+    {
+      "name": "offline_delivery_after_connector_restart",
+      "at": "2026-09-07T05:32:23.716Z"
+    },
+    {
+      "name": "context_and_dedup_survive_both_connector_and_backend_restart",
+      "at": "2026-09-07T05:32:36.294Z"
+    },
+    {
+      "name": "cancel_requested_while_destination_offline",
+      "at": "2026-09-07T05:32:48.503Z"
+    },
+    {
+      "name": "cancel_before_execution_prevents_backend_invocation",
+      "at": "2026-09-07T05:32:50.211Z"
+    },
+    {
+      "name": "history_gap_prepared_with_120_events",
+      "at": "2026-09-07T05:33:09.092Z"
+    },
+    {
+      "name": "limited_sync_history_gap_recovered",
+      "at": "2026-09-07T05:33:11.212Z"
+    },
+    {
+      "name": "real_codex_first_turn_persisted",
+      "at": "2026-09-07T05:24:43.356Z"
+    },
+    {
+      "name": "real_codex_same_session_after_process_restart",
+      "at": "2026-09-07T05:27:39.375Z"
+    },
+    {
+      "name": "cancel_unapproved_request_closes_inbox_without_execution",
+      "at": "2026-09-07T05:35:27.955Z"
+    }
+  ],
+  "codex_context_session_count": 1,
+  "synthetic_data_only": true
+}

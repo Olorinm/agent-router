@@ -1,0 +1,27 @@
+# Optional, explicitly configured real-runtime test. Base conformance needs no model account.
+services:
+  agent-b:
+    image: agent-router-matrix-codex:lab
+    build:
+      context: ../..
+      dockerfile: deploy/matrix/Dockerfile.codex-fixture
+      args:
+        CODEX_RUNTIME_IMAGE: ${CODEX_RUNTIME_IMAGE:-codex-verifier-employee:latest}
+    environment:
+      DEMO_RUNTIME: codex
+      DEMO_STORE_PATH: /codex-state/agent.sqlite
+      CODEX_HOME: /codex-state/home
+      CODEX_WORKSPACE: /workspace
+      HTTPS_PROXY: ${MATRIX_CODEX_HTTPS_PROXY:-}
+      HTTP_PROXY: ${MATRIX_CODEX_HTTPS_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,agent-b
+    volumes:
+      - ../../state/matrix-lab/codex-b:/codex-state
+    tmpfs:
+      - "/workspace:size=16m,uid=1000,gid=1000,mode=0700"
+    mem_limit: 1536m
+    networks: [matrix, codex-egress]
+networks:
+  codex-egress:
+    external: true
+    name: ${MATRIX_CODEX_EGRESS_NETWORK:-agent-router-matrix-lab}
