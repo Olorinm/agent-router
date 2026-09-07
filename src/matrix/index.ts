@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,10 +31,11 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
     res.once("close", () => abort.abort());
     requestSignal.run(abort.signal, next);
   });
-  const expected = createHash("sha256").update(apiToken).digest();
+  const expected = Buffer.from(apiToken);
   const auth: RequestHandler = (req, res, next) => {
     const value = req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? "";
-    if (!value || !timingSafeEqual(expected, createHash("sha256").update(value).digest())) {
+    const supplied = Buffer.from(value);
+    if (!value || supplied.length !== expected.length || !timingSafeEqual(expected, supplied)) {
       res.status(401).json({ error: "unauthorized" }); return;
     }
     next();

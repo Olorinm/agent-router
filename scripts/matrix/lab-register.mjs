@@ -12,6 +12,8 @@ for (const side of ["a", "b"]) {
   const { nonce } = await nonceResponse.json();
   const username = "agent", password = randomBytes(32).toString("hex");
   const secret = readFileSync(`${dir}/secrets-${side}/registration`, "utf8").trim();
+  // Synapse's nonce-bound shared-secret registration MAC, not a password-storage hash.
+  // https://element-hq.github.io/synapse/latest/admin_api/register_api.html
   const mac = createHmac("sha1", secret).update([nonce, username, password, "notadmin"].join("\0")).digest("hex");
   const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nonce, username, password, admin: false, mac }) });
   const body = await response.json(); if (!response.ok) throw new Error(`register_${side}_${response.status}_${body.errcode}`);
