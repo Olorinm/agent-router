@@ -6,7 +6,7 @@ import { digest, encodeResult, newTask, sized, statusMessage, terminal } from ".
 
 interface Claim { id: string; worker: string; revision: number; }
 interface Work { task: Task; input: Message; source: ExecutionSource; revision: number; claim?: Claim; cancelRequested?: boolean; }
-interface Receipt { workId: string; revision: number; actions: Record<string, unknown>; }
+interface Receipt { workId: string; revision: number; worker: string; actions: Record<string, unknown>; }
 type Policy = "allow" | "ask" | "deny";
 export type WorkAction = "progress" | "reply" | "need-input" | "fail" | "cancelled";
 export class WorkError extends Error {
@@ -76,7 +76,7 @@ export class CliWork implements ExecutionBackend {
       this.change(work, TaskState.TASK_STATE_REJECTED, "Request rejected.");
     });
   }
-  claim(worker: string, id?: string) {
+  claim(worker: string, id?: string, pinContext = false) {
     return this.store.transaction(() => {
       const rows = this.store.entries<Work>("cli_work").map((r) => r.value);
       // Retrying a lost claim response with the same worker returns the existing assignment.
@@ -84,20 +84,23 @@ export class CliWork implements ExecutionBackend {
       if (owned && id && id !== owned.task.id) throw new WorkError("worker_already_has_work");
       const work = owned ?? rows.find((w) => (!id || w.task.id === id) && !w.claim &&
         w.task.status?.state === TaskState.TASK_STATE_SUBMITTED && this.allowed(w) &&
+        (!pinContext || !this.store.get<string>("context_workers", w.task.contextId) || this.store.get<string>("context_workers", w.task.contextId) === worker) &&
         !rows.some((other) => other.claim && !terminal(other.task) && other.task.contextId === w.task.contextId));
       if (!work) return null;
       if (work.claim?.revision !== work.revision) {
+        if (pinContext) this.store.set("context_workers", work.task.contextId, worker);
         work.claim = { id: randomUUID(), worker, revision: work.revision };
-        this.store.set("cli_claims", work.claim.id, { workId: work.task.id, revision: work.revision, actions: {} } satisfies Receipt);
+        this.store.set("cli_claims", work.claim.id, { workId: work.task.id, revision: work.revision, worker, actions: {} } satisfies Receipt);
         this.change(work, TaskState.TASK_STATE_WORKING);
       }
       return this.view(work);
     });
   }
-  update(claimId: string, action: WorkAction, text: string, data?: Record<string, unknown>) {
+  update(claimId: string, action: WorkAction, text: string, data?: Record<string, unknown>, worker?: string) {
     return this.store.transaction(() => {
       const receipt = this.store.get<Receipt>("cli_claims", claimId);
       if (!receipt) throw new WorkError("claim_not_found", 404);
+      if (worker && receipt.worker !== worker) throw new WorkError("claim_belongs_to_another_instance", 403);
       const actionId = digest({ action, text, data });
       if (Object.hasOwn(receipt.actions, actionId)) return receipt.actions[actionId];
       const work = this.load(receipt.workId);

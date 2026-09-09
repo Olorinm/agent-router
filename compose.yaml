@@ -1,5 +1,32 @@
 name: agent-router-matrix
 services:
+  agent-service:
+    image: agent-router-matrix:managed
+    build: { context: ., dockerfile: Dockerfile }
+    command: [node, dist/matrix/service.js]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      HOST: 0.0.0.0
+      PORT: '8790'
+      # Only operator-controlled containers can reach this unpublished port.
+      AGENT_TRUST_PROXY: uniquelocal
+      MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME:?required}
+      MATRIX_HOMESERVER_URL: http://matrix-homeserver:8008
+      AGENT_SERVICE_URL: https://${MATRIX_SERVER_NAME}/_agent-router/v1
+      AGENT_SERVICE_STATE: /state
+      MATRIX_AS_TOKEN_FILE: /secrets/as-token
+      MATRIX_HS_TOKEN_FILE: /secrets/hs-token
+    volumes:
+      - ./state/agent-service:/state
+      - ./state/agent-service-secrets:/secrets:ro
+    networks: [edge]
+    mem_limit: 768m
+    pids_limit: 128
+    depends_on: { synapse: { condition: service_healthy } }
   postgres:
     image: postgres:17.11-alpine
     restart: unless-stopped

@@ -4,130 +4,87 @@ A CLI for sending requests to remote agents, receiving work, returning results a
 
 The receiving agent still uses its own model, files, tools and permissions. For example, a running Codex session can call this CLI to receive a request, work in its own workspace and send the answer back. Your local files and model conversation are not automatically copied to the remote agent.
 
-**Version 0.6 provides a standalone Go CLI and supports the complete CLI send/claim/reply path without a separate A2A execution server.** `connect` keeps the network connection running; it does not launch a model. Automatically starting Codex or choosing/resuming its internal session is not part of the default CLI flow.
+**Current source separates owner accounts, Agents and runtime instances.** Register one Matrix account, create several Agents under it, and connect each runtime with a scoped credential. Matrix identities are provisioned automatically in the server. A runtime needs only the standalone Go CLI; the node runs the Matrix/A2A service.
 
-中文说明：[Agent 接入与操作指南](docs/guides/agent-connect.md) · [Matrix 账号与部署指南](docs/guides/matrix.md)
+These managed-Agent commands are **not in the published v0.6.0 release**. Build the current source and deploy its matching service. The [v0.6 installation guide](docs/guides/install.md) documents the existing release; it does not install the new commands yet.
 
-## Start from zero: Alice sends, Bob receives
+[Managed account/Agent guide (中文)](docs/guides/managed-agents.md) · [Agent guide](docs/guides/agent-connect.en.md) · [CLI contract](docs/guides/cli-contract.md) · [Architecture](docs/architecture/decisions/0004-managed-agents.md)
 
-This example uses two machines and two accounts on the same homeserver. Accounts on different compatible homeservers use the same commands with their respective domains. Replace `agents.example`, `alice` and `bob` with your homeserver and available usernames. An ordinary agent can join an existing homeserver; deploying Synapse is only needed when operating your own domain.
+## Start from zero: one account, two Agents
 
-### 1. Install the CLI on both machines
+Use a node running this project's Agent service and Matrix homeserver. `agents.example` is a placeholder; obtain an account or registration invitation from its operator. Deploying a node is needed only when operating your own domain.
 
-The CLI is a standalone Go binary for macOS/Linux (amd64 and arm64). Running it does not require Go, Node or npm. To build from source, use Go 1.25 or newer (the module selects the tested Go toolchain):
+### 1. Build the standalone CLI and log in once
 
 ```sh
-git clone https://github.com/Olorinm/agent-router.git
-cd agent-router
 sh scripts/build-cli.sh
-mkdir -p "$HOME/.local/bin"
-install -m 0755 bin/agent-router "$HOME/.local/bin/agent-router"
-export PATH="$HOME/.local/bin:$PATH"
-agent-router --version
-agent-router --help
+./bin/agent-router --profile owner login '@alice:agents.example'
+# Without an account: ./bin/agent-router --profile owner register agents.example alice
 ```
 
-You can copy `bin/agent-router` to another machine with the same OS and architecture, or build all four release archives with `sh scripts/package-cli.sh`. `agent-guide` is embedded in the binary. Source-tree commands can use `./bin/agent-router` directly.
+Password input is hidden. Registration may require an invitation. Automation can use private `--password-file FILE` and `--registration-token-file FILE` inputs. The Go binary needs no Go or Node runtime after it is built.
 
-The **communication service is a separate component**. Install it once on each machine that will keep a local connector running; this component requires Node.js 24:
+### 2. Create your Agents
 
 ```sh
-npm ci
-npm run build
-npm pack
-npm install -g ./agent-router-server-0.6.0.tgz
-agent-router-connector --version
+./bin/agent-router --profile owner agent-create laptop
+./bin/agent-router --profile owner agent-create coder
+./bin/agent-router --profile owner agents
 ```
 
-The npm package installs `agent-router-connector`; the user-facing `agent-router` command comes from the Go binary. `connect` starts the installed service in the foreground. In a source checkout, use `agent-router connect --connector-runtime "$PWD/dist/matrix/index.js"` instead of installing the service globally. `AGENT_ROUTER_NODE` can select the Node executable for this source-entry mode.
+Each creation selects that Agent. Their addresses are `alice/laptop@agents.example` and `alice/coder@agents.example`. Each has a separate managed Matrix identity; no additional password or human registration is involved. Use `agent-use NAME` to switch, and `agent-current` to see the current selection.
 
-Registration/login and account lookup run directly in Go. Messaging and execution commands call the authenticated gateway of the running service. That service keeps the existing Matrix/A2A SDKs, synchronization and durable execution state. A client using an already deployed gateway only needs the Go binary, `CONNECTOR_URL` and a private `CONNECTOR_API_TOKEN_FILE`; that gateway must belong to its intended agent identity. Use HTTPS when accessing it across machines.
+### 3. Connect a receiving runtime
 
-### 2. Register and keep each connector running
-
-On Alice's machine:
+On the owner machine:
 
 ```sh
-agent-router register agents.example alice
-agent-router connect
+./bin/agent-router --profile owner agent-use coder
+./bin/agent-router --profile owner agent-instance-create server --out server-instance.json
 ```
 
-On Bob's machine:
+Transfer the private file to the runtime machine and preserve its 0600 permissions. With the built CLI installed there:
 
 ```sh
-agent-router register agents.example bob
-agent-router connect
+agent-router --profile worker agent-attach server-instance.json
+agent-router --profile worker connect
 ```
 
-Registration prompts for a password and, if required by the homeserver, an invitation code. Obtain the code from that homeserver's operator; issuing invitations is described [below](#operate-a-homeserver). For automation, use `--password-file FILE` and `--registration-token-file FILE`. Keep these files private. A successful registration saves this device's login; an existing account can use `agent-router login '@name:agents.example'` instead.
-
-Leave each `connect` process running. Use another terminal or an agent's shell tool for subsequent commands. Connections are outbound; neither agent needs a public listening port. `agent-router doctor` reports when synchronization is ready.
-
-### 3. Prepare Bob to receive and execute
-
-For this example, Bob explicitly authorizes Alice's requests. Run on Bob's machine:
+In managed mode `connect` checks the node and exits. No local Matrix connector or Matrix account credentials are needed. Start your agent harness and have it read `agent-router agent-guide`; it uses `claim`, handles the work in its own environment, and calls `reply`:
 
 ```sh
-agent-router contact-add '@alice:agents.example' --allow-receive --allow-execution
+agent-router --profile worker claim --worker codex --wait 30
+agent-router --profile worker progress CLAIM_ID 'Reviewing the project'
+agent-router --profile worker reply CLAIM_ID 'Review complete: ...'
 ```
 
-This accepts Alice's room invitations and permits her work to be claimed. It does not start Bob's model. Start the agent you want to use on Bob's machine, such as your configured Codex CLI, and give it these instructions:
+`CLAIM_ID` is returned by `claim` and normally handled by the Agent itself. The service binds work to the authenticated instance, not to the name supplied in `--worker`. For automatically starting/resuming Codex, use the [supervised worker](examples/codex-worker/README.md) and its managed Compose configuration.
 
-```text
-Read `agent-router agent-guide`.
-Use `agent-router claim --worker bob-session --wait 30` to receive work.
-If no work is available, wait again. Read the claimed input and handle it
-using your own workspace and permissions. Check `work CLAIM_ID` for new input
-or cancellation. Use `progress CLAIM_ID TEXT` for progress and
-`reply CLAIM_ID TEXT` for the result, then claim the next request.
-Use need-input, fail or cancelled when appropriate, as described in the guide.
-```
+### 4. Authorize and send
 
-`bob-session` is a stable worker name you choose, not a Codex session ID. This example keeps one receiving agent session running for the conversation. The instructions above are a workflow for that agent, not a built-in model daemon.
-
-The underlying receiver commands are:
+On the owner machine, allow laptop's work at coder, then send as laptop:
 
 ```sh
-agent-router claim --worker bob-session --wait 30
-agent-router progress CLAIM_ID 'Reviewing the project'
-agent-router reply CLAIM_ID 'Review complete: ...'
+./bin/agent-router --profile owner agent-use coder
+./bin/agent-router --profile owner contact-add 'alice/laptop@agents.example' --allow-receive --allow-execution
+./bin/agent-router --profile owner agent-use laptop
+./bin/agent-router --profile owner send 'alice/coder@agents.example' 'Review the project in your workspace' --wait 180
 ```
 
-Replace `CLAIM_ID` with the `claimId` returned by `claim`. Normally the receiving agent reads and passes this value itself; the sender does not manage it. Each concurrent worker must have a different name.
+`send` returns a task with `id` and `contextId`; the completed answer is in `artifacts`. If a wait expires, query the existing task with `get ADDRESS TASK_ID`. It does not cancel execution. For reliable scripts, send without waiting, save the returned IDs, then poll `get`.
 
-### 4. Send a request and read the answer
+Continue the conversation with `send ADDRESS TEXT --context-id CONTEXT_ID`. Include `--task-id TASK_ID` only when providing additional input to a nonterminal task. A network context does not itself restore model memory: the receiving harness must retain its actual model session and files.
 
-On Alice's machine:
+### 5. Add or revoke instances
 
 ```sh
-agent-router send '@bob:agents.example' 'Review the project in your workspace'
+./bin/agent-router --profile owner agent-use coder
+./bin/agent-router --profile owner agent-instance-create desktop --out desktop-instance.json
+./bin/agent-router --profile owner agent-instances
+./bin/agent-router --profile owner agent-instance-revoke INSTANCE_ID
 ```
 
-The command immediately returns JSON. Save its `id` as `TASK_ID` and its `contextId` as `CONTEXT_ID`. Inspect the request using:
-
-```sh
-agent-router get '@bob:agents.example' TASK_ID
-```
-
-The result contains the current status and, after Bob replies, the answer in `artifacts`. Add `--wait 60` to a `send` command to wait for completion or a request for input. Waiting is bounded polling, not a live model-token stream. A timeout leaves the request available: query its original ID rather than sending it again.
-
-### 5. Continue the same conversation
-
-Reuse the `contextId` returned to Alice:
-
-```sh
-agent-router send '@bob:agents.example' 'Expand on your second point' \
-  --context-id CONTEXT_ID --wait 60
-```
-
-Omitting `--context-id` creates a new conversation. Reusing it creates a new request in the same conversation. If Bob used `need-input` to ask for information for the current request, include that request's ID as well:
-
-```sh
-agent-router send '@bob:agents.example' 'Here is the additional information' \
-  --context-id CONTEXT_ID --task-id TASK_ID --wait 60
-```
-
-A completed request cannot be reopened; start a new request in its conversation instead. `contextId` is a network conversation identifier, not a Codex session ID. The receiving host is responsible for retaining or restoring its actual model session. `conversations` and `history ROOM_ID` expose the communication history; logging into Matrix does not restore lost model memory.
+Different conversations can be handled by different instances. Each conversation stays pinned to its first instance, and one instance holds at most one active claim. Use a distinct credential for every concurrently running instance. Reissuing the same instance name rotates its token while preserving its identity. Automatic context migration and crash takeover are not implemented.
 
 ## IDs, permissions and recovery
 
@@ -140,7 +97,7 @@ The capitalized IDs in examples are placeholders for values returned by the CLI:
 | `claim` → `claimId` | Receiver | `progress`, `reply`, `need-input`, `fail`, `cancelled`, or `work` |
 | `inbox` → `requests[].id` | Receiver | Approve or reject a pending incoming request |
 
-Saving a contact, accepting a room and allowing execution are separate choices. To review an unfamiliar sender instead of granting ongoing permission, Bob uses:
+Saving a contact, accepting a room and allowing execution are separate choices. The owner can review an unfamiliar sender on the selected Agent:
 
 ```sh
 agent-router invites
@@ -153,11 +110,13 @@ agent-router claim --worker bob-session --wait 30
 
 `contact-add ADDRESS` only saves the contact. `--allow-receive` additionally accepts invitations; `--allow-execution` permits work to be claimed without individual approval. `contact-add` replaces the local permissions, so include all permissions you intend to retain when updating a contact.
 
-The homeserver and connector retain messages while an agent is offline. Claims survive connector restarts and do not expire or transfer automatically to another worker. Use the same worker name to recover an assignment, and check your execution state before repeating actions. New input can require a fresh claim before replying. Cancellation of active work requires the receiver to stop and acknowledge it; the CLI cannot stop an arbitrary external tool itself.
+The homeserver and connector retain messages while an agent is offline. Claims survive connector restarts and do not expire or transfer automatically to another worker. Use the same instance identity (or worker name in native connector mode) to recover an assignment, and check your execution state before repeating actions. New input can require a fresh claim before replying. Cancellation of active work requires the receiver to stop and acknowledge it; the CLI cannot stop an arbitrary external tool itself.
 
-Contacts, room history, blocking and read markers use native Matrix storage and can sync to another device. Execution permission stays local, and restored history is not automatically executed. Use one execution device per Matrix identity. Separate profiles on one machine also need separate local connector ports; see the [Matrix guide](docs/guides/matrix.md#换设备与执行记录).
+Contacts, room history, blocking and read markers use native Matrix storage and can sync to another device. Execution permission stays in the Agent gateway, and restored history is not automatically executed. Managed runtime instances share that gateway; they do not start independent connectors for the same identity. Separate profiles on one machine also need separate local connector ports; see the [Matrix guide](docs/guides/matrix.md#换设备与执行记录).
 
-Read the [Agent guide](docs/guides/agent-connect.md) for complete receiving, cancellation and recovery instructions, or run `agent-router agent-guide` to print it.
+Read the [English Agent guide](docs/guides/agent-connect.en.md) or [中文指南](docs/guides/agent-connect.md) for complete receiving, cancellation and recovery instructions. `agent-router agent-guide` prints the guide bundled with your installed version. Current source builds default to English and also accept `agent-guide en` or `agent-guide zh`; the published v0.6.0 binary retains its original Chinese guide until upgraded.
+
+Stop `connect` with Ctrl-C or SIGTERM. Restart with the same profile and worker name to recover local work. Stop the connector before `agent-router logout`; logout revokes the device token but keeps local execution records and does not cancel remote tasks.
 
 ## Protocols and optional integrations
 
@@ -169,13 +128,14 @@ See the [event profile](docs/spec/matrix-events-v1.md) and [architecture decisio
 
 ## Operate a homeserver
 
-An ordinary agent uses an existing homeserver. Independent domain operators can deploy unmodified Synapse/PostgreSQL and Caddy:
+An ordinary agent uses an existing homeserver. Independent domain operators deploy Synapse/PostgreSQL/Caddy and the Agent service registered as a Matrix Application Service:
 
 ```sh
 node scripts/matrix/homeserver-init.mjs agents.example
 export MATRIX_SERVER_NAME=agents.example
 sudo chown -R 991:991 state/matrix-homeserver/synapse
-docker compose build admin
+sudo chown -R 1000:1000 state/agent-service state/agent-service-secrets
+docker compose build admin agent-service
 docker compose up -d --wait
 docker compose run --rm admin bootstrap
 docker compose run --rm admin invite first-user 1 24
@@ -183,7 +143,7 @@ docker compose run --rm admin invite first-user 1 24
 
 The last command writes a private invitation file at `state/matrix-homeserver/invitations/first-user`, valid for one registration within 24 hours. Deliver it privately to the registering agent; invitation contents and device credentials are not committed to Git.
 
-Complete state ownership and DNS/TLS instructions are in the [deployment guide](docs/guides/matrix.md#部署独立域). Client and federation traffic uses HTTPS port 443. The admin API and database are not exposed. Matrix federation additionally needs compatible connectors for the application-specific A2A events.
+For existing nodes, run `scripts/matrix/agent-service-init.mjs` before enabling the new service; see the [managed deployment guide](docs/guides/managed-agents.md#部署节点). Complete state ownership and DNS/TLS instructions are in the [deployment guide](docs/guides/matrix.md#部署独立域). Client and federation traffic uses HTTPS port 443. The admin API and database are not exposed. Matrix federation additionally needs compatible connectors for the application-specific A2A events.
 
 ## Verification and boundaries
 
@@ -197,8 +157,12 @@ npm run build
 
 The [0.6 Go CLI report](docs/verification/go-cli-2026-09-07.md) records standalone binary, cross-language gateway, real account and federation checks. The [0.5 CLI execution report](docs/verification/matrix-cli-work-2026-09-07.md) verifies both peers using the CLI without an A2A server, including claims, approval, progress/results, clarification, cancellation and restart/offline recovery. The existing two-homeserver lab checks native client data and the optional A2A service path. A dedicated Codex fixture separately verifies real runtime session restoration.
 
-This is alpha software. E2EE/key recovery, SSO/OAuth, a graphical client and distributed execution failover are not implemented. The [acceptance checklist](docs/verification/matrix-client-acceptance.md) distinguishes native client capabilities from the CLI execution flow. A dedicated two-homeserver lab validates federation on one physical host; it is not a production load or independent-public-node test.
+This is alpha software. E2EE/key recovery, SSO/OAuth, a graphical client and distributed execution failover are not implemented. The [acceptance checklist](docs/verification/matrix-client-acceptance.md) distinguishes native client capabilities from the CLI execution flow. The managed-Agent verification also exercises Application Service virtual identities across two homeservers. The two-homeserver lab runs on one physical host; it is not a production load or independent-public-node test.
 
 Version 0.6 uses Matrix exclusively. The current Go CLI uses the existing Matrix/A2A gateway and account profiles. The previous custom Router protocol, its old Go implementation, registry, JWT federation, RabbitMQ and associated database migrations remain retired. No legacy Router account or task migration is provided. See the [Go CLI architecture decision](docs/architecture/decisions/0003-go-cli.md) for component and distribution boundaries.
 
 Code is Apache-2.0. Synapse is an independently deployed upstream dependency with its own license. See [architecture](docs/architecture/decisions/0002-matrix-communication.md) and [security](SECURITY.md).
+
+## Embed in another product
+
+Use the standalone [TypeScript SDK](packages/sdk/README.md) for direct HTTP integration without the CLI. Optional [product account integration](docs/guides/product-integration.md) reuses a configured existing user-info API and can restrict enrollment to a role such as admin.

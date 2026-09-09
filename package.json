@@ -2,6 +2,11 @@
   "name": "@agent-router/server",
   "version": "0.6.0",
   "private": true,
+  "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
+  "repository": { "type": "git", "url": "git+https://github.com/Olorinm/agent-router.git" },
+  "homepage": "https://github.com/Olorinm/agent-router#readme",
+  "bugs": { "url": "https://github.com/Olorinm/agent-router/issues" },
+  "keywords": ["agent-communication", "agent-to-agent", "matrix", "a2a", "cli", "federation"],
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -19,11 +24,13 @@
     "matrix:lab:init": "node scripts/matrix/lab-init.mjs",
     "matrix:lab:check": "node scripts/matrix/lab-check.mjs",
     "cli": "./bin/agent-router",
-    "build:cli": "sh scripts/build-cli.sh"
+    "build:cli": "sh scripts/build-cli.sh",
+    "build:sdk": "npm run build --prefix packages/sdk"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
     "ipaddr.js": "^2.5.0",
     "matrix-js-sdk": "^42.3.0",
     "undici": "^8.10.1",
@@ -41,7 +48,8 @@
   },
   "files": [
     "dist",
-    "docs/guides",
+    "docs/guides/*.md",
+    "scripts/install.sh",
     "scripts/matrix",
     "README.md",
     "LICENSE",

@@ -11,6 +11,7 @@ import (
 type options struct {
 	profile, homeserver, passwordFile, registrationTokenFile, deviceName          string
 	connectorURL, endpointTokenFile, connectorRuntime                             string
+	serviceURL, outputFile                                                        string
 	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile string
 	tags                                                                          []string
 	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version  bool
@@ -28,6 +29,8 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.StringVar(&o.deviceName, "device-name", "", "Device name")
 	f.StringVar(&o.connectorURL, "connector-url", "", "Local gateway URL")
 	f.StringVar(&o.connectorRuntime, "connector-runtime", "", "Path to the installed connector JavaScript entry")
+	f.StringVar(&o.serviceURL, "service-url", "", "Agent service URL (defaults to the account server)")
+	f.StringVar(&o.outputFile, "out", "", "Write private instance credentials to a new file")
 	f.StringVar(&o.endpointTokenFile, "endpoint-token-file", "", "Read optional backend token from a file")
 	f.BoolVar(&o.allowLocal, "allow-local", false, "Allow a private A2A backend")
 	f.BoolVar(&o.allowHTTP, "allow-http", false, "Allow an explicitly selected HTTP homeserver")
@@ -62,15 +65,23 @@ func (o options) waitSeconds(max int) (int, error) {
 }
 
 const help = `Agent Router — Go CLI
-  register SERVER USERNAME       Register and save this device
+  register SERVER USERNAME       Register your owner account
   login @name:server             Log in (hidden password prompt)
   whoami | logout                Verify identity / revoke this device
+  agents                         List Agents owned by this account
+  agent-create NAME              Create and select an Agent (no new password)
+  agent-use NAME | agent-current  Select an owned Agent / show current selection
+  agent-instances                List the selected Agent's runtime instances
+  agent-instance-create NAME --out FILE  Issue private instance credentials
+  agent-instance-revoke ID        Revoke an instance's access
+  agent-attach FILE               Connect this profile using instance credentials
+  agent-resolve owner/name@server Resolve a public Agent address
   discover SERVER                Discover server and login methods
   find TEXT | lookup [ADDRESS]    Search directory / read public profile
   profile-set DISPLAY_NAME       Set display name
   bind AGENT_CARD_URL            Optional A2A execution backend
   configure --connector-url URL  Choose the local gateway port
-  connect                        Run the installed communication service
+  connect                        Check managed connection, or run a local connector
   doctor | status | contacts | conversations
   contact-add ADDRESS [--note TEXT] [--tag TAG] [--allow-receive] [--allow-execution]
   contact-remove ADDRESS | blocked | block ADDRESS | unblock ADDRESS
@@ -86,12 +97,15 @@ const help = `Agent Router — Go CLI
   watch [--since CURSOR] [--room ROOM_ID]
   send ADDRESS TEXT [--context-id ID] [--task-id ID] [--wait SECONDS]
   get ADDRESS TASK_ID | list ADDRESS | cancel ADDRESS TASK_ID
-  agent-guide                    Print the bundled self-onboarding guide
+  agent-guide [en|zh]             Print the bundled guide (default: English)
 
 Advanced interoperability: say ADDRESS TEXT sends a native Matrix text event.
-Use '-' for message text to read stdin. All command results are JSON;
-watch emits JSON lines. Diagnostics go to stderr.
+Use '-' for message text to read stdin. Operation results are JSON (or empty);
+watch emits JSON lines. Help and agent-guide are text; connect is a foreground service.
+Errors and diagnostics go to stderr. Exit 0 means the command succeeded, not necessarily the task.
 Use --profile NAME for separate local identities (default: default).
+One account owns multiple Agents. Managed instances need only this Go CLI;
+Matrix credentials stay on the server. New instance credentials use --out FILE.
 Automation: --password-stdin or --password-file FILE; --registration-token-file FILE.
 Secrets are never accepted as argument values. bind accepts --endpoint-token-file FILE.
 The Go CLI needs no Node runtime. The separate local connector service needs Node 24.

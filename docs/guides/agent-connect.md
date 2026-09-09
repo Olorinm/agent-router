@@ -1,12 +1,25 @@
 # Agent 通过 CLI 接入
 
+## 托管 Agent（当前源码）
+
+人先登录账号，用 `agent-create NAME` 创建 Agent，用 `agent-use NAME` 选择 Agent。运行机器使用 `agent-attach FILE` 导入该 Agent 的实例凭证，无需另注册 Matrix 账号。此模式下 `connect` 检查远端服务后退出，运行机器只需要 Go CLI。
+
+先用 `agent-current` 查看当前 Agent／实例，再使用下方的 `claim`、`work`、`reply` 操作。服务用凭证中的实例 ID 判断身份，不信任 `--worker` 提交的名字；每个会话固定到首次领取的实例，其他实例不能提交这个领取的结果。每份实例凭证只运行一个进程。联系人及许可修改由主人账号完成。Node 服务和 Matrix 凭证留在节点服务器。
+
+详见[一个账号管理多个 Agent](managed-agents.md)。这些命令需要当前源码构建，已发布的 v0.6.0 尚不包含。下方单身份连接器的注册与启动说明用于原生 Matrix 互操作；托管实例跳过这些步骤，直接领取工作。
+
+
 双方 Agent 都可以只使用 `agent-router`。CLI 负责账号、收发、会话和权限，并把处理进度与结果接回原请求；Matrix 和 A2A 的传输转换由连接器完成。默认不需要 Agent Card、A2A 服务或公网端口。
+
+[English guide](agent-connect.en.md) · [安装入口](install.md) · [命令与输出约定](cli-contract.md)
+
+当前源码构建的 `agent-router agent-guide` 默认输出英文，`agent-guide zh` 输出本指南。已发布的 v0.6.0 二进制仍使用原来的无参数命令输出中文，语言选择参数将在后续发布中提供。
 
 ## 登录并保持连接
 
-`agent-router` 是独立 Go 二进制，运行 CLI 不需要 Go/Node/npm；用 Go 1.25+ 执行 `sh scripts/build-cli.sh` 构建，或使用对应系统/架构的发布包。`agent-guide` 已嵌入二进制。
+先按[安装入口](install.md)安装发布包：Homebrew 安装 Go CLI，npm 安装同一版本的 connector；已有本项目源码时也可以执行 `sh scripts/install.sh --version 0.6.0` 一次安装两者。默认安装到 `~/.local/bin`，请把该目录加入 Agent 宿主的 PATH。CLI 本身不需要 Go/Node/npm，本地常驻 connector 需要 Node.js 24。
 
-本地常驻通信服务单独安装，需要 Node.js 24：`npm ci && npm run build && npm pack` 后执行 `npm install -g ./agent-router-server-0.6.0.tgz`，它提供 `agent-router-connector`。`agent-router connect` 会启动这个服务；源码开发可用 `connect --connector-runtime /absolute/path/dist/matrix/index.js`。注册、登录由 Go 直接完成，消息与任务命令调用已运行的通信服务。
+先取得服务器地址、账号或邀请码，以及对方 Agent 的地址。下面的 `agents.example` 是占位符，不是公开试用服务器。没有账号时可以按[本地验证指南](local-verification.md)创建隔离的测试身份。注册、登录由 Go 直接完成，消息与任务命令调用已运行的通信服务。
 
 ```sh
 agent-router register agents.example writer --password-file /private/path/password --registration-token-file /private/path/invitation
@@ -25,7 +38,7 @@ agent-router connect
 agent-router send '@editor:other.example' '请检查这份报告'
 ```
 
-默认立即返回发送回执，其中 `id` 用于查询本次处理，`contextId` 用于继续会话。无需把消息区分成普通聊天或执行协议。需要等结果时可加 `--wait 60`，之后也能用 `get ADDRESS ID` 查看结果。等待超时不会撤销请求；继续查询原 ID，避免重新发送造成另一项工作。
+默认立即返回发送回执，其中 `id` 用于查询本次处理，`contextId` 用于继续会话。需要等结果时可加 `--wait 60`，之后也能用 `get ADDRESS ID` 查看结果。等待前会在 stderr 输出任务与会话 ID；超时退出码为 1，stdout 可能为空，但不会撤销请求。程序接入建议先立即发送、保存 JSON 回执，再查询原 ID。发送结果不确定而重试时，复用原 `--message-id` 和完全相同的请求内容。
 
 接收方：
 
@@ -89,6 +102,8 @@ agent-router cancel '@editor:other.example' REQUEST_ID
 一台新设备可恢复 Matrix 联系人和消息，但不会自动执行恢复出来的旧请求。迁移一个执行身份需要整体保留连接器 SQLite 和 Agent 自身的状态。一个身份只在一台设备执行领取；其他登录设备不要重复处理同一请求。
 
 `claim --wait 30` 可以作为 Agent 工具循环的一步；返回后交由这个正在运行的 Agent 处理。启动已退出的模型进程、把事件注入任意桌面会话仍由 Agent 宿主管理。
+
+用 Ctrl-C 或 SIGTERM 停止 `connect`，之后以同一 profile 和 worker 名称恢复。退出账号先停止连接器，再执行 `agent-router logout`；这会撤销设备 token、保留本地执行记录，不会自动取消远端任务。`doctor` 返回 `status: ready` 才表示连接器已就绪。
 
 ## 已有 A2A 服务的可选接入
 

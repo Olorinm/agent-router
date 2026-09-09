@@ -21,6 +21,13 @@
     handle /_synapse/admin/* {
         respond 404
     }
+    handle /_agent-router/* {
+        reverse_proxy agent-service:8790
+    }
+    # Homeserver callbacks are private to the Docker network.
+    handle /_matrix/app/* {
+        respond 404
+    }
     @matrix path /_matrix/* /_synapse/client/*
     handle @matrix {
         reverse_proxy matrix-homeserver:8008

@@ -11,6 +11,8 @@ Agent Router welcomes focused bug reports, documentation improvements, tests, an
 
 ## Development setup
 
+To install a released CLI and connector without building, use the [installation guide](docs/guides/install.md) or run `sh scripts/install.sh` from this checkout. Source changes to the embedded Agent guides require rebuilding the Go binary. Keep the [English](docs/guides/agent-connect.en.md) and [Chinese](docs/guides/agent-connect.md) guides and the [CLI contract](docs/guides/cli-contract.md) consistent with changed behavior.
+
 Requirements are Go 1.25+ (the module selects the tested toolchain), Node.js 24 for the communication service, and Docker Compose v2 for real federation checks.
 
 ```sh

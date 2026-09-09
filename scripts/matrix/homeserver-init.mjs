@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { initializeAgentService } from "./agent-service-init.mjs";
 
 const serverName = process.argv[2];
 if (!serverName || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(serverName)) throw new Error("Usage: homeserver-init.mjs DNS_SERVER_NAME");
@@ -24,4 +25,5 @@ write("synapse/homeserver.yaml", {
   max_upload_size: "1M", url_preview_enabled: false, enable_search: false,
 });
 write("deployment.json", { serverName, createdAt: new Date().toISOString(), registration: "matrix-registration-token" });
+initializeAgentService();
 process.stdout.write(`Initialized ${serverName} at ${root}. Keep this server name and state when upgrading.\n`);
