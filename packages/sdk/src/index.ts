@@ -1,8 +1,11 @@
+import { AgentCard, Task as ProtocolTask, SubscribeToTaskRequest } from "@a2a-js/sdk";
+import { JsonRpcTransportFactory } from "@a2a-js/sdk/client";
+
 export interface Agent { id: string; owner: string; name: string; address: string; matrixId: string }
 export interface NetworkSession { serviceUrl: string; accessToken: string; expiresAt: string; owner: string; agent: Agent }
 export type TaskState = "TASK_STATE_SUBMITTED" | "TASK_STATE_WORKING" | "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED";
 export interface Message { role?: string; parts: Array<{text?: string; [key: string]: unknown}> }
-export interface Task { id: string; contextId: string; status: {state: TaskState; message?: Message}; artifacts?: Array<{parts: Message["parts"]}>; history?: Message[] }
+export interface Task { id: string; contextId: string; status: {state: TaskState; message?: Message}; artifacts?: Array<{artifactId?: string; parts: Message["parts"]}>; history?: Message[] }
 export interface RequestOptions { signal?: AbortSignal }
 /** Public routing identity returned by resolve; safe to persist with the contact. */
 export interface ResolvedTarget { address: string; matrixId: string }
@@ -43,7 +46,7 @@ export function parseTask(value: unknown): Task {
   if(!states.has(state))throw new AgentRouterError("invalid_response");
   if(t.artifacts!==undefined && !Array.isArray(t.artifacts) || t.history!==undefined && !Array.isArray(t.history)) throw new AgentRouterError("invalid_response");
   return {id:string(t.id),contextId:string(t.contextId),status:{state,...(s.message?{message:message(s.message)}:{})},
-    artifacts:((t.artifacts??[]) as unknown[]).map(a=>({parts:parts(record(a).parts??[])})),history:((t.history??[]) as unknown[]).map(message)};
+    artifacts:((t.artifacts??[]) as unknown[]).map(a=>({...((record(a).artifactId) ? {artifactId:string(record(a).artifactId)} : {}),parts:parts(record(a).parts??[])})),history:((t.history??[]) as unknown[]).map(message)};
 }
 /** Actual Agent content only. Task progress and completion labels belong to taskStatusText. */
 export function taskText(task: Task): string {
@@ -129,15 +132,81 @@ export class AgentRouterClient {
   }
   async get(input:TaskTarget):Promise<Task>{return parseTask(await this.rpc(input.agentId,input.address,"GetTask",{id:input.taskId,historyLength:20},input));}
   async cancel(input:TaskTarget):Promise<Task>{return parseTask(await this.rpc(input.agentId,input.address,"CancelTask",{id:input.taskId},input));}
-  /** Polls durable state; stops for input/auth-required as well as terminal states. No automatic send retries. */
-  async *watch(input:TaskTarget & {intervalMs?:number}):AsyncGenerator<Task>{
-    for(;;){const task=await this.get(input);yield task;if(isTaskSettled(task))return;
-      await new Promise<void>((resolve,reject)=>{
-        const done=()=>{input.signal?.removeEventListener("abort",abort);resolve();};
-        const timer=setTimeout(done,Math.max(100,input.intervalMs??1200));
-        const abort=()=>{clearTimeout(timer);input.signal?.removeEventListener("abort",abort);reject(input.signal?.reason);};
-        if(input.signal?.aborted)abort();else input.signal?.addEventListener("abort",abort,{once:true});
-      });
+  /** Subscribe to durable task updates using the official A2A transport. Reconnects reads only; never resends work. */
+  async *watch(input:TaskTarget):AsyncGenerator<Task>{
+    const target=input.resolvedTarget?validateTarget(input.resolvedTarget,input.address):await this.resolve(input.address,input);
+    const url=`${this.baseUrl}/agents/${pathPart(input.agentId)}/gateway/agents/${pathPart(target.matrixId)}/a2a/jsonrpc`;
+    const transport=await new JsonRpcTransportFactory({fetchImpl:async (request,init)=>{
+      if(String(request)!==url)throw new AgentRouterError("credential_origin_mismatch");
+      const token=typeof this.options.accessToken==="function"?await this.options.accessToken():this.options.accessToken;
+      if(!token)throw new AgentRouterError("account_login_required",401);
+      const headers=new Headers(init?.headers);headers.set("Authorization",`Bearer ${token}`);headers.set("A2A-Version","1.0");
+      const handshake=new AbortController();
+      const timer=setTimeout(()=>handshake.abort(new AgentRouterError("connection_unavailable")),this.options.timeoutMs??30000);
+      let response:Response;
+      try { response=await this.fetcher(request,{...init,headers,redirect:"error",credentials:"omit",
+        signal:init?.signal?AbortSignal.any([init.signal,handshake.signal]):handshake.signal}); }
+      finally { clearTimeout(timer); }
+      if(!response.ok){
+        const body=await response.json().catch(()=>({}));
+        const code=record(body).error;
+        throw new AgentRouterError(typeof code==="string"?code:"request_failed",response.status);
+      }
+      return response;
+    }}).create(url,AgentCard.fromJSON({supportedInterfaces:[{url,protocolBinding:"JSONRPC",protocolVersion:"1.0"}]}));
+    let failures=0, last="";
+    for(;;){
+      input.signal?.throwIfAborted();
+      let task=await this.get({...input,resolvedTarget:target});
+      if(task.id!==input.taskId)throw new AgentRouterError("invalid_response");
+      let aggregate=ProtocolTask.fromJSON(task);
+      const initial=JSON.stringify(task);
+      if(initial!==last){last=initial;yield task;}
+      if(isTaskSettled(task))return;
+      const subscription=new AbortController();
+      const signal=input.signal?AbortSignal.any([input.signal,subscription.signal]):subscription.signal;
+      try{
+        for await(const update of transport.resubscribeTask(SubscribeToTaskRequest.fromJSON({id:input.taskId}),{signal})){
+          const payload=update.payload;
+          if(!payload)throw new AgentRouterError("invalid_response");
+          if(payload.$case==="task"){
+            if(payload.value.id!==task.id||payload.value.contextId!==task.contextId)throw new AgentRouterError("invalid_response");
+            aggregate=payload.value;
+          }else if(payload.$case==="statusUpdate"||payload.$case==="artifactUpdate"){
+            const event=payload.value;
+            if(event.taskId!==task.id||event.contextId!==task.contextId)throw new AgentRouterError("invalid_response");
+            if(payload.$case==="statusUpdate") aggregate.status=payload.value.status;
+            else{
+              const {artifact,append}=payload.value;
+              if(!artifact?.artifactId)throw new AgentRouterError("invalid_response");
+              const index=aggregate.artifacts.findIndex(a=>a.artifactId===artifact.artifactId);
+              const previous=index<0?undefined:aggregate.artifacts[index];
+              const next={...artifact,parts:append&&previous?[...previous.parts,...artifact.parts]:artifact.parts};
+              if(index<0)aggregate.artifacts.push(next);else aggregate.artifacts[index]=next;
+            }
+          }else throw new AgentRouterError("invalid_response");
+          task=parseTask(ProtocolTask.toJSON(aggregate));
+          const digest=JSON.stringify(task);
+          if(digest!==last){last=digest;failures=0;yield task;}
+          if(isTaskSettled(task))return;
+        }
+      }catch(error){
+        input.signal?.throwIfAborted();
+        if(error instanceof AgentRouterError && (error.status===401||error.status===403||error.code==="invalid_response"))throw error;
+        // A task can finish between GetTask and SubscribeToTask; the next snapshot resolves that race.
+      }finally{subscription.abort();}
+      if(++failures>5)throw new AgentRouterError("connection_unavailable");
+      await abortableDelay(Math.min(30_000,1000*2**(failures-1)),input.signal);
     }
   }
+}
+
+function abortableDelay(ms:number,signal?:AbortSignal):Promise<void>{
+  signal?.throwIfAborted();
+  return new Promise((resolve,reject)=>{
+    const finish=()=>{signal?.removeEventListener("abort",abort);resolve();};
+    const timer=setTimeout(finish,ms);
+    const abort=()=>{clearTimeout(timer);signal?.removeEventListener("abort",abort);reject(signal?.reason);};
+    signal?.addEventListener("abort",abort,{once:true});
+  });
 }

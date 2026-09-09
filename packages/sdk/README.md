@@ -16,7 +16,7 @@ Before a registry release, build and pack this package and install the resulting
 npm run build --prefix packages/sdk
 npm pack ./packages/sdk
 # In the consuming product:
-npm install /path/to/agent-router-sdk-0.1.2.tgz
+npm install /path/to/agent-router-sdk-0.1.3.tgz
 ```
 
 ## Sign in with an existing product account
@@ -76,7 +76,7 @@ for await (const update of router.watch({
 }
 ```
 
-`watch` polls durable tasks; it is not token streaming. It stops on completion, failure, cancellation, rejection, input-required or auth-required. Connection progress belongs in your execution-status area, not in reply text. `taskText` returns artifact text or the latest Agent history message; an input/auth-required status message is also treated as a question for the user. Other status messages, including progress and completion labels, are available separately through `taskStatusText`. Neither helper generates placeholders.
+`watch` subscribes to durable A2A task updates; it emits snapshots when status or artifacts change. It stops on completion, failure, cancellation, rejection, input-required or auth-required. Connection progress belongs in your execution-status area, not in reply text. `taskText` returns artifact text or the latest Agent history message; an input/auth-required status message is also treated as a question for the user. Other status messages, including progress and completion labels, are available separately through `taskStatusText`. Neither helper generates placeholders.
 
 For subsequent messages, pass the returned `contextId` to `send`. To answer `TASK_STATE_INPUT_REQUIRED`, also pass the pending `taskId`. To resume after a crash or reconnect, use `get`/`watch` with the persisted task ID. Retry an uncertain send only with its original `messageId` and identical input; there are no implicit send retries. A send may time out locally while the remote task continues.
 
@@ -114,7 +114,7 @@ await router.get({ agentId: session.agent.id, address: remote.address,
 - `resolve(address, options?)`: read a domain's public directory without sending credentials.
 - `get({agentId,address,taskId,signal?})`: read a task.
 - `revokeSession(options?)`: revoke an exchanged `ars_` session.
-- `isTaskSettled(task)`: check whether polling should stop.
+- `isTaskSettled(task)`: check whether task subscriptions should stop.
 
 All HTTP credentials stay on the configured service origin; recipient directory requests are unauthenticated. Redirects are rejected. `fetch` can be supplied for a product's outbound network policy. Default request timeout is 30 seconds (`timeoutMs`); optional `allowLocalHTTP` permits only loopback HTTP for local integration tests.
 
@@ -134,3 +134,5 @@ All HTTP credentials stay on the configured service origin; recipient directory 
 ## Scope
 
 This release covers product-side account bootstrap, Agent discovery/management, and durable messaging. It does not provide a UI, an identity provider, automatic worker deployment, or a model runtime. Existing CLI/runtime APIs remain available for workers. Matrix is the transport, A2A is the task protocol, and product identity is an optional node-level adapter.
+
+Task observation uses the official `@a2a-js/sdk` JSON-RPC `SubscribeToTask` transport. `watch()` yields complete task snapshots assembled from status and artifact events, including appended artifact parts. It stops for input/auth-required and terminal states. Broken streams reconnect with exponential backoff (1–16 seconds, at most five reconnects); exhausted retries raise `connection_unavailable`. A task finishing before subscription is recovered with `GetTask`. Pass an AbortSignal to detach; detaching does not cancel the remote task. Cancellation is an explicit `cancel()` call. No automatic send retries occur.
