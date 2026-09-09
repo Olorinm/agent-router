@@ -16,7 +16,7 @@ Before a registry release, build and pack this package and install the resulting
 npm run build --prefix packages/sdk
 npm pack ./packages/sdk
 # In the consuming product:
-npm install /path/to/agent-router-sdk-0.1.3.tgz
+npm install /path/to/agent-router-sdk-0.1.4.tgz
 ```
 
 ## Sign in with an existing product account
@@ -135,4 +135,6 @@ All HTTP credentials stay on the configured service origin; recipient directory 
 
 This release covers product-side account bootstrap, Agent discovery/management, and durable messaging. It does not provide a UI, an identity provider, automatic worker deployment, or a model runtime. Existing CLI/runtime APIs remain available for workers. Matrix is the transport, A2A is the task protocol, and product identity is an optional node-level adapter.
 
-Task observation uses the official `@a2a-js/sdk` JSON-RPC `SubscribeToTask` transport. `watch()` yields complete task snapshots assembled from status and artifact events, including appended artifact parts. It stops for input/auth-required and terminal states. Broken streams reconnect with exponential backoff (1–16 seconds, at most five reconnects); exhausted retries raise `connection_unavailable`. A task finishing before subscription is recovered with `GetTask`. Pass an AbortSignal to detach; detaching does not cancel the remote task. Cancellation is an explicit `cancel()` call. No automatic send retries occur.
+All task operations use the official `@a2a-js/sdk` JSON-RPC transport: `SendMessage`, `GetTask`, `CancelTask` and `SubscribeToTask`. The Router SDK adds credential scoping, request deadlines and validation of its durable-task contract; it does not construct a second A2A wire implementation. `watch()` yields complete task snapshots assembled from status and artifact events, including appended artifact parts. It stops for input/auth-required and terminal states. Broken streams reconnect with exponential backoff (1–16 seconds, at most five reconnects); exhausted retries raise `connection_unavailable`. A task finishing before subscription is recovered with `GetTask`. Pass an AbortSignal to detach; detaching does not cancel the remote task. Cancellation is an explicit `cancel()` call. No automatic send retries occur.
+
+Router account exchange, Agent addresses and durable routing are Router APIs, not A2A or Matrix standard endpoints. Matrix federation remains unmodified; the Router Matrix application-event profile is a project-specific mapping, not an official A2A Matrix binding. Products own their login, local data and UI, and should keep this SDK behind their communication adapter.
