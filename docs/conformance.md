@@ -1,5 +1,7 @@
 # Conformance
 
+`test/sdk-official-interop.test.ts` exercises SDK send, get, streaming updates, cancellation and task errors against the unmodified official A2A `DefaultRequestHandler` and Express JSON-RPC handler. The executor is a deterministic fixture; this verifies the A2A boundary, not live Matrix federation or model behavior. `test/sdk-identity.test.ts` separately exercises the Router gateway and durable connector with a simulated Matrix transport.
+
 The [0.6 Go CLI report](verification/go-cli-2026-09-07.md) covers the standalone binary, Go/TypeScript boundary and actual Go CLI conformance runs.
 
 The [0.5 CLI execution report](verification/matrix-cli-work-2026-09-07.md) verifies both peers using the CLI without A2A execution servers. Run the lab check container with `node scripts/matrix/cli-work-check.mjs`: it creates two synthetic accounts and launches only their connectors, then checks approval, exclusive claims, progress/results, input continuation, cancellation and restart/offline recovery.

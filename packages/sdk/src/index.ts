@@ -1,5 +1,6 @@
-import { AgentCard, Task as ProtocolTask, SubscribeToTaskRequest } from "@a2a-js/sdk";
-import { JsonRpcTransportFactory } from "@a2a-js/sdk/client";
+import { AgentCard, Task as ProtocolTask, SendMessageRequest, GetTaskRequest, CancelTaskRequest, SubscribeToTaskRequest } from "@a2a-js/sdk";
+import { JsonRpcTransportFactory, type Transport } from "@a2a-js/sdk/client";
+import { isJsonRpcError } from "@a2a-js/sdk/errors";
 
 export interface Agent { id: string; owner: string; name: string; address: string; matrixId: string }
 export interface NetworkSession { serviceUrl: string; accessToken: string; expiresAt: string; owner: string; agent: Agent }
@@ -118,22 +119,32 @@ export class AgentRouterClient {
     try{validateTarget(a,address);}catch{throw new AgentRouterError("invalid_response");}
     return a;
   }
-  private async rpc(agentId:string,address:string,method:string,params:unknown,options:TargetOptions):Promise<unknown>{
-    const target=options.resolvedTarget?validateTarget(options.resolvedTarget,address):await this.resolve(address,options),id=globalThis.crypto.randomUUID();
-    const r=record(await this.request(`${this.baseUrl}/agents/${pathPart(agentId)}/gateway/agents/${pathPart(target.matrixId)}/a2a/jsonrpc`,"POST",{jsonrpc:"2.0",id,method,params},true,options));
-    if(r.jsonrpc!=="2.0"||r.id!==id)throw new AgentRouterError("invalid_response");
-    if(r.error){const e=record(r.error);throw new AgentRouterError(`a2a_${typeof e.code==="number"?e.code:"error"}`,200);}
-    return r.result;
-  }
   async send(input:SendOptions):Promise<Task>{
     if(!input.messageId||!input.text||input.text.length>32000)throw new AgentRouterError("invalid_message");
-    const r=record(await this.rpc(input.agentId,input.address,"SendMessage",{message:{messageId:input.messageId,role:"ROLE_USER",parts:[{text:input.text}],...(input.contextId?{contextId:input.contextId}:{}),...(input.taskId?{taskId:input.taskId}:{})},configuration:{returnImmediately:true,historyLength:20}},input));
-    return parseTask(r.task);
+    return this.taskOperation(input,async(transport,signal)=>{
+      const result=await transport.sendMessage(SendMessageRequest.fromJSON({message:{messageId:input.messageId,role:"ROLE_USER",parts:[{text:input.text}],...(input.contextId?{contextId:input.contextId}:{}),...(input.taskId?{taskId:input.taskId}:{})},configuration:{returnImmediately:true,historyLength:20}}),{signal});
+      // This Router gateway guarantees durable tasks; a direct A2A Message is not that contract.
+      if(!("id" in result))throw new AgentRouterError("invalid_response");
+      return result;
+    });
   }
-  async get(input:TaskTarget):Promise<Task>{return parseTask(await this.rpc(input.agentId,input.address,"GetTask",{id:input.taskId,historyLength:20},input));}
-  async cancel(input:TaskTarget):Promise<Task>{return parseTask(await this.rpc(input.agentId,input.address,"CancelTask",{id:input.taskId},input));}
-  /** Subscribe to durable task updates using the official A2A transport. Reconnects reads only; never resends work. */
-  async *watch(input:TaskTarget):AsyncGenerator<Task>{
+  async get(input:TaskTarget):Promise<Task>{return this.taskOperation(input,(transport,signal)=>transport.getTask(GetTaskRequest.fromJSON({id:input.taskId,historyLength:20}),{signal}));}
+  async cancel(input:TaskTarget):Promise<Task>{return this.taskOperation(input,(transport,signal)=>transport.cancelTask(CancelTaskRequest.fromJSON({id:input.taskId}),{signal}));}
+  private async taskOperation(input:SendOptions|TaskTarget,operation:(transport:Transport,signal:AbortSignal)=>Promise<ProtocolTask>):Promise<Task>{
+    const timeout=AbortSignal.timeout(this.options.timeoutMs??30000);
+    const signal=input.signal?AbortSignal.any([input.signal,timeout]):timeout;
+    try{
+      const {transport}=await this.taskTransport({...input,signal});
+      return parseTask(ProtocolTask.toJSON(await operation(transport,signal)));
+    }catch(error){
+      signal.throwIfAborted();
+      if(error instanceof AgentRouterError)throw error;
+      if(isJsonRpcError(error))throw new AgentRouterError(`a2a_${error.envelopeCode}`,200);
+      throw new AgentRouterError("invalid_response");
+    }
+  }
+  private async taskTransport(input:SendOptions|TaskTarget){
+    input.signal?.throwIfAborted();
     const target=input.resolvedTarget?validateTarget(input.resolvedTarget,input.address):await this.resolve(input.address,input);
     const url=`${this.baseUrl}/agents/${pathPart(input.agentId)}/gateway/agents/${pathPart(target.matrixId)}/a2a/jsonrpc`;
     const transport=await new JsonRpcTransportFactory({fetchImpl:async (request,init)=>{
@@ -144,16 +155,29 @@ export class AgentRouterClient {
       const handshake=new AbortController();
       const timer=setTimeout(()=>handshake.abort(new AgentRouterError("connection_unavailable")),this.options.timeoutMs??30000);
       let response:Response;
-      try { response=await this.fetcher(request,{...init,headers,redirect:"error",credentials:"omit",
-        signal:init?.signal?AbortSignal.any([init.signal,handshake.signal]):handshake.signal}); }
+      const signal=init?.signal?AbortSignal.any([init.signal,handshake.signal]):handshake.signal;
+      try { response=await this.fetcher(request,{...init,headers,redirect:"error",credentials:"omit",signal}); }
+      catch {signal.throwIfAborted();throw new AgentRouterError("connection_unavailable");}
       finally { clearTimeout(timer); }
       if(!response.ok){
         const body=await response.json().catch(()=>({}));
         const code=record(body).error;
-        throw new AgentRouterError(typeof code==="string"?code:"request_failed",response.status);
+        throw new AgentRouterError(typeof code==="string"&&/^[a-z0-9_]+$/.test(code)?code:"request_failed",response.status);
+      }
+      if(headers.get("Accept")==="application/json"){
+        // Generated protobuf decoders coerce/default fields. Validate our durable-task
+        // contract before decoding so malformed gateway data cannot become a valid task.
+        const envelope=record(await response.clone().json());
+        if(envelope.jsonrpc!=="2.0")throw new AgentRouterError("invalid_response");
+        if(!envelope.error){const result=record(envelope.result);parseTask(result.task??result);}
       }
       return response;
     }}).create(url,AgentCard.fromJSON({supportedInterfaces:[{url,protocolBinding:"JSONRPC",protocolVersion:"1.0"}]}));
+    return {transport,target};
+  }
+  /** Subscribe to durable task updates using the official A2A transport. Reconnects reads only; never resends work. */
+  async *watch(input:TaskTarget):AsyncGenerator<Task>{
+    const {transport,target}=await this.taskTransport(input);
     let failures=0, last="";
     for(;;){
       input.signal?.throwIfAborted();
