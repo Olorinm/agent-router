@@ -1,0 +1,47 @@
+name: agent-router-codex-managed
+services:
+  worker:
+    image: agent-router-codex-worker:managed
+    build:
+      context: .
+      args:
+        ROUTER_IMAGE: ${ROUTER_IMAGE:?required}
+        CODEX_IMAGE: ${CODEX_IMAGE:?required}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    pids_limit: 256
+    mem_limit: 2048m
+    environment:
+      CONNECTOR_URL: ${AGENT_GATEWAY_URL:?required}
+      CONNECTOR_API_TOKEN_FILE: /secrets/instance-token
+      CODEX_HOME: /codex-home
+      CODEX_CONTAINER_ISOLATION: '1'
+      CODEX_TIMEOUT_MS: ${CODEX_TIMEOUT_MS:-1800000}
+      WORKER_STATE_DIR: /state
+      WORKER_WORKSPACE_DIR: /workspaces
+      WORKER_PROJECTS_DIR: /projects
+      WORKER_NAME: codex-managed
+      HTTP_PROXY: ${CODEX_PROXY_URL:-}
+      HTTPS_PROXY: ${CODEX_PROXY_URL:-}
+      NO_PROXY: localhost,127.0.0.1,${MATRIX_SERVER_NAME:-router.openmau.com}
+    volumes:
+      - ./state/managed-worker:/state
+      - ./state/codex:/codex-home
+      - ./state/managed-workspaces:/workspaces
+      - ./state/projects:/projects
+      - ./secrets/instance-token:/secrets/instance-token:ro
+    networks: [codex-egress]
+    healthcheck:
+      test: [CMD, node, -e, "process.exit(Date.now()-Number(require('fs').readFileSync('/state/heartbeat','utf8')) < 45000 ? 0 : 1)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+networks:
+  codex-egress:
+    external: true
+    name: ${CODEX_PROXY_NETWORK:?required}

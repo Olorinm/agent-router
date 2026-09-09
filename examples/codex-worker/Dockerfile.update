@@ -1,0 +1,4 @@
+# Apply worker-only fixes on top of an operator-selected, already verified image.
+ARG WORKER_IMAGE
+FROM ${WORKER_IMAGE}
+COPY --chown=node:node worker.mjs /app/worker.mjs
