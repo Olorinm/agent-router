@@ -83,9 +83,6 @@ Replies over 12 KB are retained in the remote workspace and returned as an
 explicit excerpt, so an oversized response does not leave delivery retrying
 indefinitely. Ask for a selected section in the same conversation to retrieve it.
 
-See the [real deployment verification](../../docs/verification/codex-experience-2026-09-08.md)
-for the tested model, continuation, restart and cancellation behavior.
-
 ## Managed Agent instance
 
 For the current managed architecture, the owner creates/selects an Agent and runs
