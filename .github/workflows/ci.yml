@@ -50,6 +50,8 @@ jobs:
           PATH=/nonexistent ./bin/agent-router --version
           PATH=/nonexistent ./bin/agent-router --help
           PATH=/nonexistent ./bin/agent-router agent-guide
+          PATH=/nonexistent ./bin/agent-router agent-guide en
+          PATH=/nonexistent ./bin/agent-router agent-guide zh
       - run: sh scripts/package-cli.sh
       - name: Verify Linux release archive
         run: |

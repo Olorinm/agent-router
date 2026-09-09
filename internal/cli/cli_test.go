@@ -60,6 +60,30 @@ func TestHelpGuideVersionNeedNoRuntimeOrLogin(t *testing.T) {
 		t.Fatal("informational commands created a profile")
 	}
 }
+func TestGuideLanguageSelectionWithoutLogin(t *testing.T) {
+	isolated(t)
+	t.Setenv("PATH", t.TempDir())
+	for _, tc := range []struct {
+		args    []string
+		heading string
+	}{
+		{[]string{"agent-guide"}, "# Agent CLI guide"},
+		{[]string{"agent-guide", "en"}, "# Agent CLI guide"},
+		{[]string{"agent-guide", "zh"}, "# Agent 通过 CLI 接入"},
+	} {
+		out, _, err := run(t, tc.args...)
+		if err != nil || !strings.HasPrefix(out, tc.heading) {
+			t.Fatalf("%v: wrong guide or error %v", tc.args, err)
+		}
+	}
+	out, _, err := run(t, "agent-guide", "unknown")
+	if err == nil || out != "" || !strings.Contains(err.Error(), "unsupported_guide_language") {
+		t.Fatalf("invalid language: output %q, error %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("MATRIX_CONFIG_DIR"), "default")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("guide selection created a profile")
+	}
+}
 func TestUsageAndSecretInputs(t *testing.T) {
 	isolated(t)
 	for _, args := range [][]string{{"unknown"}, {"send", "@b:hs.example"}, {"register", "hs.example"}, {"claim", "--worker", "w", "--wait", "-1"}, {"login", "--password", "secret"}} {
@@ -100,6 +124,9 @@ func TestRegistrationUIAAndPrivateProfileWithoutNode(t *testing.T) {
 			jsonResponse(w, 200, map[string]any{"versions": []string{"v1.11"}})
 		case "/_matrix/client/v3/register":
 			registerCalls++
+			if b["initial_device_display_name"] != "Agent Router" {
+				t.Error("default device name must not disclose the local hostname")
+			}
 			if b["password"] != password {
 				t.Error("password changed")
 			}
@@ -173,6 +200,52 @@ func TestRegistrationUIAAndPrivateProfileWithoutNode(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestLoginDeviceNameIsGenericUnlessExplicit(t *testing.T) {
+	for _, name := range []string{"", "Test terminal"} {
+		t.Run(name, func(t *testing.T) {
+			isolated(t)
+			expected := name
+			if expected == "" {
+				expected = "Agent Router"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/_matrix/client/versions":
+					jsonResponse(w, 200, map[string]any{"versions": []string{"v1.11"}})
+				case "/_matrix/client/v3/login":
+					if r.Method == "GET" {
+						jsonResponse(w, 200, map[string]any{"flows": []any{map[string]string{"type": "m.login.password"}}})
+						return
+					}
+					var body map[string]any
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					if body["initial_device_display_name"] != expected {
+						t.Error("login device name must be generic or explicitly supplied")
+					}
+					jsonResponse(w, 200, credentials{UserID: "@alice:hs.example", DeviceID: "DEVICE", AccessToken: "synthetic-access-token"})
+				case "/_matrix/client/v3/account/whoami":
+					jsonResponse(w, 200, credentials{UserID: "@alice:hs.example", DeviceID: "DEVICE"})
+				default:
+					t.Errorf("unexpected %s", r.URL.Path)
+					jsonResponse(w, 404, map[string]any{})
+				}
+			}))
+			defer server.Close()
+			pw := filepath.Join(t.TempDir(), "password")
+			if err := os.WriteFile(pw, []byte("synthetic password"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"login", server.URL, "alice", "--allow-http", "--password-file", pw}
+			if name != "" {
+				args = append(args, "--device-name", name)
+			}
+			if _, _, err := run(t, args...); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestRegistrationRejectsUnsupportedOrRepeatedChallenge(t *testing.T) {
 	for _, stage := range []string{"m.login.email.identity", "m.login.registration_token"} {
 		t.Run(stage, func(t *testing.T) {
@@ -346,6 +419,50 @@ func TestRefreshPersistsRotationWithoutReplacingOtherState(t *testing.T) {
 		t.Fatal("rotation lost profile state")
 	}
 }
+func TestWhoamiRefreshesExpiredCredentials(t *testing.T) {
+	isolated(t)
+	var refreshes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/refresh":
+			refreshes.Add(1)
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["refresh_token"] != "synthetic-refresh-token" {
+				t.Error("wrong refresh token")
+			}
+			jsonResponse(w, 200, map[string]string{"access_token": "new-access", "refresh_token": "new-refresh"})
+		case "/_matrix/client/v3/account/whoami":
+			if r.Header.Get("Authorization") != "Bearer new-access" {
+				jsonResponse(w, 401, map[string]any{"errcode": "M_UNKNOWN_TOKEN", "soft_logout": true})
+				return
+			}
+			jsonResponse(w, 200, credentials{UserID: "@alice:hs.example"})
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			jsonResponse(w, 404, map[string]any{})
+		}
+	}))
+	defer server.Close()
+	s, _ := newStore("")
+	p := testProfile()
+	p.Homeserver = server.URL
+	if err := s.save(p); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := run(t, "whoami")
+	if err != nil || !strings.Contains(out, "@alice:hs.example") || stderr != "" {
+		t.Fatalf("whoami failed to renew credentials: %v", err)
+	}
+	saved, err := s.require()
+	if err != nil || saved.AccessToken != "new-access" || saved.RefreshToken != "new-refresh" || refreshes.Load() != 1 {
+		t.Fatal("credential rotation was not persisted exactly once")
+	}
+	if strings.Contains(out+stderr, "new-access") || strings.Contains(out+stderr, "new-refresh") {
+		t.Fatal("credentials exposed")
+	}
+}
+
 func TestGatewayPolicyAndWorkResultPreserveInput(t *testing.T) {
 	isolated(t)
 	var paths []string

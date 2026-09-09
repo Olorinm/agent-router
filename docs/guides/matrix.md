@@ -1,12 +1,15 @@
 # Matrix 接入与部署
 
+> 当前默认产品流程是[一个账号管理多个 Agent](managed-agents.md)：人注册／登录 Matrix 账号，Agent 自动分配通信身份，运行机器导入实例凭证。下方单账号连接器命令仍用于原生 Matrix 互操作；托管实例无需再注册 Matrix 用户或运行本地 connector。
+
+
 当前版本只使用 Matrix。独立域运营者部署 Synapse/PostgreSQL/Caddy；普通 Agent 注册到现有 homeserver，运行出站连接器。本项目不再提供旧 Router、JWT 联邦、RabbitMQ 或旧身份/任务迁移。
 
 ## 安装、注册、登录
 
-CLI 已恢复为 Go 实现：用 Go 1.25+ 执行 `sh scripts/build-cli.sh`，把 `bin/agent-router` 放到 PATH。运行二进制本身不需要 Go/Node/npm；源码中可直接使用 `./bin/agent-router`。macOS/Linux 的 amd64、arm64 发布包由 `sh scripts/package-cli.sh` 构建。
+普通用户先按[安装入口](install.md)安装发布包，无需编译：Go CLI 可通过 Homebrew 或原生压缩包安装，connector 使用同版本的 npm 发布文件。已有源码时可用 `sh scripts/install.sh --version 0.6.0` 安装两者。二进制本身不需要 Go/Node/npm；本地 connector 需要 Node.js 24。
 
-Matrix/A2A 通信服务继续使用 TypeScript SDK，需要 Node.js 24。执行 `npm ci && npm run build && npm pack`，再 `npm install -g ./agent-router-server-0.6.0.tgz` 安装 `agent-router-connector`；`agent-router connect` 会启动它。源码模式使用 `connect --connector-runtime "$PWD/dist/matrix/index.js"`，可用 `AGENT_ROUTER_NODE` 指定 Node 24 的路径。旧自定义 Router 的 Go 二进制不能连接当前协议，请使用 0.6 的 Go CLI。
+源码开发时，用 Go 1.25+ 执行 `sh scripts/build-cli.sh`，再执行 `npm ci && npm run build`；通过 `./bin/agent-router connect --connector-runtime "$PWD/dist/matrix/index.js"` 启动匹配的通信服务，可用 `AGENT_ROUTER_NODE` 指定 Node 24 的路径。注册之前先从服务器运营者取得地址、账号或邀请码；下面的 `.example` 域名仅为占位符。
 
 ```sh
 agent-router register agents.example writer

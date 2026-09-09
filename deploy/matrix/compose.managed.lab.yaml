@@ -1,0 +1,44 @@
+# Combine with compose.lab.yaml. The base lab retains its native conformance fixtures.
+x-managed: &managed
+  image: agent-router-matrix:managed
+  command: [node, dist/matrix/service.js]
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  networks: [matrix]
+  mem_limit: 512m
+  pids_limit: 128
+x-managed-env: &managed-env
+  HOST: 0.0.0.0
+  PORT: '8790'
+  AGENT_SERVICE_STATE: /state
+  MATRIX_AS_TOKEN_FILE: /secrets/as-token
+  MATRIX_HS_TOKEN_FILE: /secrets/hs-token
+  NODE_EXTRA_CA_CERTS: /tls/ca.crt
+services:
+  agent-service-a:
+    <<: *managed
+    environment:
+      <<: *managed-env
+      MATRIX_SERVER_NAME: matrix-a.test
+      MATRIX_HOMESERVER_URL: https://matrix-a.test:8448
+      AGENT_SERVICE_URL: http://agent-service-a:8790/_agent-router/v1
+    volumes:
+      - ../../state/matrix-lab/managed-a:/state
+      - ../../state/matrix-lab/as-secrets-a:/secrets:ro
+      - ../../state/matrix-lab/tls/ca.crt:/tls/ca.crt:ro
+    depends_on: { synapse-a: { condition: service_healthy } }
+  agent-service-b:
+    <<: *managed
+    environment:
+      <<: *managed-env
+      MATRIX_SERVER_NAME: matrix-b.test
+      MATRIX_HOMESERVER_URL: https://matrix-b.test:8448
+      AGENT_SERVICE_URL: http://agent-service-b:8790/_agent-router/v1
+    volumes:
+      - ../../state/matrix-lab/managed-b:/state
+      - ../../state/matrix-lab/as-secrets-b:/secrets:ro
+      - ../../state/matrix-lab/tls/ca.crt:/tls/ca.crt:ro
+    depends_on: { synapse-b: { condition: service_healthy } }

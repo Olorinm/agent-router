@@ -444,6 +444,22 @@ func (a *app) accountRun(command string, args []string) error {
 			body = map[string]string{"displayname": args[0]}
 		}
 		data, err := timedRequest(a.ctx, c, p.Homeserver, path, method, body)
+		if unknownToken(err) {
+			release, lockErr := s.lock()
+			if lockErr != nil {
+				return lockErr
+			}
+			defer release()
+			current, loadErr := s.require()
+			if loadErr != nil {
+				return loadErr
+			}
+			if current.UserID != p.UserID || current.Homeserver != p.Homeserver {
+				return errors.New("profile_identity_changed_during_request")
+			}
+			p = current
+			data, err = a.profileRequest(s, p, path, method, body)
+		}
 		if err != nil {
 			return authError(err)
 		}
@@ -567,7 +583,7 @@ func (a *app) accountRun(command string, args []string) error {
 				return errors.New("saved_identity_verification_failed")
 			}
 			result := s.public(old)
-			result["message"] = "Already logged in. Run agent-router connect."
+			result["message"] = "Already logged in. Run agent-router agents or agent-router agent-create NAME."
 			return a.output(result)
 		} else if !unknownToken(err) {
 			return authError(err)
@@ -579,8 +595,7 @@ func (a *app) accountRun(command string, args []string) error {
 	}
 	device := a.o.deviceName
 	if device == "" {
-		host, _ := os.Hostname()
-		device = "Agent Router (" + host + ")"
+		device = "Agent Router"
 	}
 	var cred credentials
 	if command == "register" {
@@ -596,6 +611,6 @@ func (a *app) accountRun(command string, args []string) error {
 		return err
 	}
 	result := s.public(p)
-	result["message"] = "Credentials saved. Run agent-router connect."
+	result["message"] = "Account saved. Run agent-router agent-create NAME, or agent-router agents."
 	return a.output(result)
 }

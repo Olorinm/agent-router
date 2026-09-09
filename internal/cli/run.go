@@ -46,10 +46,23 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return err
 	}
 	if command == "agent-guide" {
-		_, err = io.WriteString(out, guides.AgentConnect)
+		guide := guides.AgentConnect
+		if len(args) == 1 {
+			switch args[0] {
+			case "en":
+			case "zh":
+				guide = guides.AgentConnectChinese
+			default:
+				return errors.New("unsupported_guide_language: use en or zh")
+			}
+		}
+		_, err = io.WriteString(out, guide)
 		return err
 	}
 	if handled, err := a.account(command, args); handled {
+		return err
+	}
+	if handled, err := a.agentCommand(command, args); handled {
 		return err
 	}
 	if command == "connect" {
@@ -62,11 +75,13 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 func validateArgs(command string, args []string) error {
 	limits := map[string][2]int{
+		"agents": {0, 0}, "agent-create": {1, 1}, "agent-use": {1, 1}, "agent-current": {0, 0},
+		"agent-instances": {0, 0}, "agent-instance-create": {1, 1}, "agent-instance-revoke": {1, 1}, "agent-attach": {1, 1}, "agent-resolve": {1, 1},
 		"register": {2, 2}, "login": {0, 2}, "logout": {0, 0}, "whoami": {0, 0}, "bind": {1, 1}, "configure": {0, 0}, "discover": {1, 1}, "find": {1, 1}, "lookup": {0, 1}, "profile-set": {1, 1},
 		"connect": {0, 0}, "doctor": {0, 0}, "status": {0, 0}, "contacts": {0, 0}, "conversations": {0, 0}, "contact-add": {1, 1}, "contact-remove": {1, 1}, "blocked": {0, 0}, "block": {1, 1}, "unblock": {1, 1},
 		"invites": {0, 0}, "invite-accept": {1, 1}, "invite-reject": {1, 1}, "requests": {0, 0}, "approve": {1, 1}, "reject": {1, 1}, "inbox": {0, 0}, "claim": {0, 1}, "work": {1, 1},
 		"progress": {2, 2}, "reply": {1, 2}, "need-input": {2, 2}, "fail": {2, 2}, "cancelled": {1, 1}, "conversation-open": {1, 1}, "history": {1, 1}, "read": {1, 2}, "leave": {1, 1}, "watch": {0, 0},
-		"send": {2, 2}, "get": {2, 2}, "list": {1, 1}, "cancel": {2, 2}, "say": {2, 2}, "agent-guide": {0, 0},
+		"send": {2, 2}, "get": {2, 2}, "list": {1, 1}, "cancel": {2, 2}, "say": {2, 2}, "agent-guide": {0, 1},
 	}
 	limit, ok := limits[command]
 	if !ok || len(args) < limit[0] || len(args) > limit[1] {
@@ -99,6 +114,9 @@ func (a *app) text(value string) (string, error) {
 	return string(data), nil
 }
 func (a *app) gateway() error {
+	if handled, err := a.managedGateway(); handled || err != nil {
+		return err
+	}
 	var token string
 	if a.o.profile != "" || os.Getenv("MATRIX_PROFILE") != "" || (os.Getenv("CONNECTOR_API_TOKEN") == "" && os.Getenv("CONNECTOR_API_TOKEN_FILE") == "") {
 		s, err := newStore(a.o.profile)
@@ -158,6 +176,14 @@ func (a *app) command(command string, args []string) error {
 	}
 	if len(args) > 1 {
 		arg = args[1]
+	}
+	switch command {
+	case "send", "get", "list", "cancel", "say", "conversation-open", "contact-add", "contact-remove", "block", "unblock":
+		var err error
+		target, err = a.resolveAgent(target)
+		if err != nil {
+			return err
+		}
 	}
 	id := url.PathEscape(target)
 	path, method, body, timeout := "", "GET", any(nil), 30*time.Second
@@ -363,6 +389,12 @@ func (a *app) watch() error {
 	return nil
 }
 func (a *app) connect() error {
+	if handled, err := a.managedGateway(); handled || err != nil {
+		if err != nil {
+			return err
+		}
+		return a.api("/health/ready", "GET", nil, 15*time.Second)
+	}
 	runtime := a.o.connectorRuntime
 	if runtime == "" {
 		runtime = os.Getenv("AGENT_ROUTER_CONNECTOR_ENTRY")

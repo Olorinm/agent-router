@@ -1,0 +1,16 @@
+{
+  "name": "@agent-router/sdk",
+  "version": "0.1.2",
+  "description": "Typed HTTP client for Agent Router accounts, agents and durable conversations",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/Olorinm/agent-router.git", "directory": "packages/sdk" },
+  "bugs": { "url": "https://github.com/Olorinm/agent-router/issues" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "README.md", "CONFIGURATION.md", "LICENSE"],
+  "engines": {"node": ">=22"},
+  "scripts": {"build": "tsc -p tsconfig.json", "prepack": "npm run build"},
+  "devDependencies": {"typescript": "^7.0.2"}
+}

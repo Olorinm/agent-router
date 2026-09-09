@@ -99,8 +99,10 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
     const deadline = Date.now() + body.wait * 1000;
     do {
       if (res.destroyed) return;
+      res.locals.validateWorker?.();
       await connector.work();
-      const result = work().claim(body.worker, body.id);
+      res.locals.validateWorker?.();
+      const result = work().claim(res.locals.workerId ?? body.worker, body.id, Boolean(res.locals.workerId));
       if (result) { res.json(result); return; }
       if (Date.now() >= deadline) break;
       await delay(250);
@@ -113,7 +115,8 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
     if (body.action !== "cancelled" && !body.text.trim() && !(body.action === "reply" && body.data)) {
       throw new WorkError("message_required", 400);
     }
-    const result = work().update(req.params.id, body.action, body.text, body.data);
+    res.locals.validateWorker?.();
+    const result = work().update(req.params.id, body.action, body.text, body.data, res.locals.workerId);
     await connector.work(); res.json(result);
   });
   app.get("/api/invites", (_req, res) => res.json({ data: connector.store.entries("invites").map((r) => r.value) }));

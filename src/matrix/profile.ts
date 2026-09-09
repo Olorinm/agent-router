@@ -45,7 +45,7 @@ export class ProfileStore {
   }
   require(): MatrixProfile {
     const profile = this.load();
-    if (!profile?.accessToken) throw new Error("Not logged in. Run: matrix login @name:server (or matrix register SERVER NAME).");
+    if (!profile?.accessToken) throw new Error("not_logged_in: run agent-router login ADDRESS or agent-router register SERVER USERNAME");
     return profile;
   }
   save(value: MatrixProfile): void {
