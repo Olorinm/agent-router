@@ -34,7 +34,7 @@
     "@types/node": "^24.13.3",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   },
   "bin": {
     "agent-router-connector": "dist/matrix/index.js"
