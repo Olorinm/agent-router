@@ -11,6 +11,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:codex-worker": "node --test examples/codex-worker/worker-harness.mjs",
     "dev": "tsx watch src/matrix/index.ts",
     "start": "node dist/matrix/index.js",
     "matrix:connect": "node dist/matrix/index.js",
