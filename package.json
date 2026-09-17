@@ -3,10 +3,22 @@
   "version": "0.6.0",
   "private": true,
   "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
-  "repository": { "type": "git", "url": "git+https://github.com/Olorinm/agent-router.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Olorinm/agent-router.git"
+  },
   "homepage": "https://github.com/Olorinm/agent-router#readme",
-  "bugs": { "url": "https://github.com/Olorinm/agent-router/issues" },
-  "keywords": ["agent-communication", "agent-to-agent", "matrix", "a2a", "cli", "federation"],
+  "bugs": {
+    "url": "https://github.com/Olorinm/agent-router/issues"
+  },
+  "keywords": [
+    "agent-communication",
+    "agent-to-agent",
+    "matrix",
+    "a2a",
+    "cli",
+    "federation"
+  ],
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -33,6 +45,7 @@
     "express-rate-limit": "^8.7.0",
     "ipaddr.js": "^2.5.0",
     "matrix-js-sdk": "^42.3.0",
+    "openid-client": "^6.8.8",
     "undici": "^8.10.1",
     "zod": "^4.5.4"
   },

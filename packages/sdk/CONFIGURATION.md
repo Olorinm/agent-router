@@ -1,45 +1,88 @@
-# Product account integration
+# Scoped OIDC product integration
 
-Agent Router is an independent service. An optional HTTP user-info adapter lets a deployed node trust an existing product's account API. This guide ships with the SDK; [README.md](./README.md) is the client contract.
+Agent Router validates delegated OAuth access tokens with the configured issuer.
+It never accepts a primary product login token at `/auth/exchange`. Products own
+the native browser/PKCE flow and refresh directly with their account service.
+The [SDK README](./README.md) is the client contract.
 
-## Configure a trusted provider
+## Trusted issuer configuration
 
-Set `AGENT_IDENTITY_CONFIG_FILE` to a private JSON file:
+Mount `AGENT_IDENTITY_CONFIG_FILE` as a private, read-only JSON file:
 
 ```json
 {
   "my-product": {
-    "issuer": "https://identity.example",
-    "userInfoUrl": "https://identity.example/profile",
-    "subjectPath": ["profile", "subject"],
-    "rolesPath": ["profile", "permissions"],
+    "issuer": "existing-account-namespace",
+    "oidcIssuer": "https://identity.example",
+    "clientId": "registered-native-client-id",
+    "introspectionClientId": "registered-resource-verifier-id",
+    "privateJwk": {
+      "kty": "EC", "crv": "P-256", "x": "<base64url>", "y": "<base64url>",
+      "d": "<base64url private scalar>", "kid": "router-1", "alg": "ES256"
+    },
     "requiredRoles": ["agent-network-user"]
   }
 }
 ```
 
-Replace this illustrative endpoint, field paths, and required roles with your identity provider's contract. The example expects a response shaped as `{"profile":{"subject":"stable-user-id","permissions":["agent-network-user"]}}`; these names are configurable, not required API fields. HTTPS is required, redirects are rejected, and callers cannot change the configured endpoint or role rule. The server calls it with the submitted product Bearer token. Only a successful response with a stable string subject and all required roles permits provisioning. Missing roles fail closed. Never use display names, email guesses or OS usernames as identifiers. `issuer` is a stable namespace for the account system; changing it deliberately creates a separate identity namespace.
+`issuer` is the existing stable account namespace; **retain its exact value**
+when migrating from user-info exchange, so owners and contacts keep their IDs.
+`oidcIssuer` is the exact HTTPS OIDC issuer. Its discovery must advertise an
+introspection endpoint under the same origin. Generate the ES256 key on Router
+and register only its public fields (`kty`, `crv`, `x`, `y`, `kid`, `alg`, plus
+`use: sig`) with the account service. The private JWK stays in the secret file.
+`openid-client` performs discovery and `private_key_jwt` client authentication;
+Router validates the introspection response's active status, issuer, native
+client ID, exact `AGENT_SERVICE_URL` audience, `router.connect` scope, expiry,
+subject and required roles. The issuer must authorize the resource verifier to
+inspect only the registered native client's resource-bound grants.
 
-Set `MATRIX_ADMIN_TOKEN_FILE` to a private file containing a Synapse admin token. It remains on the node and is used only at the configured homeserver's user-admin API. This is separate from the existing AS and HS tokens. The account is created **without a password and with admin=false**, and its external identity binding is verified. The configured product role is an eligibility gate, not Matrix administrator status. The adapter will not attach to an unrelated existing account, reactivate a disabled owner, or copy arbitrary profile data. The registry and homeserver should be backed up together.
+For WW, register a `router-native` client and its `router-verifier` pair before
+using the integration. Their IDs are `router-` plus the SHA256 hex digest of the
+canonical Router URL, and that ID plus `-verifier`. WW's trusted
+`/v1/oauth/router-client?resource=...` metadata resolves the native client. The
+native client uses loopback Authorization Code + S256 PKCE, state and nonce.
+The verifier uses its registered public ES256 key for introspection only.
 
-Without `AGENT_IDENTITY_CONFIG_FILE`, external login is disabled; regular Matrix login and instance tokens work as before. With it set, a missing admin secret or invalid provider configuration fails startup rather than silently weakening authentication. Production deployment must mount both files read-only. Do not expose the Synapse admin API publicly or put its token in a client.
+`MATRIX_ADMIN_TOKEN_FILE` remains a separate private Synapse admin credential.
+It is used only at the configured homeserver's user-admin API. New owners have
+no password and `admin=false`; their external binding is verified. A product
+role is an eligibility gate, not Matrix administrator status. Disabled or
+unrelated Matrix accounts are never adopted. Back up registry and homeserver
+together. AS/HS and worker `ari_` credentials are unchanged.
 
-## Public HTTP contract
+Missing or obsolete provider configuration fails startup. Without the optional
+identity configuration, external exchange is disabled. Native Matrix login and
+worker instance tokens remain available.
 
-`POST /_agent-router/v1/auth/exchange`
+## HTTP contract and lifecycle
+
+`POST /_agent-router/v1/auth/exchange` takes:
 
 ```json
-{"provider":"my-product","accessToken":"<current product login token>"}
+{"provider":"my-product","accessToken":"<scoped Router OAuth access token>"}
 ```
 
-Returns a non-cacheable response with `{serviceUrl,accessToken,expiresAt,owner,agent}`. The `agent` object includes `id`, `owner`, `name`, `address`, `matrixId`, and may include extra server metadata. Existing external identity and default `client` Agent are reused on repeated/concurrent exchanges. The opaque Router session expires after ten minutes. Only its hash is stored; product tokens are neither persisted nor returned. A revoked product role prevents renewal, while previously issued Router sessions live for at most their remaining lifetime. `DELETE /_agent-router/v1/auth/session` with the Router Bearer token revokes that session.
+It returns `{serviceUrl, accessToken, expiresAt, owner, agent}`. Router session
+hashes and associated scoped credentials live only in memory. Expiry is capped
+at ten minutes and at the OAuth token's expiry. Each authenticated request
+introspects the grant again: role removal, revocation or account disablement
+therefore blocks the next request. Issuer failure returns an explicit 503,
+never a cached success. `DELETE /auth/session` revokes locally even during an
+issuer outage. Router restart requires another exchange; stable owners, Agents
+and durable tasks stay in the registry.
 
-This is a configured user-info exchange, **not** an OIDC provider or an implementation of RFC 8693. Additional products can configure their own endpoints, response field paths and required roles; core account/messaging code has no dependency on any particular product API or database schema.
+Deploy account-service registrations first, then the new Router configuration
+and matching product client. There is no primary-token compatibility fallback.
+The exchange endpoint is a Router API, not RFC 8693 or an OIDC authorization
+server. OAuth refresh tokens and browser codes must never be sent to Router.
 
-## Keep product state safe
+## Local state
 
-Bind local contacts and pending tasks to product account + Router owner + sender Agent + service URL. Never silently migrate a conversation to another account. Preserve message IDs, task IDs and context IDs across recovery. Show transport/task progress separately from actual reply content. An SDK caller should be able to use the package without installing the CLI or reading private server implementations.
+Bind contacts/tasks to product account, Router URL, owner and sender. Preserve
+message/context/task IDs across recovery and never silently adopt a new sender.
+Logs must omit authorization headers, request bodies and OAuth query strings.
 
-## Source
-
-The provisioning adapter uses the official [Synapse user-admin API](https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#create-or-modify-account). Agent virtual identities still use the existing narrow Matrix Application Service namespace.
+Provisioning uses the official
+[Synapse user-admin API](https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#create-or-modify-account).
+Virtual Agents retain the narrow Matrix Application Service namespace.
