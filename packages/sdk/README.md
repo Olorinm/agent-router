@@ -16,12 +16,12 @@ Before a registry release, build and pack this package and install the resulting
 npm run build --prefix packages/sdk
 npm pack ./packages/sdk
 # In the consuming product:
-npm install /path/to/agent-router-sdk-0.2.0.tgz
+npm install /path/to/agent-router-sdk-0.1.4.tgz
 ```
 
 ## Sign in with an existing product account
 
-A node operator can configure trusted OIDC issuers. Products authorize directly with the issuer using native Authorization Code + S256 PKCE. On `exchange`, Agent Router introspects a **scoped access token issued for this Router**, validates resource/client/issuer/expiry/scopes and current roles, then creates or finds an ordinary communication account. Primary product login tokens are never accepted. Matrix owner tokens and scoped Agent instance tokens remain separate.
+A node operator can configure trusted HTTP identity providers. On `exchange`, Agent Router calls the provider's **existing authenticated user-info endpoint**, verifies the configured eligibility roles, and creates or finds an ordinary communication account. Products do not need to implement a new authentication endpoint. The node supports Matrix owner tokens and scoped Agent instance tokens separately.
 
 ```ts
 import { AgentRouterClient } from '@agent-router/sdk';
@@ -32,7 +32,7 @@ const bootstrap = new AgentRouterClient({
 });
 const session = await bootstrap.exchange({
   provider: 'my-product',
-  accessToken: routerOAuthAccessToken,
+  accessToken: currentProductAccessToken,
 });
 // session: { serviceUrl, accessToken, expiresAt, owner, agent }
 // owner is a Matrix user ID; expiresAt is a UTC ISO timestamp.
@@ -42,9 +42,9 @@ const router = new AgentRouterClient({
 });
 ```
 
-Only the delegated Router access token is sent to this node and its trusted issuer's introspection endpoint. Primary login and OAuth refresh tokens remain with the product and trusted issuer. Credentials never go to a recipient's domain. Router keeps scoped credentials in memory for live validation and does not persist them. Communication accounts use opaque identifiers; `agent` is the default `client` sender, not a running worker or an execution permission grant.
+The provider token is sent only to the selected trusted node and its configured user-info endpoint, never to a recipient's domain. Only choose nodes trusted to receive that product token. The node does not store provider tokens or copy email/display-name fields into usernames. Communication accounts use opaque identifiers. The returned `agent` is the account's default `client` sender; using it does not start a worker or grant anyone execution permission.
 
-A network session lasts at most **10 minutes**, capped by the delegated token's remaining lifetime. Before expiry, repeat `exchange` with a current Router OAuth access token. It returns the same owner and sender. Every authenticated request checks the grant with the issuer, so revocation or role removal takes effect on the next request. An issuer outage fails closed. Router restart discards sessions; exchange again with a valid OAuth grant. Keep network tokens in memory, clear them on logout/account or Router changes, and call `revokeSession()` when possible. Products renew/revoke OAuth grants directly with their issuer; the SDK never handles refresh tokens.
+A network session lasts **10 minutes**. Before expiry, repeat `exchange` with a current product login token; it returns the same owner and sender with a new network token. A provider role removal prevents subsequent exchange; existing network credentials remain valid until expiry or explicit revocation. Keep network tokens in memory, discard them on product logout/account switching, and call `revokeSession()` when possible. Never silently adopt a new sender for an existing conversation. The callback is read for every authenticated request; it must return credentials belonging to the same captured product account. The SDK does not persist or refresh product login tokens.
 
 Configure the node with your identity provider's URL, subject field, role field, and eligibility rules. The bundled [CONFIGURATION.md](./CONFIGURATION.md) contains a generic deployment example; no server source checkout is needed.
 
@@ -124,7 +124,7 @@ All HTTP credentials stay on the configured service origin; recipient directory 
 
 | Condition | Status / code | Product behavior |
 | --- | --- | --- |
-| Router authorization rejected | 401 / `external_session_invalid` | Renew/re-authorize directly with the issuer, then exchange |
+| Product login rejected | 401 / `external_session_invalid` | Refresh/re-authenticate with the product, then exchange |
 | Eligibility role missing | 403 / `external_role_required` | Show access restriction; do not retry or provision another user |
 | Provider/node not configured or unavailable | 503 | Show unavailable, preserving pending tasks |
 | Network session expired/revoked | 401 / `account_session_invalid` | Exchange again for the same product account |

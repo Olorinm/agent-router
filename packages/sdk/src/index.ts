@@ -103,7 +103,6 @@ export class AgentRouterClient {
     if(!response.ok){const e=record(data).error;throw new AgentRouterError(typeof e==="string"&&/^[a-z0-9_]+$/.test(e)?e:"request_failed",response.status);}
     return data;
   }
-  /** Exchange only a resource-bound Router OAuth access token; never a primary login or refresh token. */
   async exchange(input:{provider:string;accessToken:string},options:RequestOptions={}):Promise<NetworkSession>{
     const s=record(await this.request(`${this.baseUrl}/auth/exchange`,"POST",input,false,options));
     const result={serviceUrl:string(s.serviceUrl),accessToken:string(s.accessToken),expiresAt:string(s.expiresAt),owner:string(s.owner),agent:parseAgent(s.agent)};

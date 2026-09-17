@@ -14,28 +14,13 @@ afterEach(async()=>{for(const close of cleanup.splice(0).reverse())await close()
 async function setup(){
  const dir=mkdtempSync(join(tmpdir(),"router-sdk-"));cleanup.push(()=>rmSync(dir,{recursive:true,force:true}));
  const actualFetch=globalThis.fetch,accounts=new Map<string,Record<string,unknown>>(),requests:Array<{url:string;token:string}>=[];
- let eligible=true,active=true;
- const signing=await crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},true,["sign","verify"]);
- const privateJwk={...await crypto.subtle.exportKey("jwk",signing.privateKey),kid:"router-test",alg:"ES256"};
- // Keep the server configuration strict: only the actual private JWK fields.
- const {kty,crv,x,y,d,kid,alg}=privateJwk;
- let audience="";
-
+ let eligible=true;
  vi.stubGlobal("fetch",async(input:RequestInfo|URL,init?:RequestInit)=>{
   const url=String(input),token=new Headers(init?.headers).get("Authorization")??"";
   if(url.startsWith("https://identity.example/")||url.startsWith("https://matrix.example/"))requests.push({url,token});
-  if(url==="https://identity.example/.well-known/openid-configuration")return Response.json({issuer:"https://identity.example",introspection_endpoint:"https://identity.example/introspect"});
-  if(url==="https://identity.example/introspect"){
-   const params=new URLSearchParams(String(init?.body));
-   expect(params.get("client_id")).toBe("native-router-verifier");
-   expect(params.get("client_assertion_type")).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-   const parts=params.get("client_assertion")!.split(".");
-   const header=JSON.parse(Buffer.from(parts[0]!,"base64url").toString());
-   const assertion=JSON.parse(Buffer.from(parts[1]!,"base64url").toString());
-   expect(header.kid).toBe("router-test");expect(assertion.iss).toBe("native-router-verifier");
-   expect(await crypto.subtle.verify({name:"ECDSA",hash:"SHA-256"},signing.publicKey,Buffer.from(parts[2]!,"base64url"),Buffer.from(parts.slice(0,2).join(".")))).toBe(true);
-   if(params.get("token")!=="eligible-session" || !active)return Response.json({active:false});
-   return Response.json({active:true,iss:"https://identity.example",sub:"7",client_id:"native-router",aud:audience,scope:"openid profile router.connect",exp:Math.floor(Date.now()/1000)+900,roles:eligible?["member","agent-network-user"]:["member"]});
+  if(url==="https://identity.example/profile"){
+   if(token!=="Bearer eligible-session")return Response.json({error:"unauthorized"},{status:401});
+   return Response.json({profile:{subject:"7",permissions:eligible?["member","agent-network-user"]:["member"],display_name:"NeverUseThisAsAnAccount"}});
   }
   if(url.startsWith("https://matrix.example/_synapse/admin/v2/users/")){
    if(token!=="Bearer synthetic-matrix-admin")return Response.json({}, {status:401});
@@ -62,15 +47,14 @@ async function setup(){
    join:async()=>{},send:async(room,type,content)=>{const id=`$${randomUUID()}`;deliver(room,{event_id:id,type,sender:agent.matrixId,content});return id;},stop:()=>{},
   };
  }
- const config={serverName:"127.0.0.1",homeserver:"https://matrix.example",publicUrl:"https://example.test/_agent-router/v1",stateDir:dir,asToken:"a".repeat(48),hsToken:"h".repeat(48),externalIdentity:{adminToken:"synthetic-matrix-admin",providers:{example:{issuer:"https://identity.example",oidcIssuer:"https://identity.example",clientId:"native-router",introspectionClientId:"native-router-verifier",privateJwk:{kty,crv,x,y,d,kid,alg},requiredRoles:["agent-network-user"]}}}};
+ const config={serverName:"127.0.0.1",homeserver:"https://matrix.example",publicUrl:"https://example.test/_agent-router/v1",stateDir:dir,asToken:"a".repeat(48),hsToken:"h".repeat(48),externalIdentity:{adminToken:"synthetic-matrix-admin",providers:{example:{issuer:"https://identity.example",userInfoUrl:"https://identity.example/profile",subjectPath:["profile","subject"],rolesPath:["profile","permissions"],requiredRoles:["agent-network-user"]}}}};
  const service=new ManagedService(config,{provision:async()=>{},transport});cleanup.push(()=>service.close());
  const server=createManagedApp(service).listen(0,"127.0.0.1");await new Promise<void>((resolve,reject)=>{server.once("listening",resolve);server.once("error",reject);});
  cleanup.push(()=>new Promise<void>(r=>{server.close(()=>r());server.closeAllConnections();}));
  const address=server.address();if(!address||typeof address==="string")throw new Error("no address");
  config.serverName=`127.0.0.1:${address.port}`;config.publicUrl=`http://${config.serverName}/_agent-router/v1`;
- audience=config.publicUrl;
  const bootstrap=new AgentRouterClient({baseUrl:config.publicUrl,accessToken:"",allowLocalHTTP:true});
- return {service,bootstrap,accounts,requests,config,deny:()=>{eligible=false;},revokeGrant:()=>{active=false;},wrongAudience:()=>{audience="https://other.example/_agent-router/v1";}};
+ return {service,bootstrap,accounts,requests,config,deny:()=>{eligible=false;}};
 }
 describe("public SDK and identity-provider contract",()=>{
  it("rejects missing login and ineligible roles before provisioning; maps repeat logins to one account without names",async()=>{
@@ -83,20 +67,6 @@ describe("public SDK and identity-provider contract",()=>{
   const client=new AgentRouterClient({baseUrl:f.config.publicUrl,accessToken:a.accessToken,allowLocalHTTP:true});
   expect((await client.agents()).length).toBe(1);await client.revokeSession();await expect(client.agents()).rejects.toMatchObject({status:401});
   f.deny();await expect(f.bootstrap.exchange({provider:"example",accessToken:"eligible-session"})).rejects.toMatchObject({status:403,code:"external_role_required"});expect(f.accounts.size).toBe(1);
- });
- it("checks live revocation and resource binding on every authenticated request",async()=>{
-  const f=await setup();
-  const session=await f.bootstrap.exchange({provider:"example",accessToken:"eligible-session"});
-  const client=new AgentRouterClient({baseUrl:f.config.publicUrl,accessToken:session.accessToken,allowLocalHTTP:true});
-  expect((await client.agents()).length).toBe(1);
-  f.revokeGrant();await expect(client.agents()).rejects.toMatchObject({status:401});
-  await client.revokeSession().catch(()=>{});
- });
- it("rejects primary and wrong-resource credentials before creating an owner",async()=>{
-  const f=await setup();
-  await expect(f.bootstrap.exchange({provider:"example",accessToken:"primary-login-token"})).rejects.toMatchObject({status:401});
-  f.wrongAudience();await expect(f.bootstrap.exchange({provider:"example",accessToken:"eligible-session"})).rejects.toMatchObject({status:401});
-  expect(f.accounts.size).toBe(0);
  });
  it("sends through actual A2A gateway, continues a context, polls real replies and cancels without CLI",async()=>{
   const f=await setup(),session=await f.bootstrap.exchange({provider:"example",accessToken:"eligible-session"});let reads=0;
