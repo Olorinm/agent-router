@@ -21,7 +21,7 @@ const state = JSON.parse(fs.readFileSync(file, 'utf8'));
 const [command, ...args] = process.argv.slice(2);
 let result = {};
 if (command === 'claim') {
-  result = state.claimed ? null : { claimId: 'claim-1', id: 'task-1', contextId: 'context-1', from: 'sender', input: { parts: [{ text: 'test request' }] } };
+  result = state.claimed ? null : { claimId: 'claim-1', id: 'task-1', contextId: 'context-1', from: 'visitor:test', execution: { accessMode: 'read-only' }, input: { parts: [{ text: 'test request' }] } };
   state.claimed = true;
 }
 if (command === 'progress') state.progress.push(args[1]);
@@ -31,6 +31,8 @@ fs.writeFileSync(file, JSON.stringify(state));
 process.stdout.write(JSON.stringify(result));
 `, { mode: 0o755 });
     writeFileSync(codex, `#!${process.execPath}
+require('node:assert/strict').equal(process.argv[process.argv.indexOf('--sandbox') + 1], 'read-only');
+require('node:assert/strict').equal(process.argv.includes('use_legacy_landlock'), ${recovers});
 const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
 emit({ type: 'thread.started', thread_id: 'native-session-1' });
 emit({ type: 'turn.started' });
@@ -51,6 +53,7 @@ setTimeout(() => {
         AGENT_ROUTER_BIN: router,
         CODEX_BIN: codex,
         CODEX_CONTAINER_ISOLATION: '0',
+        CODEX_USE_LEGACY_LANDLOCK: recovers ? '1' : '0',
         WORKER_STATE_DIR: join(root, 'state'),
         WORKER_WORKSPACE_DIR: join(root, 'workspaces'),
         WORKER_TEST_FIXTURE: fixture,

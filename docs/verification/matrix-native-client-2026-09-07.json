@@ -155,7 +155,7 @@
   },
   "publicCutover": {
     "startedAt": "2026-09-07T08:22:43.366024+00:00",
-    "serverName": "router.openmau.com",
+    "serverName": "agents.example",
     "usersBefore": 3,
     "usersAfter": 3,
     "publicChecks": {
@@ -184,7 +184,7 @@
       "agent-router-rabbitmq-data"
     ],
     "removedPaths": [
-      "/opt/agent-router"
+      "/srv/example-legacy-router"
     ],
     "removedNetworks": [
       "agent-router-backend",
@@ -268,7 +268,7 @@
     "publicMatrixHttpsHealthy": true
   },
   "installedCliDiscovery": {
-    "homeserver": "https://router.openmau.com",
+    "homeserver": "https://agents.example",
     "loginFlows": [
       "m.login.password",
       "m.login.application_service"
@@ -293,5 +293,6 @@
     "originalRestoredServerModified": false,
     "newWorktrees": [],
     "newReferenceRepos": []
-  }
+  },
+  "deployment_identifiers_redacted": true
 }

@@ -65,7 +65,11 @@ async function runCodex(work, key) {
   mkdirSync(cwd, { recursive: true, mode: 0o700 });
   // In the supplied Compose deployment, Docker enforces the execution boundary.
   // Otherwise retain Codex's workspace sandbox; never silently fall back on failure.
-  const args = ['exec', '--ignore-user-config', '--ignore-rules', '--sandbox', containerIsolation ? 'danger-full-access' : 'workspace-write',
+  const accessMode = work.execution?.accessMode;
+  if (accessMode !== undefined && !['read-only', 'workspace-write'].includes(accessMode)) throw new Error('unsupported_execution_access_mode');
+  if (work.from?.startsWith('visitor:') && !accessMode) throw new Error('channel_execution_access_mode_required');
+  const args = ['exec', '--ignore-user-config', '--ignore-rules', '--sandbox', accessMode ?? (containerIsolation ? 'danger-full-access' : 'workspace-write'),
+    ...(accessMode && process.env.CODEX_USE_LEGACY_LANDLOCK === '1' ? ['--enable', 'use_legacy_landlock'] : []),
     ...(process.env.CODEX_MODEL ? ['--model', process.env.CODEX_MODEL] : []),
     ...(prior ? ['resume', prior.id] : []), '--skip-git-repo-check', '--json', '-'];
   // Do not inherit Matrix/gateway credentials or operator configuration.
@@ -122,8 +126,8 @@ async function runCodex(work, key) {
   });
   child.stderr.resume();
   const message = work.input.parts?.map(part => typeof part.text === 'string' ? part.text : JSON.stringify(part.data ?? part)).join('\n') ?? '';
-  const projects = projectsRoot ? `\nShared project checkouts are available at ${projectsRoot}. You may read and modify them when the owner requests project work. Read a repository's AGENTS.md before working there. These checkouts persist across conversations; preserve existing changes.` : '';
-  child.stdin.end(`You are a real remote Codex agent serving an explicitly approved owner through Agent Router.\nWork in the current persistent workspace. Use tools when the request needs execution; distinguish actual execution from advice. Reply in the user's language. Your final response is delivered to the requesting agent. You do not need to call Agent Router yourself. Do not inspect authentication files, service configuration, or other conversation directories.${projects}\n\nLatest request:\n${message}`);
+  const projects = projectsRoot ? `\nShared project checkouts are available at ${projectsRoot}. Read project files as needed; only modify them when the request and the execution access mode permit it. Read a repository's AGENTS.md before working there. These checkouts persist across conversations; preserve existing changes.` : '';
+  child.stdin.end(`You are a real remote Codex agent serving an authorized requester through Agent Router.\nWork in the current persistent workspace. Use tools when the request needs execution; distinguish actual execution from advice. Reply in the user's language. Your final response is delivered to the requesting agent. You do not need to call Agent Router yourself. Do not inspect authentication files, service configuration, or other conversation directories.${projects}\n\nLatest request:\n${message}`);
   let monitorStopped = false;
   const monitor = (async () => {
     while (!monitorStopped && !stopping) {

@@ -28,7 +28,7 @@ services:
       WORKER_NAME: codex-managed
       HTTP_PROXY: ${CODEX_PROXY_URL:-}
       HTTPS_PROXY: ${CODEX_PROXY_URL:-}
-      NO_PROXY: localhost,127.0.0.1,${MATRIX_SERVER_NAME:-router.openmau.com}
+      NO_PROXY: localhost,127.0.0.1,${MATRIX_SERVER_NAME:?set the gateway hostname}
     volumes:
       - ./state/managed-worker:/state
       - ./state/codex:/codex-home

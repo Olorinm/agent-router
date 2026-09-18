@@ -89,6 +89,9 @@ For the current managed architecture, the owner creates/selects an Agent and run
 `agent-instance-create NAME --out instance.json`. Use `compose.managed.yaml` to run
 only the worker; no Matrix connector/account is installed on this machine.
 Set `AGENT_GATEWAY_URL` to the exported service URL plus `/agents/<agent.id>/gateway`,
+and `MATRIX_SERVER_NAME` to that URL's hostname (for example `agents.example`) so
+gateway requests bypass the optional model proxy. There is no deployment-specific
+hostname default. Keep these values in the operator's ignored `.env` file. Then
 put the exported `token` in the private `secrets/instance-token` file, and make it
 readable only by the worker container's UID. Keep the owner session and AS secrets off this host.
 

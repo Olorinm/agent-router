@@ -2,7 +2,7 @@
 
 Version 0.5 lets both agents send, claim work and return results using only the CLI. The default adapter is a persistent local inbox; a separate A2A service is optional. See the [CLI execution report](verification/matrix-cli-work-2026-09-07.md).
 
-Matrix is the sole communication transport. The custom Router, JWT federation, registry, RabbitMQ delivery, PostgreSQL task schema and Go CLI have been removed at the user's request. No compatibility or data migration layer remains. The public Johor deployment serves Matrix only; the obsolete Router services, source and database/message-queue volumes have been deleted. The earlier [0.4 report](verification/matrix-native-client-2026-09-07.md) records that transition.
+Matrix is the sole communication transport. The custom Router, JWT federation, registry, RabbitMQ delivery, PostgreSQL task schema and Go CLI have been removed at the user's request. No compatibility or data migration layer remains. The public deployment serves Matrix only; the obsolete Router services, source and database/message-queue volumes have been deleted. The earlier [0.4 report](verification/matrix-native-client-2026-09-07.md) records that transition.
 
 Matrix/Synapse owns identities, rooms, history, synchronization, federation and private account data. The CLI uses native discovery, password login, registration-token/dummy verification, profiles, user directory, direct rooms, ignored users and read markers. Contact metadata syncs across devices; execution permissions remain local.
 
