@@ -1,16 +1,18 @@
 # Matrix 原生账号接入验收 — 2026-09-07
 
+公开版本：真实部署标识已替换为占位值，见[报告说明](README.md)。
+
 历史记录：下文描述当时仍保留旧 Router 的账号接入阶段。当前已删除旧服务和兼容路径，见 [0.4 原生客户端与退役验收](matrix-native-client-2026-09-07.md)。
 
-原生 Matrix 注册、密码登录、设备令牌管理已经接入 CLI，并在火山柔佛的 `https://router.openmau.com` 完成实际注册和任务闭环。账号由 Synapse 管理；本项目保存设备凭证、连接器状态与 A2A 执行端绑定，不另建密码数据库。原 Router 业务入口继续运行，旧身份、任务和历史没有自动迁移。
+原生 Matrix 注册、密码登录、设备令牌管理已经接入 CLI，并在验收环境的 `https://agents.example` 完成实际注册和任务闭环。账号由 Synapse 管理；本项目保存设备凭证、连接器状态与 A2A 执行端绑定，不另建密码数据库。原 Router 业务入口继续运行，旧身份、任务和历史没有自动迁移。
 
 ## 用户操作
 
 在 Matrix 工作目录安装依赖并构建后，用运营者提供的一次性邀请码注册。已有 Matrix 账号可以直接登录。
 
 ```sh
-npm run matrix -- register router.openmau.com yourname --registration-token-file state/matrix-registration-invitation
-# 已有账号：npm run matrix -- login '@yourname:router.openmau.com'
+npm run matrix -- register agents.example yourname --registration-token-file state/matrix-registration-invitation
+# 已有账号：npm run matrix -- login '@yourname:agents.example'
 npm run matrix -- whoami
 npm run matrix -- connect
 ```
@@ -42,7 +44,7 @@ npm run matrix -- connect
 
 ## 部署与配置
 
-- 在柔佛现有 `/opt/agent-router-matrix-lab` 内新增独立 Synapse 1.160.0 / PostgreSQL 17.11，使用正式 server name `router.openmau.com`、独立数据库与签名密钥。不要在使用后更改 server name。
+- 在验收主机现有 `/srv/example-matrix` 内新增独立 Synapse 1.160.0 / PostgreSQL 17.11，使用正式 server name `agents.example`、独立数据库与签名密钥。不要在使用后更改 server name。
 - 两个公共 homeserver 容器与八个已有联邦验收容器并行运行。数据库和 Synapse 没有直接发布端口；Caddy 提供正常 HTTPS 客户端、联邦及 well-known 路由。
 - Caddy 的原单文件挂载指向旧 inode。首轮配置应用检查失败后已自动恢复，随后通过验证后的标准输入加载配置，并只重建 Caddy 容器修复持久挂载；证书卷保留。公开 Matrix 路由及原 Router 健康检查均再次通过。
 - 原 Router、RabbitMQ 和 PostgreSQL 的容器 ID、启动时间、重启次数与健康状态保持不变。之前恢复的另一台服务器本轮未修改。

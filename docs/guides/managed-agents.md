@@ -37,14 +37,14 @@ sh scripts/build-cli.sh
 在主人账号所在机器签发实例凭证：
 
 ```sh
-agent-router --profile owner agent-instance-create johor --out johor-instance.json
+agent-router --profile owner agent-instance-create server --out server-instance.json
 ```
 
 文件以 0600 权限创建，包含这个 Agent 下一个实例的 token；终端只显示文件位置和 ID。
 安全传到运行机器后，在该机器执行：
 
 ```sh
-agent-router --profile worker agent-attach johor-instance.json
+agent-router --profile worker agent-attach server-instance.json
 agent-router --profile worker connect
 agent-router --profile worker claim --worker codex --wait 30
 ```

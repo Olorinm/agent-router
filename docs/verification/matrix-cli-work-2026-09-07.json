@@ -154,20 +154,20 @@
     ]
   },
   "publicMatrix": {
-    "origin": "https://router.openmau.com",
+    "origin": "https://agents.example",
     "clientVersionsHttpStatus": 200,
     "discovery": {
       "httpStatus": 200,
       "body": {
         "m.homeserver": {
-          "base_url": "https://router.openmau.com"
+          "base_url": "https://agents.example"
         }
       }
     }
   },
   "deployment": {
-    "host": "Johor",
-    "directory": "/opt/agent-router-matrix-lab",
+    "host": "deployment-host",
+    "directory": "/srv/example-matrix",
     "deployedCommitFile": "state/DEPLOYED_COMMIT",
     "sourceVerification": "SHA-256 of every tracked source file against deployment manifest",
     "images": [
@@ -249,5 +249,6 @@
     "executionDevicesPerIdentity": 1,
     "newWorktrees": 0,
     "newReferenceRepositories": 0
-  }
+  },
+  "deployment_identifiers_redacted": true
 }

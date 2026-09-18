@@ -1,8 +1,10 @@
 # Matrix 原生客户端与旧 Router 退役验收 — 2026-09-07
 
+公开版本：真实部署标识已替换为占位值，见[报告说明](README.md)。
+
 本报告记录 0.4 的原生客户端接入，接收方执行当时仍依赖绑定 A2A 服务。随后 0.5 补齐双方只用 CLI 领取与回复的流程，见 [CLI 执行报告](matrix-cli-work-2026-09-07.md)。
 
-0.4.0 已完成当时的原生客户端流程，柔佛公开入口 `https://router.openmau.com` 已切换为纯 Matrix homeserver。旧 Router、Go CLI、自建身份/联邦/队列协议和迁移兼容层已移除；旧部署及其 PostgreSQL、RabbitMQ 数据也已按用户授权删除。没有进行旧账号或任务迁移。
+0.4.0 已完成当时的原生客户端流程，验收主机公开入口 `https://agents.example` 已切换为纯 Matrix homeserver。旧 Router、Go CLI、自建身份/联邦/队列协议和迁移兼容层已移除；旧部署及其 PostgreSQL、RabbitMQ 数据也已按用户授权删除。没有进行旧账号或任务迁移。
 
 ## 实际使用流程
 
@@ -31,7 +33,7 @@
 
 本地测试需要临时监听回环端口。一次普通沙盒运行禁止监听导致两项集成用例启动失败；允许本机端口后，完整 65 项全部通过。没有通过增加超时或跳过测试规避问题。最终还移除了未公开的旧 `contact-add --block` 参数，屏蔽统一使用原生 `block` / `unblock`，并复验类型、构建、测试和安装包。
 
-## 柔佛部署与删除范围
+## 验收主机部署与删除范围
 
 新的根 `compose.yaml` 管理 Synapse、PostgreSQL 和 Caddy。公开服务沿用原 Matrix 的 server name、数据库目录、签名密钥及 HTTPS 证书。切换前后的 3 个既有 Matrix 账号数量一致，签名密钥摘要一致，既有管理员令牌仍有效；随后原生注册验收新增两个测试账号。
 
@@ -39,15 +41,15 @@
 
 - 旧 Router、旧 PostgreSQL、旧 RabbitMQ、旧 Caddy，以及被新 Compose 接管的两个旧 Matrix 容器实例，共 6 个容器。
 - `agent-router-postgres-data`、`agent-router-rabbitmq-data` 两个旧业务数据卷。
-- `/opt/agent-router` 旧部署源码及凭证目录。
+- `/srv/example-legacy-router` 旧部署源码及凭证目录。
 - 三个已无使用者的旧专用网络。
 
-保留当前 Matrix 数据和执行记录，保留两个 Caddy 证书/配置卷。新公开部署位于 `/opt/agent-router-matrix-lab`；双 homeserver 验收栈继续使用隔离测试域与数据库。真实 Codex 验证结束后恢复确定性测试 Agent，普通验收不会继续调用模型。之前恢复的另一台服务器本轮未修改。
+保留当前 Matrix 数据和执行记录，保留两个 Caddy 证书/配置卷。新公开部署位于 `/srv/example-matrix`；双 homeserver 验收栈继续使用隔离测试域与数据库。真实 Codex 验证结束后恢复确定性测试 Agent，普通验收不会继续调用模型。之前恢复的另一台服务器本轮未修改。
 
 历史报告保留作为对应版本的记录，不表示仍维护旧协议或迁移功能。部署状态以服务器 `state/DEPLOYED_COMMIT` 和本报告 JSON 中的最终状态为准。
 
 ## 能力边界
 
-本轮验证包含公开 HTTPS 账号服务和同一柔佛机器内的双 homeserver 联邦，未验证两个独立公网物理节点、生产负载或长期运行。E2EE/密钥恢复、SSO/OAuth、图形界面、全联邦目录和多设备执行容灾仍未实现。
+本轮验证包含公开 HTTPS 账号服务和同一验收主机内的双 homeserver 联邦，未验证两个独立公网物理节点、生产负载或长期运行。E2EE/密钥恢复、SSO/OAuth、图形界面、全联邦目录和多设备执行容灾仍未实现。
 
 Matrix 保存通信历史，实际模型 session 由执行端保存。已验证的 Codex 适配器是独立、有限的会话验收进程，不会自动接管任意桌面 Codex 任务。通用 Agent 自接入说明见 [Agent 指南](../guides/agent-connect.md)。

@@ -1,7 +1,7 @@
 {
   "checked_at": "2026-09-07T06:09:07.859497+00:00",
-  "target": "agent-router-johor",
-  "deployment_directory": "/opt/agent-router-matrix-lab",
+  "target": "deployment-host",
+  "deployment_directory": "/srv/example-matrix",
   "matrix_containers": [
     {
       "name": "agent-router-matrix-lab-agent-b-1",
@@ -138,7 +138,7 @@
       "at": "2026-09-07T06:04:58.141Z"
     },
     {
-      "name": "shipped_cli_cross_domain_send_on_johor",
+      "name": "shipped_cli_cross_domain_send_on_deployment_host",
       "at": "2026-09-07T06:06:45.703Z"
     }
   ],
@@ -147,13 +147,13 @@
     "snapshot_entries": 5220,
     "snapshot_manifest_sha256": "54adcd8455334ddfa08c13610cfa7b788ef2b04961a14576de7c13b6592610f0",
     "snapshot_content_owner_mode_match": true,
-    "rollback_archive": "/opt/agent-router-matrix-lab/state/pre-migration-backup.tar.gz",
+    "rollback_archive": "/srv/example-matrix/state/pre-migration-backup.tar.gz",
     "rollback_archive_sha256": "ec880c07fcb088842151ab08660189e08e8cf9d1da4367a09ab6e7e4e91e253a",
     "rollback_archive_verified": true,
     "real_codex_migrated_session_verified": true,
     "migrated_image_ids_match": true
   },
-  "model_access": "direct_from_johor",
+  "model_access": "direct_from_deployment_host",
   "default_backend": "deterministic_fixture",
   "source_restoration": {
     "at": "2026-09-07T06:08:00.624795+00:00",
@@ -172,5 +172,6 @@
     "original_service_ids_images_start_times_restart_counts_and_health_unchanged": true
   },
   "synthetic_data_only": true,
-  "runtime_source_commit": "bb75177"
+  "runtime_source_commit": "bb75177",
+  "deployment_identifiers_redacted": true
 }
