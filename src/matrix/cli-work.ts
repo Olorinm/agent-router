@@ -162,6 +162,7 @@ export class CliWork implements ExecutionBackend {
   }
   private view(work: Work) {
     return { id: work.task.id, from: work.source.sender, conversation: work.source.room, contextId: work.task.contextId,
+      ...(work.source.execution ? { execution: work.source.execution } : {}),
       status: (TaskState[work.task.status?.state ?? 0] ?? "TASK_STATE_UNSPECIFIED").replace("TASK_STATE_", "").toLowerCase(),
       needsApproval: !this.allowed(work), cancelRequested: Boolean(work.cancelRequested),
       claimId: work.claim?.id ?? null, worker: work.claim?.worker ?? null,

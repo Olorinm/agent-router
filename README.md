@@ -8,7 +8,7 @@ The receiving agent still uses its own model, files, tools and permissions. For 
 
 These managed-Agent commands are **not in the published v0.6.0 release**. Build the current source and deploy its matching service. The [v0.6 installation guide](docs/guides/install.md) documents the existing release; it does not install the new commands yet.
 
-[Managed account/Agent guide (中文)](docs/guides/managed-agents.md) · [Agent guide](docs/guides/agent-connect.en.md) · [CLI contract](docs/guides/cli-contract.md) · [Architecture](docs/architecture/decisions/0004-managed-agents.md)
+[Managed account/Agent guide (中文)](docs/guides/managed-agents.md) · [Mail and channel rules](docs/guides/channels.md) · [Agent guide](docs/guides/agent-connect.en.md) · [CLI contract](docs/guides/cli-contract.md) · [Architecture](docs/architecture/decisions/0004-managed-agents.md)
 
 ## Start from zero: one account, two Agents
 

@@ -11,6 +11,7 @@ import { ApplicationInbox, ApplicationTransport } from "./application-service.js
 import { digest, mxid } from "./protocol.js";
 import { WorkError } from "./cli-work.js";
 import type { MatrixTransport } from "./transport.js";
+import { ChannelRouter } from "../channels/router.js";
 
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export interface ManagedAgent {
@@ -37,6 +38,7 @@ export class ManagedService {
   readonly store: ConnectorStore;
   readonly inbox: ApplicationInbox;
   readonly externalIdentity: ExternalIdentitySessions | undefined;
+  readonly channels: ChannelRouter;
   private runtimes = new Map<string, Promise<Runtime>>();
   constructor(readonly config: ServiceConfig, readonly dependencies: ServiceDependencies = {}) {
     if (!/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(config.serverName)) throw new Error("invalid_server_name");
@@ -48,6 +50,14 @@ export class ManagedService {
     this.store = new ConnectorStore(join(config.stateDir, "registry.sqlite"), config.serverName);
     this.inbox = new ApplicationInbox(this.store, (user) => this.store.get<string>("matrix_agents", user));
     this.externalIdentity=config.externalIdentity?new ExternalIdentitySessions(this,config.externalIdentity):undefined;
+    this.channels = new ChannelRouter(this.store, async (agentId) => {
+      const { connector } = await this.runtime(agentId);
+      const work = connector.cli!;
+      return {
+        send: (request, source) => work.send(request, source), get: (id) => work.get(id), cancel: (id) => work.cancel(id),
+        acknowledge: (taskId) => { for (const event of work.events()) if (event.value.id === taskId) work.ack(event.id); },
+      };
+    });
   }
   agents(owner?: string): ManagedAgent[] {
     return this.store.entries<ManagedAgent>("agents").map((r) => r.value).filter((a) => !owner || a.owner === owner);
@@ -160,6 +170,7 @@ export class ManagedService {
   }
   async start(): Promise<void> { for (const agent of this.agents()) await this.runtime(agent.id); }
   async close(): Promise<void> {
+    await this.channels.close();
     for (const pending of this.runtimes.values()) {
       try { const { connector } = await pending; await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
     }
@@ -234,6 +245,24 @@ export function createManagedApp(service: ManagedService) {
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
   app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  app.get(`${root}/agents/:agentId/channels`, (req, res) => res.json({ data: service.channels.entries(req.params.agentId) }));
+  const channelRoot = `${root}/agents/:agentId/channels/:entryId`;
+  app.use(channelRoot, (req, _res, next) => { service.channels.ownedEntry(String(req.params.entryId), String(req.params.agentId)); next(); });
+  app.get(`${channelRoot}/visitors`, (req, res) => res.json({ data: service.channels.visitors(req.params.entryId) }));
+  app.get(`${channelRoot}/events`, (req, res) => {
+    const limit = z.coerce.number().int().min(1).max(200).default(100).parse(req.query.limit);
+    const state = z.enum(["pending", "queued", "submitted", "delivering", "replied", "rejected", "delivery-failed"]).optional().parse(req.query.state);
+    res.json({ data: service.channels.events(req.params.entryId).filter(e => !state || e.state === state).slice(-limit) });
+  });
+  app.post(`${channelRoot}/events/:eventId/decision`, (req, res) => {
+    const { decision } = z.object({ decision: z.enum(["allow", "deny"]) }).strict().parse(req.body);
+    service.channels.decide(req.params.entryId, req.params.eventId, decision); res.status(204).end();
+  });
+  app.post(`${channelRoot}/visitors/:visitorId/decision`, (req, res) => {
+    const { decision } = z.object({ decision: z.enum(["inherit", "allow", "ask", "deny"]) }).strict().parse(req.body);
+    service.channels.decideVisitor(req.params.entryId, req.params.visitorId, decision); res.status(204).end();
+  });
+  app.post(`${channelRoot}/resume`, (req, res) => { service.channels.resume(req.params.entryId); res.status(204).end(); });
   app.get(`${root}/agents/:agentId/instances`, (req, res) => res.json({ data: service.instances(req.params.agentId) }));
   app.post(`${root}/agents/:agentId/instances`, (req, res) => {
     const { name } = z.object({ name: agentName }).strict().parse(req.body);

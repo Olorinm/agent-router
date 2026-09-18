@@ -2,7 +2,10 @@ import { ClientFactory, JsonRpcTransportFactory, RestTransportFactory, type Clie
 import type { AgentCard, SendMessageRequest, SendMessageResult, Task } from "@a2a-js/sdk";
 import { SafeHttpClient } from "../safe-fetch.js";
 
-export interface ExecutionSource { sender: string; room: string; approved: boolean; }
+export interface ExecutionSource {
+  sender: string; room: string; approved: boolean;
+  execution?: { accessMode: "read-only" | "workspace-write" };
+}
 export interface ExecutionBackend {
   send(request: SendMessageRequest, source?: ExecutionSource): Promise<SendMessageResult>;
   get(taskId: string): Promise<Task>;
