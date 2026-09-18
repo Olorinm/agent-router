@@ -117,6 +117,7 @@ export class ChannelRouter {
     });
   }
   private permission(entry: ChannelEntry, event: ChannelEvent): Decision {
+    event.decision = this.store.get<ChannelEvent>("channel_events", event.id)?.decision ?? event.decision;
     const visitor = this.store.get<Visitor>("channel_visitors", event.visitorId)!;
     if (!entry.enabled || event.decision === "deny" || visitor.decision === "deny") return "deny";
     const policy = evaluateInvocation(entry.rules, { channelKind: entry.kind, entryId: entry.id,
@@ -185,6 +186,10 @@ export class ChannelRouter {
               else if (!isTerminal(task)) continue;
             }
             event.prepared = true; event.state = "queued"; this.save(event);
+          }
+          const beforeSubmit = this.permission(entry, event);
+          if (beforeSubmit !== "allow") {
+            event.state = beforeSubmit === "deny" ? "rejected" : "pending"; this.save(event); continue;
           }
           const task = await backend.send(SendMessageRequest.fromJSON({ message: {
             messageId: event.id, contextId: event.contextId, ...(event.resumeTaskId ? { taskId: event.resumeTaskId } : {}),

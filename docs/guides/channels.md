@@ -96,7 +96,8 @@ tokens and other owners cannot access these controls. Let `BASE` be
 | Resume after fixing a permanent provider error | `POST BASE/resume` |
 
 A one-request confirmation binds to the saved message, target and conversation,
-not future emails. Deny rules and blocked visitors take precedence. An explicit
+not future emails. A matched deny rule and blocked visitors take precedence over
+manual approval. An explicit
 `ask` rule still requires per-request confirmation even for a visitor allowed by
 an earlier manual decision. Visitor `inherit` uses the configured rules; visitor
 `ask` requires confirmation even when a rule would allow. Blocking a visitor

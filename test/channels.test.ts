@@ -199,4 +199,16 @@ describe("channel execution and reliable replies", () => {
     expect(work.inspect(claim.id).cancelRequested).toBe(true);
     expect(adapter.poll).toHaveBeenCalledTimes(2);
   });
+  it("does not submit a later request rejected while an earlier request is being checked", async () => {
+    const { router, work } = setup();
+    router.ingest(entry, message("one"));
+    const later = router.ingest(entry, message("two", "bob@example.test"));
+    const get = work.get.bind(work);
+    vi.spyOn(work, "get").mockImplementationOnce(async id => {
+      router.decide("mail", later.id, "deny"); return get(id);
+    });
+    await router.tick("mail");
+    expect(work.list()).toHaveLength(1);
+    expect(router.events("mail")[1]).toMatchObject({ decision: "deny", state: "rejected" });
+  });
 });
