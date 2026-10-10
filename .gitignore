@@ -11,6 +11,15 @@ secrets/*
 state/
 .codex/
 auth.json
+channels.json
+host-token
+credentials.json
+app-secret
+authorization.json
+authorization.png
+weixin.json
+cli-data/
+lark-cli/
 *.pem
 *.key
 *.p12

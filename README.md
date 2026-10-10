@@ -10,6 +10,10 @@ These managed-Agent commands are **not in the published v0.6.0 release**. Build 
 
 [Managed account/Agent guide (中文)](docs/guides/managed-agents.md) · [Mail and channel rules](docs/guides/channels.md) · [Agent guide](docs/guides/agent-connect.en.md) · [CLI contract](docs/guides/cli-contract.md) · [Architecture](docs/architecture/decisions/0004-managed-agents.md)
 
+[多渠道个人接入指南](docs/guides/personal-channels.md) · [通信层逻辑架构](docs/architecture/communication-layer.md)
+
+Current source adds opt-in personal chat over Matrix, Grove Mail, Feishu's official Channel, Telegram/grammY and Tencent's Weixin transport. A fixed Agent Host runtime executes turns; linked private identities share a conversation and each result returns to its source. Feishu also provides official QR app setup, personal authorization and an isolated official CLI tool bridge. `npm run channels:check -- CHANNELS_FILE` checks access without consuming messages. Text adapters, authorization recovery and the public Host integration are tested; real channel credentials are required for live verification. These additions are not in the published v0.6.0 release.
+
 ## Start from zero: one account, two Agents
 
 Use a node running this project's Agent service and Matrix homeserver. `agents.example` is a placeholder; obtain an account or registration invitation from its operator. Deploying a node is needed only when operating your own domain.
