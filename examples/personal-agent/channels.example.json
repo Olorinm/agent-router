@@ -1,0 +1,40 @@
+{
+  "agents": [
+    {
+      "agentId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "host": {
+        "url": "http://127.0.0.1:37420",
+        "tokenFile": "host-token",
+        "runtimeId": "personal"
+      },
+      "connections": [
+        { "id": "matrix", "kind": "matrix" },
+        {
+          "id": "feishu",
+          "kind": "feishu",
+          "credentialsFile": "feishu/credentials.json",
+          "personalTools": true
+        },
+        {
+          "id": "telegram",
+          "kind": "telegram",
+          "botTokenFile": "telegram-token",
+          "ownerAddresses": ["123456789"]
+        },
+        {
+          "id": "mail",
+          "kind": "grove-mail",
+          "url": "https://mail.example.test",
+          "inboxId": "agent@example.test",
+          "apiKeyFile": "mail-api-key",
+          "ownerAddresses": ["owner@example.test"]
+        },
+        {
+          "id": "weixin",
+          "kind": "weixin",
+          "credentialsFile": "weixin.json"
+        }
+      ]
+    }
+  ]
+}

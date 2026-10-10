@@ -20,11 +20,19 @@ export interface ManagedAgent {
 }
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
 export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; }
-interface Runtime { connector: MatrixConnector; app: ReturnType<typeof createConnectorApp>; token: string; }
+export interface ServiceExtension {
+  start(): Promise<void>; stop(): Promise<void>; status(): unknown;
+  resolve(callId: string, result: unknown): Promise<void>;
+  reconcile(claimId: string, runId: string): Promise<void>;
+  closeUnknown(claimId: string): Promise<void>;
+  authorization?(connectionId: string, action: "status" | "begin" | "complete"): Promise<unknown>;
+}
+interface Runtime { connector: MatrixConnector; app: ReturnType<typeof createConnectorApp>; token: string; extension?: ServiceExtension | undefined; }
 export interface ServiceDependencies {
   authenticate?: (token: string) => Promise<string>;
   provision?: (agent: ManagedAgent) => Promise<void>;
   transport?: (agent: ManagedAgent, inbox: ApplicationInbox) => MatrixTransport;
+  configure?: (agent: ManagedAgent, connector: MatrixConnector) => Promise<ServiceExtension | undefined>;
 }
 const newToken = () => randomBytes(32).toString("base64url");
 function bearer(req: express.Request): string { return req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? ""; }
@@ -130,17 +138,20 @@ export class ManagedService {
     const transport = this.dependencies.transport?.(agent, this.inbox) ?? new ApplicationTransport(
       this.config.homeserver, this.config.asToken, agent.matrixId, agent.id, this.inbox);
     const connector = new MatrixConnector(agent.matrixId, store, transport, undefined, 250);
+    let extension: ServiceExtension | undefined;
     try {
       if (!store.get("meta", "managed_initialized")) {
         await connector.updateContact({ address: agent.owner, note: "Owner", receive: "allow", execution: "allow" });
         await transport.data?.displayName(agent.name);
         store.set("meta", "managed_initialized", true);
       }
+      extension = await this.dependencies.configure?.(agent, connector);
       await connector.start();
-    } catch (error) { await connector.stop(); store.close(); throw error; }
+      await extension?.start();
+    } catch (error) { await extension?.stop(); await connector.stop(); store.close(); throw error; }
     this.store.set("agents", agent.id, { ...agent, status: "active" });
     const token = newToken();
-    return { connector, token, app: createConnectorApp(connector, token, `${this.config.publicUrl}/agents/${agent.id}/gateway`) };
+    return { connector, token, extension, app: createConnectorApp(connector, token, `${this.config.publicUrl}/agents/${agent.id}/gateway`) };
   }
   instances(agentId: string) { return this.store.entries<Instance>("instances").map((r) => r.value).filter((i) => i.agentId === agentId).map(publicInstance); }
   issue(agentId: string, name: string): { instance: ReturnType<typeof publicInstance>; token: string; gatewayUrl: string } {
@@ -172,7 +183,7 @@ export class ManagedService {
   async close(): Promise<void> {
     await this.channels.close();
     for (const pending of this.runtimes.values()) {
-      try { const { connector } = await pending; await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
+      try { const { connector, extension } = await pending; await extension?.stop(); await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
     }
     this.runtimes.clear(); this.store.close();
   }
@@ -245,6 +256,35 @@ export function createManagedApp(service: ManagedService) {
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
   app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  const extension = async (id: string) => {
+    const runtime = await service.runtime(id);
+    if (!runtime.extension) throw new WorkError("channels_not_configured", 404);
+    return runtime.extension;
+  };
+  app.get(`${root}/agents/:agentId/communication`, async (req, res) => res.json((await extension(req.params.agentId)).status()));
+  const authorization = async (id: string, connectionId: string, action: "status" | "begin" | "complete") => {
+    const runtime = await extension(id);
+    if (!runtime.authorization) throw new WorkError("personal_authorization_not_configured", 404);
+    return runtime.authorization(connectionId, action);
+  };
+  app.get(`${root}/agents/:agentId/communication/connections/:connectionId/authorization`, async (req, res) =>
+    res.json(await authorization(req.params.agentId, req.params.connectionId, "status")));
+  app.post(`${root}/agents/:agentId/communication/connections/:connectionId/authorization/:action`, async (req, res) => {
+    const action = z.enum(["begin", "complete"]).parse(req.params.action); z.object({}).strict().parse(req.body);
+    res.json(await authorization(req.params.agentId, req.params.connectionId, action));
+  });
+  app.post(`${root}/agents/:agentId/communication/calls/:callId/result`, async (req, res) => {
+    const body = z.object({ result: z.json() }).strict().parse(req.body);
+    await (await extension(req.params.agentId)).resolve(req.params.callId, body.result); res.json({ status: "accepted" });
+  });
+  app.post(`${root}/agents/:agentId/communication/runs/:claimId/reconcile`, async (req, res) => {
+    const body = z.object({ runId: z.string().min(1).max(160) }).strict().parse(req.body);
+    await (await extension(req.params.agentId)).reconcile(req.params.claimId, body.runId); res.json({ status: "accepted" });
+  });
+  app.post(`${root}/agents/:agentId/communication/runs/:claimId/close`, async (req, res) => {
+    z.object({}).strict().parse(req.body);
+    await (await extension(req.params.agentId)).closeUnknown(req.params.claimId); res.json({ status: "closed" });
+  });
   app.get(`${root}/agents/:agentId/channels`, (req, res) => res.json({ data: service.channels.entries(req.params.agentId) }));
   const channelRoot = `${root}/agents/:agentId/channels/:entryId`;
   app.use(channelRoot, (req, _res, next) => { service.channels.ownedEntry(String(req.params.entryId), String(req.params.agentId)); next(); });

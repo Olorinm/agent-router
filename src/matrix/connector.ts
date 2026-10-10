@@ -23,6 +23,8 @@ interface Outbox { room: string; type: string; content: object; recipient?: stri
 interface Binding { remoteTaskId: string; remoteContextId: string; }
 
 export class MatrixConnector {
+  /** Optional personal-chat receipt hook. Default Matrix/A2A behavior is unchanged. */
+  onTextMessage: ((room: string, event: RoomEvent) => void) | undefined;
   private running = false;
   private busy = false;
   private flushing = false;
@@ -33,6 +35,10 @@ export class MatrixConnector {
   lastError = "";
   readonly social: MatrixSocial | undefined;
   readonly cli: CliWork | undefined;
+  assertLease(): void {
+    const lease = this.store.get<{ owner: string; expires: number }>("meta", "lease");
+    if (!lease || lease.owner !== this.leaseOwner || lease.expires <= Date.now()) throw new Error("connector_lease_lost");
+  }
   constructor(readonly userId: string, readonly store: ConnectorStore, readonly transport: MatrixTransport,
     readonly backend: ExecutionBackend | undefined, readonly pollMs = 1_000) {
     mxid.parse(userId); this.social = transport.data ? new MatrixSocial(this, transport.data) : undefined;
@@ -150,7 +156,9 @@ export class MatrixConnector {
         this.store.set("room_info", room, { ...this.store.get<object>("room_info", room), room, joined: false });
       }
       for (const item of prepared) {
-        this.store.set("rooms", item.room, { encrypted: item.encrypted });
+        const members = [...new Set(item.state.filter((event) => event.type === "m.room.member" &&
+          ["join", "invite"].includes(String(event.content.membership))).map((event) => event.state_key).filter(Boolean))];
+        this.store.set("rooms", item.room, { encrypted: item.encrypted, members });
         this.store.delete("invites", item.room);
         this.social?.room(item.room, item.state, item.events, batch.rooms?.join?.[item.room]);
         for (const event of item.events) this.ingest(item.room, event, item.encrypted, restoring);
@@ -167,6 +175,12 @@ export class MatrixConnector {
   ingest(room: string, event: RoomEvent, encrypted = false, restoredHistory = false): void {
     if (!event.event_id || !event.sender || !this.store.insert("seen", key(room, event.event_id), true)) return;
     if (encrypted || event.sender === this.userId || this.social?.ignored(event.sender)) return;
+    if (!restoredHistory && event.type === "m.room.message" && this.contact(event.sender)?.receive !== "deny" &&
+      event.content.msgtype === "m.text" && typeof event.content.body === "string" &&
+      (event.content["m.relates_to"] as { rel_type?: string } | undefined)?.rel_type !== "m.replace") {
+      // Do not swallow receipt failures: the outer transaction rolls back the event and /sync cursor.
+      this.onTextMessage?.(room, event);
+    }
     try {
       sized(event.content);
       if (event.type === REQUEST_EVENT) {
