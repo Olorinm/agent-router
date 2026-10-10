@@ -1,45 +1,47 @@
 # Agent Router
 
-Agent Router 是 Agent 的通信服务：接收各渠道的消息，交给运行中的 Agent，再把回复送回原渠道。
+**English** | [简体中文](README.zh-CN.md)
 
-你可以在飞书里让云端 Agent 办事，收到飞书回复；换到明确绑定的微信私聊，继续同一私人会话。其他 Agent 也可以向它发送任务、查询进度和取回结果。
+Agent Router is a communication service for agents: it receives messages across channels, delivers them to a running agent, and sends replies back to the same channel.
 
-## 工作方式
+Ask your cloud agent to do something in Feishu and receive its reply there. Switch to an explicitly linked Weixin private chat to continue the same personal conversation. Other agents can also send tasks, check progress, and retrieve results.
+
+## How it works
 
 ```text
-飞书 / 微信 / Telegram / 邮件 / Matrix / 其他 Agent
-                         ↕
-                 Agent Router（通信）
-                         ↕
-              Agent Host / worker（执行）
-                         ↕
-                 模型、工具与工作区
+Feishu / Weixin / Telegram / Email / Matrix / Other agents
+                           ↕
+                Agent Router (communication)
+                           ↕
+                Agent Host / worker (execution)
+                           ↕
+                  Models, tools, and workspace
 ```
 
-Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复。Agent Host 或现有 worker 在自己的环境中运行模型、调用工具，并保留原生模型会话；执行端可以位于云端或个人电脑。
+Router manages agent identities, channel connections, communication sessions, task delivery, and replies. Agent Host or an existing worker runs models and tools in its own environment and retains the model's native session. The execution environment can be in the cloud or on a personal computer.
 
-- **稳定身份**：一个账号可以管理多个 Agent，每个 Agent 有自己的地址，并可连接多个运行实例。
-- **连续对话**：明确绑定的所有者私聊共享主会话，群聊和其他联系人使用独立会话；每轮回复回到该轮的原渠道。
-- **持久化记录**：保存收件、任务、执行绑定和发送回执；重启后恢复已知状态，结果未知时等待核对，避免重复执行。
+- **Stable identities**: one account can manage multiple agents. Each agent has its own address and can connect to multiple runtime instances.
+- **Continuous conversations**: explicitly linked owner private chats share a main session. Group chats and other contacts have separate sessions; each reply returns to the channel that received that turn.
+- **Persistent records**: incoming messages, tasks, execution bindings, and delivery receipts are saved. Known state is restored after a restart; uncertain outcomes wait for reconciliation to avoid duplicate execution.
 
-## 已有接入
+## Available integrations
 
-| 入口 | 当前能力 |
+| Entry point | Current capabilities |
 | --- | --- |
-| 飞书 | 官方 Channel 收发文字；扫码配置应用、个人授权后使用官方 CLI 工具 |
-| 微信 | 腾讯 iLink 扫码登录、私聊收发 |
-| Telegram | grammY Bot API，支持私聊和群组话题 |
-| 邮件 | [Grove Mail](docs/guides/personal-channels.md) / [AgentMail](docs/guides/channels.md) 的收信和回复 |
-| Matrix | 普通文字对话；Agent 之间通过 Matrix 交换 A2A 任务和结果 |
-| 产品 / 其他 Agent | 使用 CLI 或 [TypeScript SDK](packages/sdk/README.md) 接入账号、Agent 和任务接口 |
+| Feishu | Text messages through the official Channel; QR setup for the app and personal authorization for official CLI tools |
+| Weixin (WeChat) | Tencent iLink QR login and private text messages |
+| Telegram | grammY Bot API, with private chats and group topics |
+| Email | Incoming messages and replies through [Grove Mail](docs/guides/personal-channels.md) / [AgentMail](docs/guides/channels.md) |
+| Matrix | Plain text conversations; A2A tasks and results exchanged between agents over Matrix |
+| Products / other agents | Account, agent, and task APIs through the CLI or [TypeScript SDK](packages/sdk/README.md) |
 
-聊天渠道目前以文字和最终回复为主。微信限 iLink 私聊，Matrix 不支持加密房间；附件处理、流式卡片和聊天交互按钮尚未接入。执行按配置直连固定实例，智能调度与自动故障转移尚未实现。
+Chat channels currently focus on text and final replies. Weixin supports iLink private chats only; encrypted Matrix rooms are unsupported. Attachments, streaming cards, and interactive chat buttons are not implemented. Execution connects directly to a configured instance; intelligent scheduling and automatic failover are not implemented.
 
-## 开始使用
+## Getting started
 
-**本页对应 `main` 源码。托管 Agent 和多渠道个人接入尚未包含在已发布的 v0.6.0 中；使用这些功能需要从源码构建，并部署匹配版本的服务。** 已发布版本的安装方式见[安装指南](docs/guides/install.md)。
+**This README describes the `main` source branch. Managed agents and personal channel integrations are not included in the published v0.6.0 release. Build from source and deploy a matching service version to use them.** See the [installation guide](docs/guides/install.md) for published releases.
 
-在仓库根目录构建，需 Node.js 24+ 和 Go 1.25+；Go 按 `go.mod` 选择工具链：
+Build from the repository root with Node.js 24+ and Go 1.25+. Go selects its toolchain from `go.mod`:
 
 ```sh
 npm ci
@@ -47,34 +49,36 @@ npm run build
 sh scripts/build-cli.sh
 ```
 
-1. **准备节点和 Agent**：使用已有 Router 节点，登录账号并创建 Agent，取得 `agentId`。见[账号与 Agent 指南](docs/guides/managed-agents.md)。自行运行节点也按该指南部署。
-2. **连接执行端**：配置 Agent Host 的服务地址与 `runtimeId`，或让现有 worker 领取任务。见[Host 直连接入](docs/guides/personal-channels.md#最小启动)与 [Codex worker](examples/codex-worker/README.md)。
-3. **绑定渠道并启动**：在私有 `channels.json` 中选择连接、绑定所有者地址，按[多渠道接入指南](docs/guides/personal-channels.md)配置并启动服务。完整示例见 [channels.example.json](examples/personal-agent/channels.example.json)。
+1. **Prepare a node and agent**: use an existing Router node, sign in, and create an agent to obtain its `agentId`. See the [account and agent guide](docs/guides/managed-agents.md), which also covers running your own node.
+2. **Connect an execution environment**: configure the Agent Host service URL and `runtimeId`, or have an existing worker claim tasks. See [direct Host setup](docs/guides/personal-channels.md#最小启动) and the [Codex worker](examples/codex-worker/README.md).
+3. **Link channels and start the service**: choose connections and bind the owner's channel addresses in a private `channels.json`. Follow the [personal channel guide](docs/guides/personal-channels.md); a complete configuration example is in [channels.example.json](examples/personal-agent/channels.example.json).
 
-飞书可从扫码开始，完成应用配置与个人授权：
+For Feishu, start with QR setup to configure the app and authorize your personal account:
 
 ```sh
 npm run feishu:setup -- /absolute/private/path/feishu
 ```
 
-配置完成后检查连接，再从实际渠道发消息验证往返：
+Check the configuration, then send a message from the actual channel to verify a complete round trip:
 
 ```sh
 npm run channels:check -- /absolute/private/path/channels.json
 ```
 
-## 更多文档
+## More documentation
 
-| 你想做什么 | 从这里开始 |
+Most detailed guides are currently in Chinese; the agent CLI guide is available in both languages.
+
+| What you want to do | Start here |
 | --- | --- |
-| 通过 IM 或邮件与个人 Agent 对话 | [多渠道个人接入](docs/guides/personal-channels.md) |
-| 创建 Agent、接入运行实例、让 Agent 互相协作 | [托管 Agent 指南](docs/guides/managed-agents.md) |
-| 让现有 Agent 领取任务、回复和处理取消 | [Agent 操作指南](docs/guides/agent-connect.md) · [English](docs/guides/agent-connect.en.md) |
-| 把通信能力接入自己的产品 | [TypeScript SDK](packages/sdk/README.md) · [已有产品账号接入](docs/guides/product-integration.md) |
-| 了解模块边界、会话和恢复机制 | [通信层架构](docs/architecture/communication-layer.md) · [CLI 契约](docs/guides/cli-contract.md) |
-| 部署独立域和 Matrix 联邦 | [节点部署](docs/guides/matrix.md#部署独立域) |
+| Chat with a personal agent through IM or email | [Personal channel integrations](docs/guides/personal-channels.md) |
+| Create agents, connect runtime instances, and collaborate with other agents | [Managed agents](docs/guides/managed-agents.md) |
+| Have an existing agent claim tasks, reply, and handle cancellation | [Agent CLI guide](docs/guides/agent-connect.en.md) · [简体中文](docs/guides/agent-connect.md) |
+| Add communication capabilities to your own product | [TypeScript SDK](packages/sdk/README.md) · [Existing product accounts](docs/guides/product-integration.md) |
+| Understand module boundaries, sessions, and recovery | [Communication architecture](docs/architecture/communication-layer.md) · [CLI contract](docs/guides/cli-contract.md) |
+| Deploy an independent domain with Matrix federation | [Node deployment](docs/guides/matrix.md#部署独立域) |
 
-## 开发与验证
+## Development and verification
 
 ```sh
 go test -race ./...
@@ -84,6 +88,6 @@ npm run test:codex-worker
 npm run build
 ```
 
-自动化验证覆盖会话隔离、去重、恢复、授权和 Host 公共接口；新增聊天连接的真实账号往返仍需联调。验证方法见[接入指南](docs/guides/personal-channels.md#已验证范围)和[本地验证指南](docs/guides/local-verification.md)。
+Automated checks cover session isolation, deduplication, recovery, authorization, and the public Host interface. Live account round trips for the new chat connections still need integration testing. See the [verified scope](docs/guides/personal-channels.md#已验证范围) and [local verification guide](docs/guides/local-verification.md).
 
-许可证：[Apache-2.0](LICENSE)。复用组件及其许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+License: [Apache-2.0](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for reused components and their licenses.
