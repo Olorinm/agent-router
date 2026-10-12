@@ -41,6 +41,8 @@ Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复
 
 **本页对应 `main` 源码。托管 Agent 和多渠道个人接入尚未包含在已发布的 v0.6.0 中；使用这些功能需要从源码构建，并部署匹配版本的服务。** 已发布版本的安装方式见[安装指南](docs/guides/install.md)。
 
+**普通用户：**打开 `https://你的服务域名/_agent-router/setup`，登录，创建自己的 Agent 或使用朋友授权的 Agent，再按需选择连接的平台。见[网页开通指南](docs/guides/onboarding.zh-CN.md)；管理员先按该指南配置一次，用户之后就能从这个入口使用。
+
 在仓库根目录构建，需 Node.js 24+ 和 Go 1.25+；Go 按 `go.mod` 选择工具链：
 
 ```sh

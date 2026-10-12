@@ -41,6 +41,8 @@ Channels preserve their native communication capabilities through the Host: atta
 
 **This README describes the `main` source branch. Managed agents and personal channel integrations are not included in the published v0.6.0 release. Build from source and deploy a matching service version to use them.** See the [installation guide](docs/guides/install.md) for published releases.
 
+**For users:** open `https://YOUR_ROUTER_DOMAIN/_agent-router/setup`, sign in, create your Agent or open an authorized friend's Agent, and choose any platforms you want to connect. The [browser onboarding guide](docs/guides/onboarding.md) explains the user flow and the one-time operator setup required to enable this page.
+
 Build from the repository root with Node.js 24+ and Go 1.25+. Go selects its toolchain from `go.mod`:
 
 ```sh

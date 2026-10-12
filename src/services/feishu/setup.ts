@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { registerApp } from "@larksuiteoapi/node-sdk";
+import { feishuApplication } from "./application.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { FeishuAccount, loadFeishuCredentials, privateFile, runOfficialCli, type FeishuCredentials } from "./cli.js";
 
@@ -25,8 +26,7 @@ try {
     if (!["feishu", "lark"].includes(values.domain!)) throw new Error("invalid_feishu_domain");
     const result = await registerApp({ source: "agent-router", createOnly: true,
       ...(values.domain === "lark" ? { domain: "accounts.larksuite.com" } : {}),
-      signal: AbortSignal.timeout(600_000), appPreset: { name: "{user} 的 Agent", desc: "个人 Agent 的飞书对话与工具" },
-      addons: { scopes: { tenant: ["im:message", "im:message:send_as_bot", "im:resource", "cardkit:card:write", "drive:drive"] }, events: { items: { tenant: ["im.message.receive_v1", "card.action.trigger", "im.message.reaction.created_v1", "im.message.reaction.deleted_v1", "drive.notice.comment_add_v1"] } } },
+      signal: AbortSignal.timeout(600_000), ...feishuApplication,
       onQRCodeReady: ({ url }) => { process.stdout.write(`用飞书扫码配置机器人：\n${url}\n`); qr.generate(url, { small: true }); },
     });
     if (!result.user_info?.open_id) throw new Error("feishu_registration_owner_missing");

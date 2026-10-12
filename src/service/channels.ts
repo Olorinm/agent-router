@@ -31,10 +31,10 @@ const connection = z.discriminatedUnion("kind", [
   z.object({ ...common, kind: z.literal("grove-mail"), url: z.url(), inboxId: z.email(), apiKeyFile: file, initialCursor: z.number().int().nonnegative().default(0), attachmentOrigins: z.array(z.url()).default([]) }).strict(),
   z.object({ ...common, kind: z.literal("weixin"), credentialsFile: file }).strict(),
 ]);
-const agentConfig = z.object({ agentId: z.uuid(), connections: z.array(connection).min(1).max(20),
+export const agentChannelConfigSchema = z.object({ agentId: z.uuid(), connections: z.array(connection).max(20),
   host: z.object({ url: z.url(), tokenFile: file, runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
     instanceName: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/).default("channel-host"), instructions: z.string().max(200_000).default("") }).strict().optional() }).strict();
-export const channelConfigSchema = z.object({ agents: z.array(agentConfig).min(1).max(100) }).strict().superRefine((config, context) => {
+export const channelConfigSchema = z.object({ agents: z.array(agentChannelConfigSchema).min(1).max(100) }).strict().superRefine((config, context) => {
   if (new Set(config.agents.map((agent) => agent.agentId)).size !== config.agents.length) context.addIssue({ code: "custom", message: "duplicate_agent_id" });
   for (const agent of config.agents) {
     if (new Set(agent.connections.map((item) => item.id)).size !== agent.connections.length) context.addIssue({ code: "custom", message: "duplicate_connection_id" });
@@ -49,7 +49,7 @@ export const channelConfigSchema = z.object({ agents: z.array(agentConfig).min(1
     }
   }
 });
-export type AgentChannelConfig = z.infer<typeof agentConfig>;
+export type AgentChannelConfig = z.infer<typeof agentChannelConfigSchema>;
 export interface ChannelConfiguration { agents: AgentChannelConfig[]; directory: string; }
 export function loadChannelConfiguration(path: string): ChannelConfiguration {
   const config = { ...channelConfigSchema.parse(JSON.parse(readFileSync(path, "utf8"))), directory: dirname(resolve(path)) };
@@ -125,6 +125,11 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     if (adapter.kind === "matrix") await adapter.start(core.context(definition.id));
   }
   let worker: HostWorker | undefined;
+  const ownerBrowserTask = (conversationId: string, taskId: string) => {
+    if (!connector.cli?.has(taskId)) return false;
+    const task = connector.cli.inspect(taskId);
+    return task.contextId === conversationId && connector.store.get<boolean>("communication_owner_callers", task.from) === true;
+  };
   if (config.host) {
     const instance = issue(config.host.instanceName);
     const host = new HttpAgentHost(new ServiceHttp(config.host.url, secret(directory, config.host.tokenFile)));
@@ -134,11 +139,11 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       config.host.instructions, () => { connector.assertLease(); instance.validate(); }, (taskId, answer) => core.saveResult(taskId, answer),
       { definitions: [channelTools.definition, ...[...personalTools.values()].map((tools) => tools.definition)],
         instructions: "\nUse the channel tool to inspect native communication capabilities and send files or supported native content. Use the Feishu product tool for the owner's calendar, documents and other linked resources. Read its official skills/schema/help before unfamiliar commands. Personal authorization is managed by the communication service; never ask for tokens in chat or change CLI identity/configuration. If authorization is required, tell the owner to complete the connection's authorization flow. Follow official CLI confirmation requirements. Never automatically repeat an operation with an uncertain outcome.\n",
-        allowed: (_conversationId, taskId) => Boolean(core.input(taskId)),
+        allowed: (conversationId, taskId) => Boolean(core.input(taskId)) || ownerBrowserTask(conversationId, taskId),
         execute: async (call) => {
           if (call.name === channelTools.definition.name) return channelTools.execute(call);
           const binding = worker!.status().runs.find((run) => run.runId === call.runId);
-          if (!binding || !core.isOwnerTask(binding.conversationId, binding.taskId)) return { success: false, contentItems: [{ type: "inputText", text: "personal_tools_require_owner_conversation" }] };
+          if (!binding || !(core.isOwnerTask(binding.conversationId, binding.taskId) || ownerBrowserTask(binding.conversationId, binding.taskId))) return { success: false, contentItems: [{ type: "inputText", text: "personal_tools_require_owner_conversation" }] };
           const original = personalTools.get(call.name)!;
           const tools = new FeishuTools(original.id, original.account, async (_call, item) => {
             const path = `.agent-host/attachments/${call.runId}/${digest(item.data)}/${item.name.replace(/[^\p{L}\p{N}_.-]/gu, "_")}`;

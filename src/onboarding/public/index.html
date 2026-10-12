@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Router</title>
+    <link rel="stylesheet" href="/_agent-router/setup/style.css" />
+    <script type="module" src="/_agent-router/setup/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/_agent-router/setup">Agent Router</a
+      ><label class="language"
+        >Language
+        <select id="language">
+          <option value="en">English</option>
+          <option value="zh">中文</option>
+        </select></label
+      >
+    </header>
+    <main>
+      <h1 data-i18n="title">Your Agent, connected.</h1>
+      <p class="intro" data-i18n="intro">
+        Sign in, choose an Agent, and connect the platforms you use.
+      </p>
+      <p id="notice" role="status" aria-live="polite" hidden></p>
+      <section id="login">
+        <h2 data-i18n="account">1. Your account</h2>
+        <p id="server"></p>
+        <a id="product-login" hidden data-i18n="productLogin"
+          >Sign in through your existing app</a
+        >
+        <div id="handoff" hidden>
+          <p id="handoff-owner"></p>
+          <button id="handoff-continue">Continue</button>
+        </div>
+        <form id="login-form">
+          <label
+            ><span data-i18n="username">Username</span
+            ><input
+              name="username"
+              autocomplete="username"
+              required
+              maxlength="255"
+          /></label>
+          <label
+            ><span data-i18n="password">Password</span
+            ><input
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              maxlength="1024"
+          /></label>
+          <label id="invitation" hidden
+            ><span data-i18n="invitation"
+              >Registration token, if required by this service</span
+            ><input
+              name="registrationToken"
+              type="password"
+              autocomplete="off"
+              maxlength="1024"
+          /></label>
+          <div class="actions">
+            <button type="submit" data-i18n="signIn">Sign in</button
+            ><button
+              id="register"
+              class="secondary"
+              type="button"
+              hidden
+              data-i18n="register"
+            >
+              Create account
+            </button>
+          </div>
+        </form>
+        <p class="hint" data-i18n="accountHint">
+          Accounts belong to this service's existing Matrix backend. Your
+          administrator controls registration.
+        </p>
+      </section>
+      <div id="workspace" hidden>
+        <div class="account-bar">
+          <span id="identity"></span
+          ><button id="logout" class="secondary" data-i18n="signOut">
+            Sign out
+          </button>
+        </div>
+        <section>
+          <h2 data-i18n="agent">2. Your Agent</h2>
+          <label
+            ><span data-i18n="chooseAgent">Choose your Agent</span
+            ><select id="agent-select"></select
+          ></label>
+          <form id="create-form" class="inline">
+            <input
+              name="name"
+              value="helper"
+              aria-label="New Agent name"
+              pattern="[a-z][a-z0-9-]{0,47}"
+              required
+              maxlength="48"
+            /><button data-i18n="createAgent">Create Agent</button>
+          </form>
+          <p id="agent-address" class="address"></p>
+          <form id="host-form" class="inline">
+            <label
+              ><span data-i18n="execution">Execution service</span
+              ><select id="host-select"></select></label
+            ><button data-i18n="connectHost">Connect</button>
+          </form>
+          <p id="host-state" class="hint"></p>
+          <p class="hint" data-i18n="hostHint">
+            Your administrator provides execution services. Calling a friend's
+            Agent uses their execution service.
+          </p>
+        </section>
+        <section id="platform-section">
+          <h2 data-i18n="platforms">3. Connect platforms (optional)</h2>
+          <p data-i18n="optional">
+            Connect one, several, or none. You can also chat here.
+          </p>
+          <ul id="connected" class="connections"></ul>
+          <div class="platforms">
+            <details>
+              <summary>Feishu / Lark</summary>
+              <form id="feishu-form">
+                <label
+                  ><span data-i18n="region">Platform</span
+                  ><select name="domain">
+                    <option value="feishu">Feishu / 飞书</option>
+                    <option value="lark">Lark</option>
+                  </select></label
+                >
+                <label class="checkbox"
+                  ><input name="personalTools" type="checkbox" checked /><span
+                    data-i18n="personalTools"
+                    >Authorize my calendar, documents and other personal
+                    services</span
+                  ></label
+                >
+                <p class="hint" data-i18n="feishuHint">
+                  Scan to create the bot. Personal services require a second
+                  consent step and a connected execution service.
+                </p>
+                <button data-i18n="startConnection">Connect</button>
+              </form>
+            </details>
+            <details>
+              <summary data-i18n="weixin">Weixin</summary>
+              <p class="hint" data-i18n="weixinHint">
+                Scan with Weixin and confirm. If a pairing code appears on your
+                phone, enter it below.
+              </p>
+              <button id="weixin-connect" data-i18n="startConnection">
+                Connect
+              </button>
+            </details>
+            <details>
+              <summary>Telegram</summary>
+              <form id="telegram-form">
+                <label
+                  ><span data-i18n="botToken">Bot token from BotFather</span
+                  ><input
+                    name="token"
+                    type="password"
+                    autocomplete="off"
+                    required
+                /></label>
+                <p class="hint" data-i18n="telegramHint">
+                  Open your personal link and press Start. This binds your
+                  Telegram identity to this Agent.
+                </p>
+                <button data-i18n="startConnection">Connect</button>
+              </form>
+            </details>
+            <details id="mail-platform">
+              <summary>Email / Grove Mail</summary>
+              <form id="mail-form">
+                <label
+                  ><span data-i18n="mailService">Mail service</span
+                  ><select name="serviceId" id="mail-select"></select
+                ></label>
+                <label
+                  ><span data-i18n="inbox">Agent inbox address</span
+                  ><input name="inboxId" type="email" required
+                /></label>
+                <label
+                  ><span data-i18n="mailKey">Inbox API key</span
+                  ><input
+                    name="apiKey"
+                    type="password"
+                    autocomplete="off"
+                    required
+                /></label>
+                <label
+                  ><span data-i18n="ownerEmail">Your sender email address</span
+                  ><input name="ownerEmail" type="email" required
+                /></label>
+                <p class="hint" data-i18n="mailHint">
+                  Use an inbox on a Grove Mail service configured by your
+                  administrator.
+                </p>
+                <button data-i18n="startConnection">Connect</button>
+              </form>
+            </details>
+            <details>
+              <summary>Matrix</summary>
+              <p class="hint" data-i18n="matrixHint">
+                Use your existing Matrix account to message this Agent.
+              </p>
+              <button id="matrix-connect" data-i18n="startConnection">
+                Connect
+              </button>
+            </details>
+          </div>
+          <div id="jobs"></div>
+          <div id="consents"></div>
+          <div class="actions">
+            <button id="check" class="secondary" data-i18n="check">
+              Check connections
+            </button>
+          </div>
+          <ul id="checks"></ul>
+          <p class="hint" data-i18n="verifyHint">
+            A successful access check is not a conversation test. Send a message
+            from your chosen platform and confirm that the Agent replies.
+          </p>
+        </section>
+        <section>
+          <h2 data-i18n="chat">4. Talk to an Agent</h2>
+          <form id="target-form" class="inline">
+            <label
+              ><span data-i18n="target"
+                >Agent address (yours or a friend's)</span
+              ><input
+                id="target"
+                name="address"
+                placeholder="alice/helper@example.org"
+                required
+                list="targets" /></label
+            ><datalist id="targets"></datalist
+            ><button class="secondary" data-i18n="openChat">Open</button>
+          </form>
+          <p id="caller" class="hint"></p>
+          <div id="messages" aria-live="polite"></div>
+          <div id="interactions"></div>
+          <p id="task-state" class="hint"></p>
+          <form id="chat-form">
+            <label
+              ><span data-i18n="message">Message</span
+              ><textarea
+                name="text"
+                rows="3"
+                maxlength="32000"
+                required
+              ></textarea>
+            </label>
+            <div class="actions">
+              <button id="send" data-i18n="send">Send</button
+              ><button
+                id="cancel"
+                type="button"
+                class="secondary"
+                hidden
+                data-i18n="cancel"
+              >
+                Stop task</button
+              ><button
+                id="new-chat"
+                type="button"
+                class="secondary"
+                data-i18n="newChat"
+              >
+                New conversation
+              </button>
+            </div>
+          </form>
+        </section>
+        <section>
+          <h2 data-i18n="share">Let a friend use your Agent</h2>
+          <p data-i18n="shareHint">
+            Ask your friend to sign in here and send you their caller address.
+            Allow that address on your Agent, then share your Agent address.
+          </p>
+          <form id="access-form" class="inline">
+            <input
+              name="address"
+              placeholder="bob/client@example.org"
+              aria-label="Friend's caller address"
+              required
+            /><select name="decision" aria-label="Access">
+              <option value="allow" data-i18n="allow">Allow</option>
+              <option value="ask" data-i18n="ask">Ask</option>
+              <option value="deny" data-i18n="deny">Deny</option></select
+            ><button data-i18n="saveAccess">Save access</button>
+          </form>
+          <ul id="access"></ul>
+          <div id="requests"></div>
+        </section>
+      </div>
+    </main>
+    <footer data-i18n="footer">
+      Agent Router connects accounts, Agents and conversations. Agent Host runs
+      the Agent.
+    </footer>
+  </body>
+</html>

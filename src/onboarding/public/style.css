@@ -1,0 +1,273 @@
+:root {
+  color-scheme: light;
+  --ink: #172e28;
+  --muted: #64746d;
+  --green: #236a50;
+  --line: #dce4dc;
+  --paper: #fafbf7;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font:
+    16px/1.55 system-ui,
+    -apple-system,
+    sans-serif;
+}
+header,
+main,
+footer {
+  max-width: 920px;
+  margin: auto;
+  padding: 24px;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+}
+.language {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.language select {
+  width: auto;
+}
+h1 {
+  font-size: clamp(30px, 5vw, 46px);
+  line-height: 1.2;
+  letter-spacing: -1.5px;
+  margin: 26px 0 10px;
+}
+h2 {
+  font-size: 21px;
+  margin: 0 0 18px;
+}
+.intro {
+  color: var(--muted);
+  margin-bottom: 30px;
+}
+section {
+  padding: 26px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  margin: 22px 0;
+}
+label {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 14px;
+}
+input,
+select,
+textarea {
+  display: block;
+  width: 100%;
+  font: inherit;
+  border: 1px solid #bfcec3;
+  background: white;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
+}
+textarea {
+  resize: vertical;
+}
+button {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  padding: 10px 18px;
+  background: var(--green);
+  color: white;
+}
+button.secondary {
+  background: white;
+  color: var(--green);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid #8cc9a4;
+  outline-offset: 3px;
+}
+a {
+  color: var(--green);
+  overflow-wrap: anywhere;
+}
+.actions,
+.inline {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.inline > input,
+.inline > label {
+  flex: 1;
+  min-width: 200px;
+  margin: 0;
+}
+.inline > select {
+  width: auto;
+}
+.account-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+.hint,
+footer {
+  font-size: 13px;
+  color: var(--muted);
+}
+.address {
+  font:
+    14px/1.5 ui-monospace,
+    monospace;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f1f5ee;
+}
+.checkbox {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+}
+.checkbox input {
+  width: auto;
+  margin-top: 4px;
+}
+.platforms {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+details {
+  border: 1px solid var(--line);
+  padding: 14px;
+  border-radius: 10px;
+}
+summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+details[open] summary {
+  margin-bottom: 16px;
+}
+.connections {
+  padding-left: 20px;
+}
+li {
+  margin: 8px 0;
+  font-size: 14px;
+}
+li button {
+  font-size: 12px;
+  margin-left: 10px;
+  padding: 4px 10px;
+}
+.job {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 18px;
+}
+.qr {
+  width: 220px;
+  max-width: 100%;
+  display: block;
+  margin: 14px 0;
+}
+.job a {
+  display: block;
+}
+.job form {
+  max-width: 300px;
+  margin-top: 16px;
+}
+#notice {
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: #f8edd5;
+  color: #674715;
+  white-space: pre-wrap;
+}
+#messages {
+  max-height: 460px;
+  overflow: auto;
+  margin: 20px 0;
+}
+.message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #f0f5ed;
+  padding: 14px;
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.message.agent {
+  background: #f6f7f3;
+}
+.message small {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.status {
+  color: var(--muted);
+  font-size: 13px;
+}
+[hidden] {
+  display: none !important;
+}
+@media (max-width: 600px) {
+  header,
+  main,
+  footer {
+    padding: 18px;
+  }
+  section {
+    padding: 20px;
+  }
+  .platforms {
+    grid-template-columns: 1fr;
+  }
+  .inline > button {
+    width: 100%;
+  }
+  h1 {
+    letter-spacing: -1px;
+  }
+  .account-bar span {
+    overflow-wrap: anywhere;
+  }
+}
