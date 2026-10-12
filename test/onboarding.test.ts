@@ -47,7 +47,7 @@ async function fixture() {
     async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input),
         body = init?.body ? JSON.parse(String(init.body)) : undefined;
-      if (url.startsWith(config.homeserver)) {
+      if (new URL(url).origin === new URL(config.homeserver).origin) {
         requests.push({ url, body });
         if (url.endsWith("/login")) {
           if (body.password !== "fixture-password")
@@ -95,7 +95,7 @@ async function fixture() {
         }
         throw new Error("unexpected_matrix_fixture_request");
       }
-      if (url.startsWith("https://host.fixture")) {
+      if (new URL(url).origin === "https://host.fixture") {
         expect(new Headers(init?.headers).get("authorization")).toBe(
           "Bearer fixture-host-token",
         );

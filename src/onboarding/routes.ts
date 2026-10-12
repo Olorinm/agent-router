@@ -46,6 +46,18 @@ export function createOnboarding(
     sessions = new BrowserSessions(service),
     connections = new ConnectionSetup(service, configuration);
   const origin = new URL(service.config.publicUrl).origin;
+  app.use(
+    setupPath,
+    rateLimit({
+      windowMs: 60_000,
+      limit: 1200,
+      standardHeaders: "draft-8",
+      legacyHeaders: false,
+      keyGenerator: (req) =>
+        ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? "unknown"),
+      message: { error: "rate_limit_exceeded" },
+    }),
+  );
   app.use(setupPath, (_req, res, next) => {
     res.set({
       "Cache-Control": "no-store",
