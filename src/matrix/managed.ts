@@ -48,6 +48,7 @@ export class ManagedService {
   readonly externalIdentity: ExternalIdentitySessions | undefined;
   readonly channels: ChannelRouter;
   private runtimes = new Map<string, Promise<Runtime>>();
+  private configurations = new Map<string, Promise<void>>();
   constructor(readonly config: ServiceConfig, readonly dependencies: ServiceDependencies = {}) {
     if (!/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(config.serverName)) throw new Error("invalid_server_name");
     for (const raw of [config.homeserver, config.publicUrl]) {
@@ -121,6 +122,36 @@ export class ManagedService {
     }
     return pending;
   }
+  /** Replace only the product extension. The Matrix identity, queue and connector stay intact. */
+  async configureRuntime(id: string, configure: NonNullable<ServiceDependencies["configure"]>,
+    rollback: NonNullable<ServiceDependencies["configure"]> = this.dependencies.configure ?? (async () => undefined),
+    commit: () => void = () => {}): Promise<void> {
+    const operation = (this.configurations.get(id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const runtime = await this.runtime(id);
+      if (runtime.connector.store.entries<{ phase: string }>("communication_runs")
+        .some(({ value }) => ["running", "submitting", "unknown"].includes(value.phase)))
+        throw new WorkError("agent_has_active_or_unknown_run", 409);
+      await runtime.extension?.stop();
+      runtime.extension = undefined;
+      let replacement: ServiceExtension | undefined;
+      try {
+        // A worker tick could have submitted work while stop was awaiting its loop.
+        if (runtime.connector.store.entries<{ phase: string }>("communication_runs")
+          .some(({ value }) => ["running", "submitting", "unknown"].includes(value.phase)))
+          throw new WorkError("agent_has_active_or_unknown_run", 409);
+        replacement = await configure(this.agent(id), runtime.connector);
+        commit(); await replacement?.start(); runtime.extension = replacement;
+      }
+      catch (error) {
+        await replacement?.stop();
+        const restored = await rollback(this.agent(id), runtime.connector);
+        await restored?.start(); runtime.extension = restored;
+        throw error;
+      }
+    });
+    this.configurations.set(id, operation);
+    try { await operation; } finally { if (this.configurations.get(id) === operation) this.configurations.delete(id); }
+  }
   private async open(agent: ManagedAgent): Promise<Runtime> {
     if (this.dependencies.provision) await this.dependencies.provision(agent);
     else {
@@ -181,6 +212,7 @@ export class ManagedService {
   }
   async start(): Promise<void> { for (const agent of this.agents()) await this.runtime(agent.id); }
   async close(): Promise<void> {
+    await Promise.allSettled(this.configurations.values());
     await this.channels.close();
     for (const pending of this.runtimes.values()) {
       try { const { connector, extension } = await pending; await extension?.stop(); await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
@@ -189,7 +221,7 @@ export class ManagedService {
   }
 }
 
-export function createManagedApp(service: ManagedService) {
+export function createManagedApp(service: ManagedService, setup?: express.Router) {
   const app = express(); app.disable("x-powered-by");
   app.set("trust proxy", service.config.trustedProxies ?? false);
   app.use(express.json({ limit: "2mb" }));
@@ -256,6 +288,7 @@ export function createManagedApp(service: ManagedService) {
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
   app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  if (setup) app.use(setup);
   const extension = async (id: string) => {
     const runtime = await service.runtime(id);
     if (!runtime.extension) throw new WorkError("channels_not_configured", 404);

@@ -41,6 +41,18 @@ Channels preserve their native communication capabilities through the Host: atta
 
 **This README describes the `main` source branch. Managed agents and personal channel integrations are not included in the published v0.6.0 release. Build from source and deploy a matching service version to use them.** See the [installation guide](docs/guides/install.md) for published releases.
 
+Use the existing Go CLI to sign in, create an Agent, select an assigned Host and connect your chosen platforms:
+
+```sh
+agent-router login '@alice:agents.example'
+agent-router setup-options
+agent-router setup helper --host personal
+agent-router channel-connect feishu  # Optional; choose Weixin, Telegram, email or Matrix too
+agent-router setup-check
+```
+
+QR codes and personal authorization links appear in the terminal. Platforms are optional; friends can sign up and use Agents you authorize through the CLI. See the [CLI setup guide](docs/guides/onboarding.md), including the operator's one-time preparation.
+
 Build from the repository root with Node.js 24+ and Go 1.25+. Go selects its toolchain from `go.mod`:
 
 ```sh
@@ -49,21 +61,7 @@ npm run build
 sh scripts/build-cli.sh
 ```
 
-1. **Prepare a node and agent**: use an existing Router node, sign in, and create an agent to obtain its `agentId`. See the [account and agent guide](docs/guides/managed-agents.md), which also covers running your own node.
-2. **Connect an execution environment**: configure the Agent Host service URL and `runtimeId`, or have an existing worker claim tasks. See [direct Host setup](docs/guides/personal-channels.md#最小启动) and the [Codex worker](examples/codex-worker/README.md).
-3. **Link channels and start the service**: choose connections and bind the owner's channel addresses in a private `channels.json`. Follow the [personal channel guide](docs/guides/personal-channels.md); a complete configuration example is in [channels.example.json](examples/personal-agent/channels.example.json).
-
-For Feishu, start with QR setup to configure the app and authorize your personal account:
-
-```sh
-npm run feishu:setup -- /absolute/private/path/feishu
-```
-
-Check the configuration, then send a message from the actual channel to verify a complete round trip:
-
-```sh
-npm run channels:check -- /absolute/private/path/channels.json
-```
+For your own server, see [node deployment](docs/guides/managed-agents.md#部署节点). For manual channel configuration, see [personal integrations](docs/guides/personal-channels.md).
 
 ## More documentation
 

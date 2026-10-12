@@ -31,10 +31,10 @@ const connection = z.discriminatedUnion("kind", [
   z.object({ ...common, kind: z.literal("grove-mail"), url: z.url(), inboxId: z.email(), apiKeyFile: file, initialCursor: z.number().int().nonnegative().default(0), attachmentOrigins: z.array(z.url()).default([]) }).strict(),
   z.object({ ...common, kind: z.literal("weixin"), credentialsFile: file }).strict(),
 ]);
-const agentConfig = z.object({ agentId: z.uuid(), connections: z.array(connection).min(1).max(20),
+export const agentChannelConfigSchema = z.object({ agentId: z.uuid(), connections: z.array(connection).max(20),
   host: z.object({ url: z.url(), tokenFile: file, runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
     instanceName: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/).default("channel-host"), instructions: z.string().max(200_000).default("") }).strict().optional() }).strict();
-export const channelConfigSchema = z.object({ agents: z.array(agentConfig).min(1).max(100) }).strict().superRefine((config, context) => {
+export const channelConfigSchema = z.object({ agents: z.array(agentChannelConfigSchema).min(1).max(100) }).strict().superRefine((config, context) => {
   if (new Set(config.agents.map((agent) => agent.agentId)).size !== config.agents.length) context.addIssue({ code: "custom", message: "duplicate_agent_id" });
   for (const agent of config.agents) {
     if (new Set(agent.connections.map((item) => item.id)).size !== agent.connections.length) context.addIssue({ code: "custom", message: "duplicate_connection_id" });
@@ -49,7 +49,7 @@ export const channelConfigSchema = z.object({ agents: z.array(agentConfig).min(1
     }
   }
 });
-export type AgentChannelConfig = z.infer<typeof agentConfig>;
+export type AgentChannelConfig = z.infer<typeof agentChannelConfigSchema>;
 export interface ChannelConfiguration { agents: AgentChannelConfig[]; directory: string; }
 export function loadChannelConfiguration(path: string): ChannelConfiguration {
   const config = { ...channelConfigSchema.parse(JSON.parse(readFileSync(path, "utf8"))), directory: dirname(resolve(path)) };

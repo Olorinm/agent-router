@@ -41,7 +41,19 @@ Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复
 
 **本页对应 `main` 源码。托管 Agent 和多渠道个人接入尚未包含在已发布的 v0.6.0 中；使用这些功能需要从源码构建，并部署匹配版本的服务。** 已发布版本的安装方式见[安装指南](docs/guides/install.md)。
 
-在仓库根目录构建，需 Node.js 24+ 和 Go 1.25+；Go 按 `go.mod` 选择工具链：
+使用现有 Go CLI 登录，再创建 Agent、选择管理员分配的 Host，并连接你想用的平台：
+
+```sh
+agent-router login '@alice:agents.example'
+agent-router setup-options
+agent-router setup helper --host personal
+agent-router channel-connect feishu  # 可选，也可选微信、Telegram、邮件或 Matrix
+agent-router setup-check
+```
+
+扫码和个人授权链接直接显示在终端。平台可选；朋友注册账号后可以通过 CLI 调用你授权的 Agent。见[CLI 开通指南](docs/guides/onboarding.zh-CN.md)，其中也说明管理员的一次性准备。
+
+从源码构建，需 Node.js 24+ 和 Go 1.25+；Go 按 `go.mod` 选择工具链：
 
 ```sh
 npm ci
@@ -49,21 +61,7 @@ npm run build
 sh scripts/build-cli.sh
 ```
 
-1. **准备节点和 Agent**：使用已有 Router 节点，登录账号并创建 Agent，取得 `agentId`。见[账号与 Agent 指南](docs/guides/managed-agents.md)。自行运行节点也按该指南部署。
-2. **连接执行端**：配置 Agent Host 的服务地址与 `runtimeId`，或让现有 worker 领取任务。见[Host 直连接入](docs/guides/personal-channels.md#最小启动)与 [Codex worker](examples/codex-worker/README.md)。
-3. **绑定渠道并启动**：在私有 `channels.json` 中选择连接、绑定所有者地址，按[多渠道接入指南](docs/guides/personal-channels.md)配置并启动服务。完整示例见 [channels.example.json](examples/personal-agent/channels.example.json)。
-
-飞书可从扫码开始，完成应用配置与个人授权：
-
-```sh
-npm run feishu:setup -- /absolute/private/path/feishu
-```
-
-配置完成后检查连接，再从实际渠道发消息验证往返：
-
-```sh
-npm run channels:check -- /absolute/private/path/channels.json
-```
+自行部署见[节点指南](docs/guides/managed-agents.md#部署节点)；手动配置渠道与凭据见[个人接入指南](docs/guides/personal-channels.md)。
 
 ## 更多文档
 

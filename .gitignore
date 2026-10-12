@@ -14,6 +14,9 @@ auth.json
 channels.json
 host-token
 credentials.json
+onboarding.json
+telegram-token
+mail-key
 app-secret
 authorization.json
 authorization.png
