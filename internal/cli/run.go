@@ -3,10 +3,12 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,6 +44,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return err
 	}
 	command, args := pos[0], pos[1:]
+	if len(o.attachments) > 0 && command != "reply" {
+		return errors.New("attachments_require_reply")
+	}
 	if err = validateArgs(command, args); err != nil {
 		return err
 	}
@@ -90,7 +95,7 @@ func validateArgs(command string, args []string) error {
 		"register": {2, 2}, "login": {0, 2}, "logout": {0, 0}, "whoami": {0, 0}, "bind": {1, 1}, "configure": {0, 0}, "discover": {1, 1}, "find": {1, 1}, "lookup": {0, 1}, "profile-set": {1, 1},
 		"connect": {0, 0}, "doctor": {0, 0}, "status": {0, 0}, "contacts": {0, 0}, "conversations": {0, 0}, "contact-add": {1, 1}, "contact-remove": {1, 1}, "blocked": {0, 0}, "block": {1, 1}, "unblock": {1, 1},
 		"invites": {0, 0}, "invite-accept": {1, 1}, "invite-reject": {1, 1}, "requests": {0, 0}, "approve": {1, 1}, "reject": {1, 1}, "inbox": {0, 0}, "claim": {0, 1}, "work": {1, 1},
-		"progress": {2, 2}, "reply": {1, 2}, "need-input": {2, 2}, "fail": {2, 2}, "cancelled": {1, 1}, "conversation-open": {1, 1}, "history": {1, 1}, "read": {1, 2}, "leave": {1, 1}, "watch": {0, 0},
+		"progress": {2, 2}, "defer": {2, 2}, "reply": {1, 2}, "need-input": {2, 2}, "fail": {2, 2}, "cancelled": {1, 1}, "conversation-open": {1, 1}, "history": {1, 1}, "read": {1, 2}, "leave": {1, 1}, "watch": {0, 0},
 		"send": {2, 2}, "get": {2, 2}, "list": {1, 1}, "cancel": {2, 2}, "say": {2, 2}, "agent-guide": {0, 1},
 	}
 	limit, ok := limits[command]
@@ -222,12 +227,19 @@ func (a *app) command(command string, args []string) error {
 		method = "POST"
 		body = b
 		timeout = time.Duration(wait+30) * time.Second
-	case "progress", "reply", "need-input", "fail", "cancelled":
+	case "progress", "defer", "reply", "need-input", "fail", "cancelled":
 		text, err := a.text(arg)
 		if err != nil {
 			return err
 		}
 		b := map[string]any{"action": command, "text": text}
+		if len(a.o.attachments) > 0 {
+			files, err := readReplyAttachments(a.o.attachments)
+			if err != nil {
+				return err
+			}
+			b["attachments"] = files
+		}
 		if a.o.dataFile != "" {
 			data, err := os.ReadFile(a.o.dataFile)
 			if err != nil {
@@ -442,4 +454,41 @@ func (a *app) connect() error {
 		return syscall.Exec(program, []string{program}, env)
 	}
 	return errors.New("connector_service_not_installed: install the separate connector package, or use --connector-runtime /path/to/dist/matrix/index.js (Node 24 required on the connector host)")
+}
+
+// Bound both the file reads and the Base64 request. Bytes are supplied by the
+// worker; the server never dereferences worker paths or remote URLs.
+func readReplyAttachments(paths []string) ([]map[string]string, error) {
+	if len(paths) > 8 {
+		return nil, errors.New("too_many_attachments")
+	}
+	result := make([]map[string]string, 0, len(paths))
+	total := 0
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, errors.New("cannot_read_attachment")
+		}
+		info, err := f.Stat()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > int64(4_000_000-total) {
+			f.Close()
+			return nil, errors.New("invalid_or_oversized_attachment")
+		}
+		data, err := io.ReadAll(io.LimitReader(f, int64(4_000_000-total)+1))
+		f.Close()
+		total += len(data)
+		if err != nil || len(data) == 0 || total > 4_000_000 {
+			return nil, errors.New("invalid_or_oversized_attachment")
+		}
+		kind := mime.TypeByExtension(filepath.Ext(path))
+		if kind == "" {
+			kind = http.DetectContentType(data)
+		}
+		kind, _, err = mime.ParseMediaType(kind)
+		if err != nil {
+			kind = "application/octet-stream"
+		}
+		result = append(result, map[string]string{"filename": filepath.Base(path), "contentType": kind, "content": base64.StdEncoding.EncodeToString(data)})
+	}
+	return result, nil
 }

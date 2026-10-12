@@ -118,8 +118,11 @@ additional input keeps its task; a completed task's follow-up creates a new task
 in the same context. The worker owns the mapping to the native Agent session.
 
 Mail text uses AgentMail's extracted new text when available. Attachments are
-listed explicitly as unread; binary attachment retrieval and HTML-only rendering
-are not implemented. Oversized text is visibly truncated. The model is never told
+listed explicitly as unread by default; HTML-only rendering is not implemented.
+An entry may set `fullInput: true` to preserve the UTF-8 body and retrieve up to
+10 TXT/Markdown attachments from authenticated mail, with a combined 1 MB limit.
+The worker receives these as `documents`; unsupported or oversized inputs are
+explicitly reported unread. Oversized inline previews are visibly truncated. The model is never told
 it has read an attachment that was not supplied.
 
 Replies target only the captured original sender, never a changed Reply-To or
@@ -139,3 +142,19 @@ retains the existing worker's behavior and never silently reruns uncertain work.
 AgentMail API references: [messages](https://docs.agentmail.to/api-reference/inboxes/messages/list),
 [replies](https://docs.agentmail.to/api-reference/inboxes/messages/reply),
 [idempotent sends](https://docs.agentmail.to/idempotency).
+
+
+## Deferred work and outgoing files
+
+A worker can run `agent-router defer CLAIM_ID 'Waiting for an external service'`
+to free its foreground slot while retaining the original claim for later completion.
+The task remains working, and tasks in the same conversation stay serialized.
+New input invalidates stale completion; cancellation still requires acknowledgement.
+Claims, documents and deferred state survive service restarts.
+
+Use `agent-router reply CLAIM_ID 'Please see the attachment.' --attachment ./report.pdf`
+for channel results, repeating `--attachment` for up to 8 files / 4,000,000 raw bytes
+in total. Files and completion receipts commit atomically. Task views contain file
+metadata; the delivery ledger retains the bytes and idempotency key for retries.
+Attachment updates accept up to 6 MB of JSON after authentication. Other request
+limits remain unchanged. Files are retained with task and delivery records.

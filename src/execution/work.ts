@@ -1,14 +1,15 @@
+import { attachmentsSchema, attachmentMetadata, type Attachment } from "../attachments.js";
 import { randomUUID } from "node:crypto";
 import { Artifact, Message, Task, TaskState, type SendMessageRequest } from "@a2a-js/sdk";
 import type { ExecutionBackend, ExecutionSource } from "./types.js";
 import { DurableStore } from "../communication/store.js";
 import { digest, encodeResult, newTask, sized, statusMessage, terminal } from "./protocol.js";
 
-interface Claim { id: string; worker: string; revision: number; }
+interface Claim { id: string; worker: string; revision: number; deferred?: boolean; }
 interface Work { task: Task; input: Message; source: ExecutionSource; revision: number; claim?: Claim; cancelRequested?: boolean; }
 interface Receipt { workId: string; revision: number; worker: string; actions: Record<string, unknown>; }
 type Policy = "allow" | "ask" | "deny";
-export type WorkAction = "progress" | "reply" | "need-input" | "fail" | "cancelled";
+export type WorkAction = "progress" | "defer" | "reply" | "need-input" | "fail" | "cancelled";
 export class WorkError extends Error {
   constructor(message: string, readonly status = 409) { super(message); }
 }
@@ -42,6 +43,8 @@ export class CliWork implements ExecutionBackend {
           (message.contextId && message.contextId !== work.task.contextId)) throw new WorkError("work_scope_mismatch");
         if (terminal(work.task) || work.cancelRequested) throw new WorkError("work_closed");
         work.task.history.push(message); work.input = message; work.revision++;
+        work.source = source;
+        if (work.claim) delete work.claim.deferred;
         if (!work.claim) work.task.status = { state: TaskState.TASK_STATE_SUBMITTED, timestamp: new Date().toISOString(), message: undefined };
       } else {
         work = { task: newTask(randomUUID(), message.contextId || randomUUID(), message), input: message, source, revision: 1 };
@@ -80,7 +83,7 @@ export class CliWork implements ExecutionBackend {
     return this.store.transaction(() => {
       const rows = this.store.entries<Work>("cli_work").map((r) => r.value);
       // Retrying a lost claim response with the same worker returns the existing assignment.
-      const owned = rows.find((w) => w.claim?.worker === worker && !terminal(w.task));
+      const owned = rows.find((w) => w.claim?.worker === worker && !w.claim.deferred && !terminal(w.task));
       if (owned && id && id !== owned.task.id) throw new WorkError("worker_already_has_work");
       // The public Host runtime contract cannot apply per-task execution overrides.
       // Leave these tasks for a worker that implements the server-authored policy.
@@ -100,12 +103,14 @@ export class CliWork implements ExecutionBackend {
       return this.view(work);
     });
   }
-  update(claimId: string, action: WorkAction, text: string, data?: Record<string, unknown>, worker?: string) {
+  update(claimId: string, action: WorkAction, text: string, data?: Record<string, unknown>, worker?: string, attachments: Attachment[] = []) {
     return this.store.transaction(() => {
       const receipt = this.store.get<Receipt>("cli_claims", claimId);
       if (!receipt) throw new WorkError("claim_not_found", 404);
       if (worker && receipt.worker !== worker) throw new WorkError("claim_belongs_to_another_instance", 403);
-      const actionId = digest({ action, text, data });
+      attachments = attachmentsSchema.parse(attachments);
+      if (attachments.length && action !== "reply") throw new WorkError("attachments_require_reply", 400);
+      const actionId = digest({ action, text, data, ...(attachments.length ? { attachments: attachmentMetadata(attachments) } : {}) });
       if (Object.hasOwn(receipt.actions, actionId)) return receipt.actions[actionId];
       const work = this.load(receipt.workId);
       if (work.claim?.id !== claimId || terminal(work.task)) throw new WorkError("claim_closed");
@@ -114,18 +119,29 @@ export class CliWork implements ExecutionBackend {
         throw new WorkError("cancellation_requested_stop_and_acknowledge");
       }
       if (action === "cancelled" && !work.cancelRequested) throw new WorkError("cancellation_not_requested");
-      const state = { progress: TaskState.TASK_STATE_WORKING, reply: TaskState.TASK_STATE_COMPLETED,
+      const state = { progress: TaskState.TASK_STATE_WORKING, defer: TaskState.TASK_STATE_WORKING, reply: TaskState.TASK_STATE_COMPLETED,
         "need-input": TaskState.TASK_STATE_INPUT_REQUIRED, fail: TaskState.TASK_STATE_FAILED, cancelled: TaskState.TASK_STATE_CANCELED }[action];
-      if (action === "reply") {
-        work.task.artifacts = [Artifact.fromJSON({ artifactId: digest(claimId), name: "result",
-          parts: [...(text ? [{ text }] : []), ...(data ? [{ data }] : [])] })];
+      if (attachments.length && (!work.source.sender.startsWith("visitor:") || !work.source.room.startsWith("channel:"))) {
+        throw new WorkError("attachments_require_channel_work", 400);
       }
-      if (action !== "progress") delete work.claim;
+      if (action === "reply") {
+        if (attachments.length) this.store.set("cli_reply_attachments", work.task.id, attachments);
+        work.task.artifacts = [Artifact.fromJSON({ artifactId: digest(claimId), name: "result",
+          parts: [...(text ? [{ text }] : []), ...(data ? [{ data }] : []), ...(attachments.length ? [{ data: { channelAttachments: attachmentMetadata(attachments) } }] : [])] })];
+      }
+      // Retain the original claim and revision for authenticated late completion,
+      // but release this instance's foreground slot. The A2A task remains working.
+      if (action === "defer") work.claim.deferred = true;
+      if (action !== "progress" && action !== "defer") delete work.claim;
       this.change(work, state, action === "reply" ? "Completed." : text);
       const result = this.view(work);
       receipt.actions[actionId] = result; this.store.set("cli_claims", claimId, receipt);
       return result;
     });
+  }
+  outputAttachments(taskId: string): Attachment[] {
+    const task = this.load(taskId).task;
+    return task.status?.state === TaskState.TASK_STATE_COMPLETED ? this.store.get<Attachment[]>("cli_reply_attachments", taskId) ?? [] : [];
   }
   async cancel(id: string): Promise<Task> {
     return this.store.transaction(() => {
@@ -167,9 +183,11 @@ export class CliWork implements ExecutionBackend {
   private view(work: Work) {
     return { id: work.task.id, from: work.source.sender, conversation: work.source.room, contextId: work.task.contextId,
       ...(work.source.execution ? { execution: work.source.execution } : {}),
+      ...(work.source.documents ? { documents: work.source.documents } : {}),
       status: (TaskState[work.task.status?.state ?? 0] ?? "TASK_STATE_UNSPECIFIED").replace("TASK_STATE_", "").toLowerCase(),
       needsApproval: !this.allowed(work), cancelRequested: Boolean(work.cancelRequested),
       claimId: work.claim?.id ?? null, worker: work.claim?.worker ?? null,
+      deferred: Boolean(work.claim?.deferred),
       newInput: Boolean(work.claim && work.claim.revision !== work.revision),
       input: Message.toJSON(work.input),
       history: work.task.history.map((m) => Message.toJSON(m)),

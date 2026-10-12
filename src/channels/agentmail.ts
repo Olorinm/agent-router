@@ -1,5 +1,7 @@
+import { attachmentsSchema, type Attachment } from "../attachments.js";
 import { z } from "zod";
 import { ChannelError, type ChannelAdapter, type ChannelMessage } from "./types.js";
+import { SafeHttpClient } from "../safe-fetch.js";
 
 const attachmentSchema = z.object({ filename: z.string().max(1000).optional(), attachment_id: z.string(), size: z.number().optional() });
 const mailSchema = z.object({
@@ -22,9 +24,10 @@ export function mailbox(value: string): string | undefined {
 /** AgentMail owns mail transport and domain screening, not Router permissions. */
 export class AgentMailAdapter implements ChannelAdapter {
   private readonly lifetime = new AbortController();
-  close(): void { this.lifetime.abort(); }
+  private readonly downloads = new SafeHttpClient({ allowHttp: false, allowPrivate: false });
+  close(): void { this.lifetime.abort(); void this.downloads.close(); }
   constructor(private readonly options: {
-    inbox: string; apiKey: string; known?: (messageId: string) => boolean; fetch?: typeof fetch;
+    inbox: string; apiKey: string; fullInput?: boolean; known?: (messageId: string) => boolean; fetch?: typeof fetch;
   }) {
     if (mailbox(options.inbox) !== options.inbox) throw new Error("agentmail_inbox_must_be_canonical_address");
     if (!options.apiKey || /\s/.test(options.apiKey)) throw new Error("agentmail_api_key_invalid");
@@ -60,6 +63,49 @@ export class AgentMailAdapter implements ChannelAdapter {
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; }
     catch { throw new ChannelError("agentmail_invalid_response", true); }
   }
+  private async documents(mail: z.infer<typeof mailSchema>, body: string) {
+    const documents: Array<{ name: string; text: string }> = [];
+    const notes: string[] = [];
+    let remaining = 1_000_000;
+    if (Buffer.byteLength(body) <= remaining) {
+      documents.push({ name: "mail-body.txt", text: body }); remaining -= Buffer.byteLength(body);
+    } else notes.push("正文超过 1 MB，未读取；请要求用户发送明确的章节或片段，不能根据预览开始制作。");
+    for (const attachment of mail.attachments.slice(0, 10)) {
+      const name = attachment.filename ?? attachment.attachment_id;
+      if (!/\.(txt|md|markdown)$/i.test(name) || (attachment.size ?? 0) > remaining) {
+        notes.push(`附件 ${name} 未读取：仅支持总计 1 MB 以内的 UTF-8 TXT/Markdown。`); continue;
+      }
+      const meta = z.object({ attachment_id: z.string(), download_url: z.string().url(), size: z.number().int().nonnegative() })
+        .safeParse(await this.request(`messages/${encodeURIComponent(mail.message_id)}/attachments/${encodeURIComponent(attachment.attachment_id)}`));
+      if (!meta.success || meta.data.attachment_id !== attachment.attachment_id) throw new ChannelError("agentmail_invalid_attachment", true);
+      if (meta.data.size > remaining) { notes.push(`附件 ${name} 超过本次读取上限，未读取。`); continue; }
+      // No mailbox credentials are forwarded to the download URL. Pin public DNS
+      // through SafeHttpClient; a provider URL cannot reach the internal network.
+      const url = new URL(meta.data.download_url);
+      if (url.protocol !== "https:" || url.username || url.password) throw new ChannelError("agentmail_invalid_attachment_url", true);
+      const response = await (this.options.fetch ?? this.downloads.fetch)(url, {
+        redirect: "error", signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(20_000)]),
+      });
+      if (!response.ok) { await response.body?.cancel(); throw new ChannelError("agentmail_attachment_download_failed"); }
+      const reader = response.body?.getReader();
+      if (!reader) throw new ChannelError("agentmail_empty_attachment");
+      const chunks: Uint8Array[] = []; let size = 0;
+      for (;;) {
+        const part = await reader.read(); if (part.done) break;
+        size += part.value.length;
+        if (size > remaining) { await reader.cancel(); break; }
+        chunks.push(part.value);
+      }
+      if (size > remaining) { notes.push(`附件 ${name} 超过本次读取上限，未读取。`); continue; }
+      try {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+        if (text.includes("\0")) throw new Error("binary");
+        documents.push({ name, text }); remaining -= size;
+      } catch { notes.push(`附件 ${name} 不是 UTF-8 文本，未读取。`); }
+    }
+    if (mail.attachments.length > 10) notes.push("超过 10 个附件的部分未读取，请要求用户缩小输入范围。");
+    return { documents, notes };
+  }
   async poll(cursor: string | undefined, startedAt: string) {
     const query = new URLSearchParams({ limit: "100", ascending: "true", labels: "received",
       include_spam: "false", include_blocked: "false", include_unauthenticated: "false", include_trash: "false" });
@@ -85,23 +131,32 @@ export class AgentMailAdapter implements ChannelAdapter {
       const body = mail.extracted_text?.trim() || mail.text?.trim();
       const attachments = mail.attachments.length ? `\n\n[附件尚未读取，只列出文件名：${mail.attachments.map(a => a.filename ?? a.attachment_id).join("；")}]` : "";
       const text = `邮件主题：${mail.subject ?? "（无主题）"}\n发件人：${sender}\n\n${body ?? "[邮件没有可读取的纯文本正文，请回复要求发送文字内容。]"}${attachments}`;
+      const full = this.options.fullInput && mail.authentication_results?.dmarc === "pass"
+        ? await this.documents(mail, body ?? "") : undefined;
       messages.push({ id: mail.message_id, conversation: mail.thread_id, subject: sender, subjectDomain: sender.split("@")[1]!,
         // Use the receiver's structured result. An Authentication-Results header
         // in the message body/headers cannot assert trust. DMARC validates the
         // sender domain, not the person's real-world or cross-channel identity.
         authentication: mail.authentication_results?.dmarc === "pass" ? "provider-screened" : "unverified", receivedAt: mail.created_at,
-        text: text.length > 22000 ? `${text.slice(0, 22000)}\n[邮件过长，内容已截断；请要求发件人拆分后继续。]` : text });
+        ...(full ? { documents: full.documents } : {}),
+        text: full
+          ? `邮件主题：${mail.subject ?? "（无主题）"}\n正文预览：${(body ?? "").slice(0, 1000)}\n完整输入在工作区 input 文档中，必须读取后处理。\n${full.notes.join("\n")}`
+          : text.length > 22000 ? `${text.slice(0, 22000)}\n[邮件过长，内容已截断；请要求发件人拆分后继续。]` : text });
     }
     const next = parsed.data.next_page_token ?? "";
     if (next && next === cursor) throw new ChannelError("agentmail_repeated_page_cursor", true);
     return { messages: messages.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt)), cursor: next, more: Boolean(next) };
   }
-  async reply(message: ChannelMessage, text: string, deliveryId: string): Promise<string> {
+  async reply(message: ChannelMessage, text: string, deliveryId: string, attachments: Attachment[] = []): Promise<string> {
     if (mailbox(message.subject) !== message.subject) throw new ChannelError("agentmail_invalid_recipient", true);
-    const result = replySchema.safeParse(await this.request(`messages/${encodeURIComponent(message.id)}/reply`, {
+    const files = attachmentsSchema.parse(attachments);
+    const body = {
       to: [message.subject], cc: [], bcc: [], reply_all: false, text,
+      ...(files.length ? { attachments: files.map(a => ({ filename: a.filename, content_type: a.contentType, content: a.content })) } : {}),
       headers: { "Auto-Submitted": "auto-replied", "X-Agent-Router-Entry": "agentmail" },
-    }, deliveryId));
+    };
+    if (Buffer.byteLength(JSON.stringify(body)) > 6_000_000) throw new ChannelError("agentmail_request_too_large", true);
+    const result = replySchema.safeParse(await this.request(`messages/${encodeURIComponent(message.id)}/reply`, body, deliveryId));
     if (!result.success) throw new ChannelError("agentmail_invalid_reply_receipt", true);
     if (result.data.thread_id !== message.conversation) throw new ChannelError("agentmail_reply_thread_mismatch", true);
     return result.data.message_id;
