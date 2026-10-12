@@ -8,6 +8,8 @@
     "src/api/types.ts": "9e321e1a79bd7ec385b8e2b9695f1d87507282ff33f9cfdafbe4e33aea5387ac",
     "src/auth/login-qr.ts": "1347ceff3da2fc0df82aefff684be2c12870778d026b1cbe063226dfa9bea0c4",
     "src/util/redact.ts": "c0b1f718d81f78551871e06a1e91a0dd19a764544f1e61720a000cf705cd0df3",
+    "src/cdn/aes-ecb.ts": "3aff4fbef828f085db0e29a146ae76aebf338308c676c9c0a68ca4d22264e93a",
+    "src/cdn/cdn-url.ts": "d1f1e9eed76e8adb97c238a4d9967bea35d5460d2cb9bc3113a5ea1459b42646",
     "LICENSE": "7f1e8cf099cf03de7c775e33e97e3c950c3a56a9616bb4de6b14d3c911bc5573"
   }
 }

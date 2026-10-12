@@ -23,6 +23,7 @@ const root = await mkdtemp(join(tmpdir(), "router-host-verify-"));
 const owner = "@owner:example.test", token = "fixture-owner-token-00000000000000";
 let host, service, server, toolStore;
 const sent = [];
+const imageBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 255]);
 try {
   const productRuntime = { id: "product-fixture", kernel: "fixture", cwd: root, configurationKey: "product-fixture-v1", close() {},
     async *run(request) {
@@ -47,6 +48,7 @@ try {
       sync: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); return { next_batch: "idle" }; },
       state: async () => [agent.matrixId, owner].map((id) => ({ type: "m.room.member", state_key: id, content: { membership: "join" } })),
       history: async () => ({ events: [] }), createRoom: async () => "!room:example.test", join: async () => {}, stop: () => {},
+      media: { read: async (url) => { assert.equal(url, "mxc://example.test/image"); return imageBytes; }, upload: async () => "mxc://example.test/upload" },
       send: async (_room, _type, content, txn) => { sent.push({ content, txn }); return `$${txn}`; } }),
     configure: (agent, connector) => {
       const config = channelConfigSchema.parse({ agents: [{ agentId: agent.id, connections: [{ id: "matrix", kind: "matrix" }],
@@ -73,19 +75,23 @@ try {
       assert.ok(Date.now() < deadline, `timed out: ${JSON.stringify(status)}`); await new Promise((resolve) => setTimeout(resolve, 50)); }
   };
   const input = async (id, text) => runtime.connector.acceptSync({ next_batch: id, rooms: { join: { "!room:example.test": { timeline: { events: [
-    { event_id: `$${id}`, sender: owner, type: "m.room.message", origin_server_ts: Date.now() + 1000, content: { msgtype: "m.text", body: text } },
+    { event_id: `$${id}`, sender: owner, type: "m.room.message", origin_server_ts: Date.now() + 1000, content: typeof text === "string" ? { msgtype: "m.text", body: text } : text },
   ] } } } } });
   assert.equal((await api("", undefined, "other")).status, 404);
-  await input("first", "first turn"); const first = await until((status) => status.outbox.filter((row) => row.state === "accepted").length === 1);
-  await input("second", "second turn"); const second = await until((status) => status.outbox.filter((row) => row.state === "accepted").length === 2);
+  await input("first", "first turn"); const first = await until((status) => status.host.runs.length === 1 && status.host.runs[0].phase === "finished" && status.outbox.every((row) => row.state === "accepted"));
+  await input("second", "second turn"); const second = await until((status) => status.host.runs.length === 2 && status.host.runs[1].phase === "finished" && status.outbox.every((row) => row.state === "accepted"));
   assert.equal(first.host.runs[0].sessionId, second.host.runs[1].sessionId);
-  assert.ok(sent[0].content.body.includes("first turn")); assert.ok(sent[1].content.body.includes("second turn"));
+  assert.ok(sent.some((message) => message.content.body.includes("first turn"))); assert.ok(sent.some((message) => message.content.body.includes("second turn")));
   await input("question", "question"); const pending = await until((status) => status.host.calls.length === 1);
   assert.equal(pending.host.calls[0].name, "item/tool/requestUserInput");
-  const result = { answers: { color: { answers: ["Blue"] } } };
-  assert.equal((await api(`/calls/${pending.host.calls[0].id}/result`, { result })).status, 200);
-  await until((status) => status.outbox.filter((row) => row.state === "accepted").length === 3);
-  assert.ok(sent[2].content.body.includes('"Blue"'));
+  await until(() => sent.some((message) => message.content.body.includes("Which color?")));
+  await input("question-answer", "Blue");
+  await until((status) => status.host.runs[2].phase === "finished" && status.outbox.every((row) => row.state === "accepted"));
+  assert.ok(sent.some((message) => message.content.body.includes('"Blue"')));
+  assert.equal((await api()).value.host.runs.length, 3); // The answer resumes the native turn.
+  await input("image-only", { msgtype: "m.image", body: "photo.png", url: "mxc://example.test/image", info: { mimetype: "image/png" } });
+  await until((status) => status.host.runs.length === 4 && status.host.runs[3].phase === "finished" && status.outbox.every((row) => row.state === "accepted"));
+  assert.ok(sent.some((message) => message.content.body.includes(`data:image/png;base64,${imageBytes.toString("base64")}`)));
   const accountDirectory = join(root, "feishu"); privateFile(join(accountDirectory, "app-secret"), "fixture-app-secret");
   // Local status has no --verify: validate the pinned CLI's real config/JSON contract without platform API calls.
   const formatAccount = new FeishuAccount({ version: 1, appId: "cli_router_format_fixture", appSecretFile: "app-secret", domain: "feishu", ownerOpenId: "ou_fixture" }, join(root, "cli-format"));
@@ -116,7 +122,7 @@ try {
   assert.equal(commands, 1); assert.ok(replies[0].includes("meeting fixture")); assert.equal(worker.status().tools[0].phase, "completed");
   await core.stop();
   process.stdout.write(JSON.stringify({ status: "passed", nativeKernel: "Codex protocol fixture", personalTools: "public Host tool broker and isolated CLI fixture",
-    checks: ["managed service composition", "private Matrix input and reply", "stable Host session", "native question reply", "owner boundary", "Feishu product tool HTTP round trip"] }) + "\n");
+    checks: ["managed service composition", "private Matrix input and reply", "stable Host session", "native question answered in chat", "image-only bytes reach native Codex via public HTTP", "owner boundary", "Feishu product tool HTTP round trip"] }) + "\n");
 } finally {
   if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
   await service?.close(); await host?.close(); toolStore?.close(); await rm(root, { recursive: true, force: true });

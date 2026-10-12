@@ -1,3 +1,5 @@
+import { interaction } from "../communication/interaction.js";
+import type { CommunicationCore, InboxRecord } from "../communication/core.js";
 import { Message } from "@a2a-js/sdk";
 import { ChannelHttpError } from "../channels/http.js";
 import { DurableStore } from "../communication/store.js";
@@ -19,7 +21,7 @@ export class HostWorker {
   lastError = "";
   constructor(readonly agentId: string, readonly instanceId: string, readonly store: DurableStore, readonly work: CliWork,
     readonly host: HostPort, readonly runtimeId: string, readonly instructions = "", private readonly validate: () => void = () => {},
-    private readonly saveResult: (taskId: string, answer: string) => boolean = () => false, readonly tools?: HostTools) {
+    private readonly saveResult: (taskId: string, answer: string) => boolean = () => false, readonly tools?: HostTools, readonly communication?: CommunicationCore) {
     const scope = digest({ agentId, instanceId, runtimeId, instructions, host: host.identity ?? "embedded",
       ...(tools ? { tools: tools.definitions, toolInstructions: tools.instructions } : {}) });
     const prior = store.get<string>("communication_host", "scope");
@@ -47,6 +49,9 @@ export class HostWorker {
           if ((await this.host.get(value.runId)).status === "running") return;
           this.store.set("communication_runs", id, { ...value, phase: "finished" });
         }
+        let attachments = undefined as import("../communication/types.js").MediaContent[] | undefined;
+        try { attachments = await this.communication?.attachments(claim.id); }
+        catch (error) { this.work.update(claim.claimId, "fail", `附件读取失败：${error instanceof Error && /^[a-z_]+$/.test(error.message) ? error.message : "attachment_read_failed"}。请重新发送或检查渠道权限。`, undefined, this.instanceId); return; }
         const input = Message.fromJSON(claim.input).parts.filter((part) => part.content?.$case === "text").map((part) => part.content!.value).join("\n");
         if (!input.trim()) { this.work.update(claim.claimId, "fail", "此执行入口目前需要文字输入。", undefined, this.instanceId); return; }
         const blocked = this.store.entries<RunBinding>("communication_runs").some(({ value }) => value.contextId === claim.contextId && value.phase === "unknown");
@@ -58,6 +63,7 @@ export class HostWorker {
           const withTools = this.tools?.allowed(claim.contextId, claim.id) === true;
           const started = await this.host.start({ sessionId, runtimeId: this.runtimeId,
             instructions: this.instructions + (withTools ? this.tools!.instructions : ""), input,
+            ...(attachments?.length ? { attachments } : {}),
             ...(withTools ? { tools: this.tools!.definitions } : {}),
             context: { agentId: this.agentId, conversationId: claim.contextId, source: claim.from } });
           if (started.sessionId !== sessionId || started.runtimeId !== this.runtimeId) throw new Error("host_run_scope_mismatch");
@@ -83,14 +89,17 @@ export class HostWorker {
       if (claim.cancelRequested) await this.host.cancel(binding.runId);
       const result = await this.host.get(binding.runId);
       if (result.sessionId !== binding.sessionId || result.runtimeId !== this.runtimeId) throw new Error("host_run_scope_mismatch");
+      try { await this.observe(binding, result.answer); } catch { this.lastError = "channel_progress_failed"; }
       if (result.status === "running") {
         this.pending = (await this.host.calls(binding.runId)).filter((call) => call.status === "pending");
         if (!claim.cancelRequested && this.tools?.allowed(binding.contextId, binding.taskId)) {
           for (const call of this.pending) if (call.kind === "tool" && this.tools.definitions.some((definition) => definition.name === call.name))
             await this.executeTool(call);
         }
+        if (this.communication) for (const call of this.pending) if (call.kind === "interaction") this.present(binding, call);
         return;
       }
+      for (const { id, value } of this.store.entries<any>("communication_questions")) if (value.call.runId === binding.runId) this.store.set("communication_questions", id, { ...value, closed: true });
       this.pending = [];
       this.validate();
       const current = this.work.inspect(claim.claimId);
@@ -124,6 +133,91 @@ export class HostWorker {
       }
     }
     finally { this.busy = false; }
+  }
+  private async observe(binding: RunBinding, fallback: string) {
+    if (!this.communication || !binding.runId) return;
+    const prior = this.store.get<{ cursor: number; text: string }>("communication_run_events", binding.runId) ?? { cursor: 0, text: "" };
+    let { cursor, text } = prior;
+    if (this.host.events) {
+      let pages = 0;
+      for (;;) {
+        const page = await this.host.events(binding.runId, cursor);
+        if (page.historyTruncated) text = fallback;
+        for (const { event } of page.events) {
+          if (event.type === "assistant.delta" && !page.historyTruncated) text += String(event.text ?? "");
+          if (event.type === "model.response") text = String(event.text ?? "");
+        }
+        cursor = page.cursor;
+        if (!page.hasMore || ++pages >= 10) break;
+      }
+    } else if (fallback) text = fallback;
+    if (text && text !== prior.text) await this.communication.progress(binding.taskId, text);
+    this.store.set("communication_run_events", binding.runId, { cursor, text });
+  }
+  private present(binding: RunBinding, call: HostCall) {
+    const core = this.communication!, input = core.input(binding.taskId); if (!input) return;
+    if (this.store.get("communication_questions", call.id)) return;
+    const view = interaction(call);
+    const buttons = view.choices.map((choice, index) => {
+      const token = digest(key(call.id, String(index))).slice(0, 32);
+      this.store.set("communication_actions", token, { callId: call.id, result: choice.result });
+      return { label: choice.label, token };
+    });
+    const nativeButtons = core.capabilities(binding.taskId)?.buttons;
+    const choices = buttons.length && !nativeButtons ? "\n" + buttons.map((button, index) => `${index + 1}. ${button.label}`).join("\n") : "";
+    const instructions = view.sensitive ? "" : buttons.length ? nativeButtons ? "\n可点击选项，或直接回复选项名称/编号。" : "\n请回复选项名称或编号。" : "\n请直接回复答案；多个问题请用 JSON 按问题填写。";
+    const text = view.text + choices + instructions;
+    const noticeId = core.notice(input, text, `question:${call.id}`, { text, ...(nativeButtons ? { buttons } : {}) });
+    this.store.set("communication_questions", call.id, { call, taskId: binding.taskId, conversationId: binding.contextId, source: input.source, connectionId: input.connectionId, noticeId, closed: false });
+  }
+  async handleInput(input: InboxRecord): Promise<boolean> {
+    const core = this.communication; if (!core) return false;
+    const text = input.source.text.trim();
+    const receipt = this.store.get<{ runId: string; callId: string; result: unknown; complete: boolean }>("communication_control_receipts", input.id);
+    if (receipt) {
+      if (!receipt.complete) { await this.host.resolve(receipt.runId, receipt.callId, receipt.result); this.store.set("communication_control_receipts", input.id, { ...receipt, complete: true }); }
+      const question = this.store.get<any>("communication_questions", receipt.callId);
+      if (question) this.store.set("communication_questions", receipt.callId, { ...question, closed: true });
+      core.notice(input, "已收到回答，继续执行。", "answer");
+      return true;
+    }
+    const active = this.store.entries<RunBinding>("communication_runs").map(({ value }) => value).reverse().find((item) => item.contextId === input.conversationId && item.phase === "running");
+    if (/^(\/(?:cancel|stop)(?:@\w+)?|停止|停一下|取消|取消当前任务)$/i.test(text)) {
+      const task = active?.taskId ?? this.work.list().find((item) => item.contextId === input.conversationId)?.id;
+      const original = task ? core.input(task) : undefined;
+      if (original && original.source.sender !== input.source.sender && !(core.isOwnerInput(input) && core.isOwnerInput(original))) { core.notice(input, "这轮任务属于另一位发送者。", "control-scope"); return true; }
+      if (task) await this.work.cancel(task);
+      core.notice(input, task ? "正在停止当前任务。" : "当前没有正在执行的任务。", "cancel"); return true;
+    }
+    if (/^\/steer\s+/i.test(text)) {
+      const original = active ? core.input(active.taskId) : undefined;
+      if (original && original.source.sender !== input.source.sender && !(core.isOwnerInput(input) && core.isOwnerInput(original))) { core.notice(input, "这轮任务属于另一位发送者。", "control-scope"); return true; }
+      if (!active?.runId || !this.host.steer) core.notice(input, "当前运行无法接收即时补充。", "steer-unavailable");
+      else { try { await this.host.steer(active.runId, text.replace(/^\/steer\s+/i, "")); core.notice(input, "补充内容已交给当前运行。", "steer"); } catch { core.notice(input, "所选执行内核不支持即时补充；请停止后继续对话。", "steer-unavailable"); } }
+      return true;
+    }
+    let action: { callId: string; result: unknown } | undefined;
+    if (input.source.action) action = this.store.get("communication_actions", input.source.action.token);
+    const candidates = this.store.entries<any>("communication_questions").map(({ value }) => value).filter((item) =>
+      !item.closed && item.conversationId === input.conversationId && (item.connectionId === input.connectionId && item.source.sender === input.source.sender || core.isOwnerInput(input) && core.isOwnerTask(item.conversationId, item.taskId)) &&
+      (!input.source.quoted?.messageId || this.store.get<any>("communication_outbox", item.noticeId)?.externalId?.split(",").includes(input.source.quoted.messageId)) &&
+      (!action || item.call.id === action.callId) && Date.parse(item.call.deadlineAt) > Date.now());
+    if (!candidates.length) return false;
+    if (candidates.length !== 1) { core.notice(input, "有多个问题等待回答，请点击对应问题的选项。", "ambiguous-question"); return true; }
+    const question = candidates[0], call: HostCall = question.call;
+    if (!active?.runId || active.runId !== call.runId) return false;
+    const live = (await this.host.calls(call.runId)).find((item) => item.id === call.id && item.status === "pending");
+    if (!live) { this.store.set("communication_questions", call.id, { ...question, closed: true }); return Boolean(input.source.action); }
+    if (interaction(call).sensitive) { core.notice(input, "请在 Host 原生交互入口完成敏感输入。", "native-sensitive-input"); return true; }
+    let result;
+    try { result = action ? action.result : interaction(call).answer(text.replace(/^\/answer\s+/i, "")); }
+    catch { core.notice(input, "答案格式不正确，请根据问题中的选项或填写说明重试。", "invalid-answer"); return true; }
+    const planned = { runId: call.runId, callId: call.id, result, complete: false };
+    this.store.set("communication_control_receipts", input.id, planned);
+    await this.host.resolve(call.runId, call.id, result);
+    this.store.set("communication_control_receipts", input.id, { ...planned, complete: true });
+    this.store.set("communication_questions", call.id, { ...question, closed: true });
+    core.notice(input, "已收到回答，继续执行。", "answer"); return true;
   }
   status() { return { instanceId: this.instanceId, runtimeId: this.runtimeId, error: this.lastError || null,
     runs: this.store.entries<RunBinding>("communication_runs").slice(-100).map(({ value }) => ({ claimId: value.claimId, taskId: value.taskId,

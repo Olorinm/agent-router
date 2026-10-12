@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ServiceHttp } from "../channels/http.js";
 import type { HostTool } from "./tools.js";
+import type { MediaContent } from "../communication/types.js";
 
 const run = z.object({ id: z.string().min(1), sessionId: z.string().min(1), runtimeId: z.string().min(1),
   status: z.enum(["running", "completed", "cancelled", "failed"]), answer: z.string(),
@@ -10,11 +11,15 @@ export interface HostCall { id: string; runId: string; kind: string; name: strin
 export interface HostPort {
   identity?: string;
   connect(): Promise<void>;
-  start(input: { sessionId: string; runtimeId: string; instructions: string; input: string; context?: unknown; tools?: HostTool[] }): Promise<HostRun>;
+  start(input: { sessionId: string; runtimeId: string; instructions: string; input: string; context?: unknown; tools?: HostTool[]; attachments?: MediaContent[] }): Promise<HostRun>;
   get(id: string): Promise<HostRun>;
   cancel(id: string): Promise<void>;
   calls(id: string): Promise<HostCall[]>;
   resolve(id: string, callId: string, result: unknown): Promise<void>;
+  events?(id: string, after: number): Promise<{ events: Array<{ sequence: number; event: Record<string, unknown> }>; cursor: number; hasMore: boolean; historyTruncated: boolean }>;
+  steer?(id: string, input: string): Promise<void>;
+  readFile?(sessionId: string, path: string): Promise<{ content: string; encoding: string }>;
+  writeFile?(sessionId: string, path: string, content: string): Promise<void>;
 }
 
 /** Uses Agent Host's public HTTP v1 contract; no native runtime packages in the Router process. */
@@ -35,4 +40,8 @@ export class HttpAgentHost implements HostPort {
   async resolve(id: string, callId: string, result: unknown): Promise<void> {
     await this.http.request(`/v1/runs/${encodeURIComponent(id)}/calls/${encodeURIComponent(callId)}/result`, { body: { result } });
   }
+  async events(id: string, after: number) { return this.http.request(`/v1/runs/${encodeURIComponent(id)}/events?after=${after}&limit=200`); }
+  async steer(id: string, input: string) { await this.http.request(`/v1/runs/${encodeURIComponent(id)}/steer`, { body: { input } }); }
+  async readFile(sessionId: string, path: string) { return this.http.request(`/v1/sessions/${encodeURIComponent(sessionId)}/files?encoding=base64&path=${encodeURIComponent(path)}`); }
+  async writeFile(sessionId: string, path: string, content: string) { await this.http.request(`/v1/sessions/${encodeURIComponent(sessionId)}/files`, { body: { path, content, encoding: "base64" } }); }
 }

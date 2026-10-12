@@ -1,6 +1,8 @@
 import { createClient, Direction, Method, Preset, MatrixError, type MatrixClient } from "matrix-js-sdk";
 import { ROOM_EVENT, sized, type RoomEvent } from "./protocol.js";
 
+import { download } from "../communication/media.js";
+
 export interface SyncBatch {
   next_batch: string;
   account_data?: { events: AccountEvent[] };
@@ -24,6 +26,9 @@ export interface MatrixDataTransport {
 }
 export interface MatrixTransport {
   readonly data?: MatrixDataTransport;
+  readonly media?: { read(url: string): Promise<Buffer>; upload(bytes: Buffer, name: string, mediaType: string): Promise<string> };
+  typing?(room: string): Promise<void>;
+  redact?(room: string, eventId: string): Promise<void>;
   identity(): Promise<string>;
   sync(since: string | undefined, timeout: number): Promise<SyncBatch>;
   history(room: string, from: string | undefined): Promise<{ events: RoomEvent[]; end?: string }>;
@@ -38,8 +43,16 @@ export interface MatrixTransport {
 export class SdkMatrixTransport implements MatrixTransport {
   readonly client: MatrixClient;
   readonly data: MatrixDataTransport;
+  readonly media: NonNullable<MatrixTransport["media"]>;
   constructor(baseUrl: string, accessToken: string, userId: string, client?: MatrixClient) {
     this.client = client ?? createClient({ baseUrl, accessToken, userId });
+    this.media = {
+      read: async (url) => {
+        const parsed = new URL(url); if (parsed.protocol !== "mxc:" || parsed.username || parsed.password || !parsed.hostname || parsed.pathname === "/") throw new Error("matrix_media_uri_invalid");
+        return download(`${baseUrl.replace(/\/$/, "")}/_matrix/client/v1/media/download/${encodeURIComponent(parsed.host)}/${encodeURIComponent(parsed.pathname.slice(1))}`, { headers: { authorization: `Bearer ${accessToken}` } });
+      },
+      upload: async (bytes, name, mediaType) => (await this.client.uploadContent(new Blob([new Uint8Array(bytes)], { type: mediaType }), { name, type: mediaType })).content_uri,
+    };
     const accountPath = (type: string) => `/user/${encodeURIComponent(userId)}/account_data/${encodeURIComponent(type)}`;
     this.data = {
       get: async (type) => {
@@ -82,5 +95,7 @@ export class SdkMatrixTransport implements MatrixTransport {
       `/rooms/${encodeURIComponent(room)}/send/${encodeURIComponent(type)}/${encodeURIComponent(txnId)}`, undefined, sized(body));
     return result.event_id;
   }
+  async typing(room: string) { await this.client.sendTyping(room, true, 5000); }
+  async redact(room: string, eventId: string) { await this.client.redactEvent(room, eventId); }
   stop(): void { this.client.http.abort(); this.client.stopClient(); }
 }

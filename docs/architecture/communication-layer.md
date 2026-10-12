@@ -1,8 +1,8 @@
 # 通信层逻辑架构
 
-状态：文字对话第一版已实现，真实渠道联调待完成。日期：2026-10-10。
+状态：多渠道媒体与交互链路已实现，真实账号联调待完成。日期：2026-10-12。
 
-本文确定多渠道通信的模块边界。当前源码已接入渠道中立核心、五个渠道适配器和 Agent Host 执行桥，复用现有托管 Agent 与工作队列。配置与实际能力见[接入指南](../guides/personal-channels.md)；完整附件、流式输出等能力仍属于后续扩展。
+本文确定多渠道通信的模块边界。当前源码已接入渠道中立核心、五个渠道适配器和 Agent Host 执行桥，复用现有托管 Agent 与工作队列。配置与实际能力见[接入指南](../guides/personal-channels.md)；渠道能力与内核能力分别声明。
 
 ## 1. 总体决定
 
@@ -199,10 +199,10 @@ Grove Mail 的 WebSocket 是实时通知，断线恢复仍需持久化事件 API
 | [Matrix Connector](../../src/matrix/connector.ts)、[Store](../../src/communication/store.ts) | 收发状态事务、稳定发送键、游标、SQLite 存储原语 | 通用 Store 已抽到通信目录，Matrix 保留兼容导出；普通聊天 hook 与原游标共用事务 |
 | [工作队列与认领](../../src/matrix/cli-work.ts) | 工作状态、修订、认领、结果收据、取消和上下文串行 | 输入来源改为渠道中立引用，执行绑定以逻辑会话为键 |
 | [Codex worker](../../examples/codex-worker/worker.mjs) | Router 领取与回传的运行方式、执行账本经验 | 增加 Host worker，使用 Host 公共接口承接内核，兼容现有 worker |
-| [Grove Mail 事件](../../../grove-mail/docs/events-webhooks.md)、[发送实现](../../../grove-mail/src/sending.ts) | 事件回放、webhook、邮箱作用域、幂等发送、回复与不确定状态 | 新增 Router 邮件适配器，保存游标和邮箱到 Agent 的绑定 |
-| [Agent Host 公共边界](../../../agent-host/docs/scope.md)、[HTTP 服务](../../../agent-host/docs/http-service.md) | 内核集成、原生会话绑定、运行与输出、取消和恢复 | 新增执行桥和绑定账本；Host 不承担渠道与联系人业务 |
+| [Grove Mail 适配器](../../src/channels/grove-mail.ts) | 事件回放、webhook、邮箱作用域、幂等发送、回复与不确定状态 | 新增 Router 邮件适配器，保存游标和邮箱到 Agent 的绑定 |
+| [Agent Host 公共边界](https://github.com/Olorinm/agent-host/blob/main/docs/scope.md)、[HTTP 服务](https://github.com/Olorinm/agent-host/blob/main/docs/http-service.md) | 内核集成、原生会话绑定、运行与输出、取消和恢复 | 新增执行桥和绑定账本；Host 不承担渠道与联系人业务 |
 
-当前已实现文字对话闭环：显式配置的聊天入口进入统一队列，由固定 Host runtime 执行，最终结果回复原渠道。未配置个人聊天的 Agent 保持原 `say` / `send` 行为。协议测试通过不等于平台账号已经上线，真实联调仍需要渠道凭据和可用的 Host runtime。
+当前已实现文字、媒体与原生交互闭环：显式配置的聊天入口进入统一队列，由固定 Host runtime 执行，最终结果回复原渠道。未配置个人聊天的 Agent 保持原 `say` / `send` 行为。协议测试通过不等于平台账号已经上线，真实联调仍需要渠道凭据和可用的 Host runtime。
 
 现有 [Matrix 通信决策](decisions/0002-matrix-communication.md) 和 [Go CLI 决策](decisions/0003-go-cli.md) 继续描述当前实现。本文规划的是增量扩展，保留现有 CLI、A2A 语义、Matrix 原生同步与已有任务状态，不恢复已经退役的自定义 Router 协议。
 
@@ -211,7 +211,7 @@ Grove Mail 的 WebSocket 是实时通知，断线恢复仍需持久化事件 API
 1. 通信核心复用 Router SQLite，按逻辑 Agent 隔离。保留已有 Matrix 状态，不重放历史认领；工作队列和 Store 抽到中立目录，原导入路径兼容。
 2. 执行桥绑定固定 Host runtime 和实例，保存提交、已知 run ID 和结果；执行结果未知时提供人工核对接口，不重复执行。
 3. Matrix、Grove Mail、飞书、Telegram 和微信使用同一收信与回复契约。Matrix 沿用原同步进程，邮件沿用现有服务，其他三者按选定实现接入。
-4. 第一版限文字和最终回复。微信限 iLink 私聊，Matrix 不支持加密房间；流式卡片、附件下载、原生提问的聊天 UI 和独立 worker 发布留待后续。
+4. 附件双向传输、图片原生输入、渠道支持的流式输出、按钮回答、引用和原生控制已接通。微信限 iLink 私聊，Matrix 不支持加密房间；独立 worker 发布留待后续。
 
 当前目录边界：
 

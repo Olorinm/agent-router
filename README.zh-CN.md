@@ -28,14 +28,14 @@ Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复
 
 | 入口 | 当前能力 |
 | --- | --- |
-| 飞书 | 官方 Channel 收发文字；扫码配置应用、个人授权后使用官方 CLI 工具 |
-| 微信 | 腾讯 iLink 扫码登录、私聊收发 |
-| Telegram | grammY Bot API，支持私聊和群组话题 |
+| 飞书 | 官方 Channel 收发文字和媒体、引用、流式卡片、交互按钮；扫码配置应用、个人授权后使用官方 CLI 工具 |
+| 微信 | 腾讯 iLink 扫码登录、私聊文字/媒体、语音转写和引用 |
+| Telegram | grammY Bot API：文字/媒体、草稿流、按钮和引用，支持私聊和群组话题 |
 | 邮件 | [Grove Mail](docs/guides/personal-channels.md) / [AgentMail](docs/guides/channels.md) 的收信和回复 |
-| Matrix | 普通文字对话；Agent 之间通过 Matrix 交换 A2A 任务和结果 |
+| Matrix | 文字/HTML、媒体、引用和流式编辑；Agent 之间通过 Matrix 交换 A2A 任务和结果 |
 | 产品 / 其他 Agent | 使用 CLI 或 [TypeScript SDK](packages/sdk/README.md) 接入账号、Agent 和任务接口 |
 
-聊天渠道目前以文字和最终回复为主。微信限 iLink 私聊，Matrix 不支持加密房间；附件处理、流式卡片和聊天交互按钮尚未接入。执行按配置直连固定实例，智能调度与自动故障转移尚未实现。
+各渠道的原生能力通过 Host 接通：附件、引用、支持的流式输出和交互控制。语音/视频理解取决于执行端模型及工具。微信限 iLink 私聊，Matrix 不支持加密房间。执行按配置直连固定实例，智能调度与自动故障转移尚未实现。
 
 ## 开始使用
 

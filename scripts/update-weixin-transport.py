@@ -27,6 +27,8 @@ files = {
     'src/api/types.ts': 'types.ts',
     'src/auth/login-qr.ts': 'login-qr.ts',
     'src/util/redact.ts': 'redact.ts',
+    'src/cdn/aes-ecb.ts': 'aes-ecb.ts',
+    'src/cdn/cdn-url.ts': 'cdn-url.ts',
     'LICENSE': 'LICENSE',
 }
 manifest = {'package': metadata['name'], 'version': args.version, 'integrity': metadata['dist']['integrity'],

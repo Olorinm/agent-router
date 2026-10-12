@@ -28,14 +28,14 @@ Router manages agent identities, channel connections, communication sessions, ta
 
 | Entry point | Current capabilities |
 | --- | --- |
-| Feishu | Text messages through the official Channel; QR setup for the app and personal authorization for official CLI tools |
-| Weixin (WeChat) | Tencent iLink QR login and private text messages |
-| Telegram | grammY Bot API, with private chats and group topics |
+| Feishu | Text, media, replies, streaming cards and interaction buttons through the official Channel; QR setup for the app and personal authorization for official CLI tools |
+| Weixin (WeChat) | Tencent iLink QR login, private text/media messages, voice transcripts and replies |
+| Telegram | grammY Bot API: text/media, drafts, buttons and replies in private chats and group topics |
 | Email | Incoming messages and replies through [Grove Mail](docs/guides/personal-channels.md) / [AgentMail](docs/guides/channels.md) |
-| Matrix | Plain text conversations; A2A tasks and results exchanged between agents over Matrix |
+| Matrix | Text/HTML, media, replies and streaming edits; A2A tasks and results exchanged between agents over Matrix |
 | Products / other agents | Account, agent, and task APIs through the CLI or [TypeScript SDK](packages/sdk/README.md) |
 
-Chat channels currently focus on text and final replies. Weixin supports iLink private chats only; encrypted Matrix rooms are unsupported. Attachments, streaming cards, and interactive chat buttons are not implemented. Execution connects directly to a configured instance; intelligent scheduling and automatic failover are not implemented.
+Channels preserve their native communication capabilities through the Host: attachments, replies, supported streaming and interaction controls. Voice/video understanding depends on the chosen runtime and its tools. Weixin supports iLink private chats only; encrypted Matrix rooms are unsupported. Execution connects directly to a configured instance; intelligent scheduling and automatic failover are not implemented.
 
 ## Getting started
 

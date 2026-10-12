@@ -26,7 +26,7 @@ export abstract class PollingChannel {
         if (this.controller.signal.aborted) break;
         const permanent = error instanceof ChannelHttpError && [401, 403, 410].includes(error.status);
         this.context.error(error instanceof ChannelHttpError ? error.code : "channel_receive_failed");
-        if (permanent) break; // Expired cursors and credentials require explicit repair, not silent resets.
+        if (permanent) { this.context.disconnected?.(error.code); break; } // Never silently reset expired cursors.
         failures++;
       }
       try { await sleep(failures ? Math.min(30_000, 1000 * 2 ** Math.min(failures, 5)) : 250, undefined, { signal: this.controller.signal }); }

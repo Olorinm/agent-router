@@ -16,6 +16,7 @@ import { HostWorker } from "../execution/host-worker.js";
 import type { ChannelAdapter } from "../communication/types.js";
 import { digest, key } from "../execution/protocol.js";
 import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js";
+import { ChannelTools } from "../communication/tools.js";
 import { FeishuTools } from "../services/feishu/tools.js";
 
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
@@ -27,7 +28,7 @@ const connection = z.discriminatedUnion("kind", [
   z.object({ ...common, kind: z.literal("feishu"), appId: z.string().min(1).optional(), appSecretFile: file.optional(),
     credentialsFile: file.optional(), personalTools: z.boolean().default(false), domain: z.enum(["feishu", "lark"]).default("feishu") }).strict(),
   z.object({ ...common, kind: z.literal("telegram"), botTokenFile: file }).strict(),
-  z.object({ ...common, kind: z.literal("grove-mail"), url: z.url(), inboxId: z.email(), apiKeyFile: file, initialCursor: z.number().int().nonnegative().default(0) }).strict(),
+  z.object({ ...common, kind: z.literal("grove-mail"), url: z.url(), inboxId: z.email(), apiKeyFile: file, initialCursor: z.number().int().nonnegative().default(0), attachmentOrigins: z.array(z.url()).default([]) }).strict(),
   z.object({ ...common, kind: z.literal("weixin"), credentialsFile: file }).strict(),
 ]);
 const agentConfig = z.object({ agentId: z.uuid(), connections: z.array(connection).min(1).max(20),
@@ -38,6 +39,8 @@ export const channelConfigSchema = z.object({ agents: z.array(agentConfig).min(1
   for (const agent of config.agents) {
     if (new Set(agent.connections.map((item) => item.id)).size !== agent.connections.length) context.addIssue({ code: "custom", message: "duplicate_connection_id" });
     if (agent.connections.filter((item) => item.kind === "matrix").length > 1) context.addIssue({ code: "custom", message: "one_matrix_connection_per_agent" });
+    for (const item of agent.connections) if (item.kind === "weixin" && item.groupIds.length)
+      context.addIssue({ code: "custom", message: "weixin_bot_api_supports_private_conversations_only" });
     for (const item of agent.connections) if (item.kind === "feishu") {
       if (item.credentialsFile ? item.appId || item.appSecretFile : !item.appId || !item.appSecretFile)
         context.addIssue({ code: "custom", message: "feishu_credentials_file_or_application_pair_required" });
@@ -102,26 +105,48 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       }
       case "telegram": adapter = new TelegramChannel(secret(directory, definition.botTokenFile)); break;
       case "grove-mail": adapter = new GroveMailChannel(definition.inboxId,
-        new ServiceHttp(definition.url, secret(directory, definition.apiKeyFile)), definition.initialCursor); break;
+        new ServiceHttp(definition.url, secret(directory, definition.apiKeyFile)), definition.initialCursor, definition.attachmentOrigins); break;
       case "weixin": {
         const credentials = loadWeixinCredentials(resolve(directory, definition.credentialsFile));
         adapter = new WeixinChannel(credentials); if (!ownerAddresses.length) ownerAddresses = [credentials.userId]; break;
       }
     }
-    core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds }, adapter);
+    core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds }, adapter, () => {
+      if (definition.kind === "matrix") return adapter;
+      if (definition.kind === "telegram") return new TelegramChannel(secret(directory, definition.botTokenFile));
+      if (definition.kind === "weixin") return new WeixinChannel(loadWeixinCredentials(resolve(directory, definition.credentialsFile)));
+      if (definition.kind === "grove-mail") return new GroveMailChannel(definition.inboxId, new ServiceHttp(definition.url, secret(directory, definition.apiKeyFile)), definition.initialCursor, definition.attachmentOrigins);
+      if (!definition.credentialsFile) return new FeishuChannel({ appId: definition.appId!, appSecret: secret(directory, definition.appSecretFile!), domain: definition.domain, groupIds: definition.groupIds });
+      const loaded = loadFeishuCredentials(resolve(directory, definition.credentialsFile));
+      if (loaded.credentials.ownerOpenId !== ownerAddresses[0]) throw new Error("feishu_owner_binding_mismatch");
+      return new FeishuChannel({ appId: loaded.credentials.appId, appSecret: loaded.appSecret, domain: loaded.credentials.domain, groupIds: definition.groupIds });
+    });
     // Install the synchronous Matrix receipt hook before its first /sync transaction.
     if (adapter.kind === "matrix") await adapter.start(core.context(definition.id));
   }
   let worker: HostWorker | undefined;
   if (config.host) {
     const instance = issue(config.host.instanceName);
+    const host = new HttpAgentHost(new ServiceHttp(config.host.url, secret(directory, config.host.tokenFile)));
+    const channelTools = new ChannelTools(core, host);
     worker = new HostWorker(agent.id, instance.id, connector.store, connector.cli,
-      new HttpAgentHost(new ServiceHttp(config.host.url, secret(directory, config.host.tokenFile))), config.host.runtimeId,
+      host, config.host.runtimeId,
       config.host.instructions, () => { connector.assertLease(); instance.validate(); }, (taskId, answer) => core.saveResult(taskId, answer),
-      personalTools.size ? { definitions: [...personalTools.values()].map((tools) => tools.definition),
-        instructions: "\nUse the Feishu product tool for the owner's calendar, documents and other linked resources. Read its official skills/schema/help before unfamiliar commands. Personal authorization is managed by the communication service; never ask for tokens in chat or change CLI identity/configuration. If authorization is required, tell the owner to complete the connection's authorization flow. Follow official CLI confirmation requirements. Never automatically repeat an operation with an uncertain outcome.\n",
-        allowed: (conversationId, taskId) => core.isOwnerTask(conversationId, taskId),
-        execute: (call) => personalTools.get(call.name)!.execute(call) } : undefined);
+      { definitions: [channelTools.definition, ...[...personalTools.values()].map((tools) => tools.definition)],
+        instructions: "\nUse the channel tool to inspect native communication capabilities and send files or supported native content. Use the Feishu product tool for the owner's calendar, documents and other linked resources. Read its official skills/schema/help before unfamiliar commands. Personal authorization is managed by the communication service; never ask for tokens in chat or change CLI identity/configuration. If authorization is required, tell the owner to complete the connection's authorization flow. Follow official CLI confirmation requirements. Never automatically repeat an operation with an uncertain outcome.\n",
+        allowed: (_conversationId, taskId) => Boolean(core.input(taskId)),
+        execute: async (call) => {
+          if (call.name === channelTools.definition.name) return channelTools.execute(call);
+          const binding = worker!.status().runs.find((run) => run.runId === call.runId);
+          if (!binding || !core.isOwnerTask(binding.conversationId, binding.taskId)) return { success: false, contentItems: [{ type: "inputText", text: "personal_tools_require_owner_conversation" }] };
+          const original = personalTools.get(call.name)!;
+          const tools = new FeishuTools(original.id, original.account, async (_call, item) => {
+            const path = `.agent-host/attachments/${call.runId}/${digest(item.data)}/${item.name.replace(/[^\p{L}\p{N}_.-]/gu, "_")}`;
+            await host.writeFile!(binding.sessionId, path, item.data); return path;
+          });
+          return tools.execute(call);
+        } }, core);
+    core.control = (input) => worker!.handleInput(input);
   }
   const controller = new AbortController();
   let loops: Promise<void>[] = [];
@@ -132,7 +157,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     }
   };
   return {
-    start: async () => { await core.start(); loops = [loop(async () => { await core.dispatch(); await core.flush(); }, 250),
+    start: async () => { await core.start(); loops = [loop(async () => { await core.reconnect(); await core.dispatch(); await core.flush(); }, 250),
       ...(worker ? [loop(() => worker!.tick(), 1000)] : []),
       ...(accounts.size ? [loop(async () => { await Promise.allSettled([...accounts.values()].map((account) => account.pollAuthorization())); }, 5000)] : [])]; },
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },

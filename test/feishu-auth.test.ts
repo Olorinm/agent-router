@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FeishuAccount, privateFile, type CliRunner } from "../src/services/feishu/cli.js";
@@ -127,4 +127,19 @@ describe("official Feishu authorization and tool bridge", () => {
     expect(result.contentItems[0]!.text).toContain("app_scope_not_applied"); expect(result.contentItems[0]!.text).not.toContain("authorizationUrl");
     expect(f.calls.some((c) => c.args.includes("--no-wait"))).toBe(false);
   });
+});
+
+it("keeps official api/event commands available with the linked identity", async () => {
+  const f = fixture(); f.authorize(); const tool = new FeishuTools("feishu", f.account);
+  expect((await tool.execute(call(["api", "--help"]))).success).toBe(true);
+  expect((await tool.execute(call(["event", "--help"]))).success).toBe(true);
+});
+it("transfers downloaded CLI images to Host and returns native image content", async () => {
+  const f = fixture(); f.authorize();
+  writeFileSync(join(f.account.workspace, "photo.png"), Buffer.from([137,80,78,71,13,10,26,10]), { mode: 0o600 });
+  const account = { ...f.account, directory: f.account.directory, workspace: f.account.workspace, status: () => f.account.status(),
+    command: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ data: { saved_path: "photo.png" } }) }) } as unknown as FeishuAccount;
+  const transfer = vi.fn(async () => ".agent-host/attachments/photo.png");
+  const result = await new FeishuTools("feishu", account, transfer).execute(call(["im", "+messages-resources-download"]));
+  expect(transfer).toHaveBeenCalledTimes(1); expect(result.contentItems.some((item) => item.type === "inputImage")).toBe(true);
 });

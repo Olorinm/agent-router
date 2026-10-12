@@ -2,7 +2,7 @@ import { Message, SendMessageRequest, TaskState } from "@a2a-js/sdk";
 import { z } from "zod";
 import { digest, key, terminal } from "../execution/protocol.js";
 import { CliWork } from "../execution/work.js";
-import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute } from "./types.js";
+import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent } from "./types.js";
 import { DurableStore } from "./store.js";
 
 const messageSchema = z.object({
@@ -10,7 +10,11 @@ const messageSchema = z.object({
   scope: z.enum(["direct", "group"]), text: z.string().max(1_000_000),
   groupId: z.string().max(1024).optional(),
   reply: z.object({ target: z.string().min(1).max(1024), messageId: z.string().max(512), data: z.record(z.string(), z.string().max(8192)) }).strict(),
-  attachments: z.array(z.object({ id: z.string().max(1024), name: z.string().max(512), mediaType: z.string().max(100) }).strict()).max(30).optional(),
+  attachments: z.array(z.object({ id: z.string().max(1024), name: z.string().max(512), mediaType: z.string().max(100), kind: z.enum(["image", "audio", "video", "file", "sticker"]).optional(), data: z.record(z.string(), z.unknown()).optional() }).strict()).max(30).optional(),
+  quoted: z.object({ messageId: z.string().optional(), text: z.string().optional() }).strict().optional(),
+  action: z.object({ token: z.string().max(128) }).strict().optional(),
+  event: z.object({ type: z.string().max(100), data: z.record(z.string(), z.unknown()) }).strict().optional(),
+  native: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 export interface ConnectionDefinition {
   id: string;
@@ -29,9 +33,12 @@ export interface InboxRecord {
 export interface OutboxRecord {
   id: string; taskId: string | null; route: ReplyRoute; text: string;
   state: "queued" | "submitting" | "accepted" | "failed" | "uncertain";
+  content?: ChannelContent;
+  originTaskId?: string;
+  final?: boolean;
   attempts: number; nextAt: number; externalId?: string; error?: string;
 }
-interface Connection { definition: ConnectionDefinition; adapter: ChannelAdapter; lastError: string; connected: boolean; }
+interface Connection { definition: ConnectionDefinition; adapter: ChannelAdapter; reload?: () => ChannelAdapter; lastError: string; connected: boolean; failures: number; nextStart: number; }
 
 /** Channel-neutral receipt, conversation mapping and delivery over the existing work ledger. */
 export class CommunicationCore {
@@ -39,15 +46,16 @@ export class CommunicationCore {
   private dispatching = false;
   private flushing = false;
   private lastError = "";
+  control?: (input: InboxRecord) => Promise<boolean>;
   constructor(readonly agentId: string, readonly store: DurableStore, readonly work: CliWork, private readonly validate: () => void = () => {}) {}
 
-  register(definition: ConnectionDefinition, adapter: ChannelAdapter): void {
+  register(definition: ConnectionDefinition, adapter: ChannelAdapter, reload?: () => ChannelAdapter): void {
     if (this.connections.has(definition.id)) throw new Error("duplicate_connection_id");
     const fingerprint = digest({ agentId: this.agentId, kind: adapter.kind, ...definition });
     const existing = this.store.get<{ kind: string; agentId: string }>("communication_connections", definition.id);
     if (existing && (existing.kind !== adapter.kind || existing.agentId !== this.agentId)) throw new Error("connection_identity_changed");
     this.store.set("communication_connections", definition.id, { kind: adapter.kind, agentId: this.agentId, fingerprint });
-    this.connections.set(definition.id, { definition, adapter, lastError: "", connected: false });
+    this.connections.set(definition.id, { definition, adapter, ...(reload ? { reload } : {}), lastError: "", connected: false, failures: 0, nextStart: 0 });
     for (const { id, value } of this.store.entries<OutboxRecord>("communication_outbox")) {
       if (value.route.connectionId === definition.id && value.state === "submitting") {
         this.store.set("communication_outbox", id, { ...value, state: adapter.retrySafe ? "queued" : "uncertain", error: "send_interrupted" });
@@ -63,18 +71,31 @@ export class CommunicationCore {
         this.store.set("communication_checkpoints", key(connectionId, name), value);
       }) as ChannelContext["checkpoint"],
       error: (code) => { this.connection(connectionId).lastError = code; },
+      disconnected: (error) => {
+        const connection = this.connection(connectionId); connection.connected = false; connection.lastError = error;
+        connection.nextStart = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(++connection.failures, 6));
+      },
     };
   }
-  async start(): Promise<void> {
-    // Connect independently: a broken optional channel does not prevent other channels from operating.
+  async start(): Promise<void> { await this.reconnect(); }
+  async reconnect(now = Date.now()): Promise<void> {
     await Promise.all([...this.connections].map(async ([id, connection]) => {
-      try { await connection.adapter.start(this.context(id)); connection.connected = true; connection.lastError = ""; }
-      catch (error) { connection.lastError = code(error); await connection.adapter.stop().catch(() => {}); }
+      if (connection.connected || connection.nextStart > now) return;
+      connection.nextStart = Number.MAX_SAFE_INTEGER;
+      try {
+        if (connection.failures) { await connection.adapter.stop(); if (connection.reload) connection.adapter = connection.reload(); }
+        await connection.adapter.start(this.context(id)); connection.connected = true;
+        connection.lastError = ""; connection.failures = 0;
+      } catch (error) {
+        connection.lastError = code(error); await connection.adapter.stop().catch(() => {});
+        connection.nextStart = now + Math.min(60_000, 1000 * 2 ** Math.min(++connection.failures, 6));
+      }
     }));
   }
   async stop(): Promise<void> {
     await Promise.allSettled([...this.connections.values()].map(async (connection) => {
       await connection.adapter.stop(); connection.connected = false;
+      connection.nextStart = Number.MAX_SAFE_INTEGER;
     }));
   }
   receive(connectionId: string, input: ChannelMessage): InboxRecord {
@@ -95,7 +116,7 @@ export class CommunicationCore {
     const conversationId = `c-${digest(key(this.agentId, source.scope === "direct" && owner ? "owner-main" :
       key(connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`;
     const record: InboxRecord = { id, connectionId, source, conversationId, hash, receivedAt: new Date().toISOString(),
-      replyRoute: { connectionId, ...source.reply }, state: allowed && source.text.trim() && !oversized ? "received" : "ignored",
+      replyRoute: { connectionId, ...source.reply }, state: allowed && (source.text.trim() || source.attachments?.length || source.action || source.event) && !oversized ? "received" : "ignored",
       ...(oversized ? { reason: "input_too_large" } : {}) };
     const commit = () => {
       this.store.set("communication_inbox", id, record);
@@ -117,10 +138,30 @@ export class CommunicationCore {
       for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) {
         if (value.state !== "received") continue;
         this.validate();
+        if (value.source.event?.type === "message-edit") { this.store.set("communication_inbox", id, { ...value, state: "done", reason: "edit_recorded_without_reexecution" }); continue; }
+        if (this.control && await this.control(value)) {
+          this.store.set("communication_inbox", id, { ...value, state: "done" }); continue;
+        }
+        if (value.source.action) { this.notice(value, "这个按钮已失效，请根据当前提问重新操作。", "stale-action"); this.store.set("communication_inbox", id, { ...value, state: "done" }); continue; }
+        const prior = this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).reverse().find((item) =>
+          item.taskId && item.conversationId === value.conversationId &&
+          (item.connectionId === value.connectionId && item.source.sender === value.source.sender || this.isOwnerInput(item) && this.isOwnerInput(value)));
+        const previous = prior?.taskId ? await this.work.get(prior.taskId) : undefined;
+        const resume = previous && [TaskState.TASK_STATE_INPUT_REQUIRED, TaskState.TASK_STATE_AUTH_REQUIRED].includes(previous.status?.state ?? 0);
+        let quote = value.source.quoted?.text;
+        if (!quote && value.source.quoted?.messageId) {
+          const original = this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).find((item) => item.connectionId === value.connectionId && item.replyRoute.target === value.replyRoute.target && item.replyRoute.messageId === value.source.quoted!.messageId);
+          try { quote = original?.source.text ?? await this.connection(value.connectionId).adapter.readQuote?.(value.source); }
+          catch { this.connection(value.connectionId).lastError = "quoted_message_unavailable"; }
+        }
+        let text = [quote ? `引用消息：${quote}` : value.source.quoted?.messageId ? `引用消息 ID：${value.source.quoted.messageId}` : "", value.source.text,
+          value.source.event ? JSON.stringify(value.source.event) : "",
+          ...(value.source.attachments ?? []).map((item) => `附件：${item.name} (${item.mediaType})`)].filter(Boolean).join("\n");
+        if (Buffer.byteLength(text) > 24_000) text = Buffer.from(text).subarray(0, 23_500).toString("utf8") + "\n[消息上下文已截短；原始消息可通过 channel message 工具读取。]";
         const request = SendMessageRequest.fromJSON({ message: { messageId: `channel-${id}`, contextId: value.conversationId,
-          role: "ROLE_USER", parts: [{ text: value.source.text }] }, configuration: { returnImmediately: true } });
+          ...(resume ? { taskId: previous!.id } : {}), role: "ROLE_USER", parts: [{ text }] }, configuration: { returnImmediately: true } });
         // Both steps are independently durable. The stable message ID closes the restart window.
-        const task = await this.work.send(request, { sender: key("channel", value.connectionId, value.source.sender),
+        const task = await this.work.send(request, { sender: resume ? this.work.inspect(previous!.id).from : key("channel", value.connectionId, value.source.sender),
           room: value.conversationId, approved: true });
         this.store.set("communication_inbox", id, { ...value, state: "submitted", taskId: task.id });
       }
@@ -131,7 +172,7 @@ export class CommunicationCore {
   }
   private publishResults(): void {
     for (const { id: eventId, value: task } of this.work.events()) {
-      const input = this.store.entries<InboxRecord>("communication_inbox").find(({ value }) => value.taskId === task.id)?.value;
+      const input = this.input(task.id);
       if (!input) continue; // Matrix/A2A events belong to the existing connector.
       this.store.transaction(() => {
         if (terminal(task) && input.state !== "done") {
@@ -142,9 +183,10 @@ export class CommunicationCore {
             task.status?.state === TaskState.TASK_STATE_COMPLETED ? "已完成。" :
               task.status?.message?.parts.filter((part) => part.content?.$case === "text").map((part) => part.content!.value).join("\n") || "本轮执行失败，请查看运行状态。";
           const outbox: OutboxRecord = { id: digest(key(task.id, "final")), taskId: task.id, route: input.replyRoute,
-            text: answer || fallback, state: "queued", attempts: 0, nextAt: 0 };
+            text: answer || fallback, final: true, state: "queued", attempts: 0, nextAt: 0 };
           this.store.insert("communication_outbox", outbox.id, outbox);
-          this.store.set("communication_inbox", input.id, { ...input, state: "done" });
+          for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) if (value.taskId === task.id)
+            this.store.set("communication_inbox", id, { ...value, state: "done" });
         }
         if (!terminal(task) && task.status?.message) {
           const text = task.status.message.parts.filter((part) => part.content?.$case === "text").map((part) => part.content!.value).join("\n");
@@ -183,7 +225,11 @@ export class CommunicationCore {
         const attempt = { ...value, state: "submitting" as const, attempts: value.attempts + 1 };
         this.store.set("communication_outbox", id, attempt);
         try {
-          const receipt = await connection.adapter.send(value.route, value.text, id);
+          const streamed = value.taskId && (value.final || id === digest(key(value.taskId, "final"))) && this.store.get("communication_streams", value.taskId);
+          const receipt = streamed && !value.content && connection.adapter.progress
+            ? await connection.adapter.progress(value.route, value.text, value.taskId!, true)
+            : value.content && connection.adapter.sendContent ? await connection.adapter.sendContent(value.route, value.content, id)
+            : await connection.adapter.send(value.route, value.text, id);
           const { error: _error, ...accepted } = attempt;
           this.store.set("communication_outbox", id, { ...accepted, state: "accepted", externalId: receipt.externalId });
         } catch (error) {
@@ -198,12 +244,71 @@ export class CommunicationCore {
   }
   status() {
     return { agentId: this.agentId, error: this.lastError || null, connections: [...this.connections].map(([id, connection]) => ({ id, kind: connection.adapter.kind,
-      started: connection.connected, error: connection.lastError || null })),
+      started: connection.connected, capabilities: connection.adapter.capabilities ?? null, error: connection.lastError || null })),
       inbox: this.store.entries<InboxRecord>("communication_inbox").slice(-100).map(({ value }) => ({ id: value.id, connectionId: value.connectionId,
         sender: value.source.sender, threadId: value.source.threadId, conversationId: value.conversationId,
         state: value.state, taskId: value.taskId ?? null, reason: value.reason ?? null })),
       outbox: this.store.entries<OutboxRecord>("communication_outbox").slice(-100).map(({ value }) => ({ id: value.id, taskId: value.taskId,
         connectionId: value.route.connectionId, state: value.state, attempts: value.attempts, error: value.error ?? null })) };
+  }
+  input(taskId: string): InboxRecord | undefined {
+    return this.store.entries<InboxRecord>("communication_inbox").map(({ value }) => value).reverse().find((item) => item.taskId === taskId);
+  }
+  notice(input: InboxRecord, text: string, suffix: string, content?: ChannelContent): string {
+    const id = digest(key(input.id, suffix));
+    this.store.insert("communication_outbox", id, { id, taskId: null, route: input.replyRoute, text,
+      ...(content ? { content } : {}), state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+    return id;
+  }
+  async attachments(taskId: string): Promise<MediaContent[]> {
+    const input = this.input(taskId); if (!input) return [];
+    const cached = this.store.get<MediaContent[]>("communication_media", input.id); if (cached) return cached;
+    const adapter = this.connection(input.connectionId).adapter;
+    const items: MediaContent[] = []; let size = 0;
+    for (const attachment of input.source.attachments ?? []) {
+      if (attachment.kind === "sticker" && adapter.capabilities?.receive.includes("sticker-reference")) continue;
+      if (!adapter.readAttachment) throw new Error("channel_attachment_read_unsupported");
+      const item = await adapter.readAttachment(input.source, attachment);
+      size += Buffer.byteLength(item.data, "base64"); if (size > 30 * 1024 * 1024) throw new Error("attachments_too_large");
+      items.push(item);
+    }
+    if (items.length) this.store.set("communication_media", input.id, items);
+    return items;
+  }
+  async progress(taskId: string, text: string): Promise<void> {
+    const input = this.input(taskId); if (!input || !text) return;
+    const connection = this.connection(input.connectionId);
+    if (!connection.connected || !connection.adapter.progress || !this.capabilities(taskId)?.stream) return;
+    await connection.adapter.progress(input.replyRoute, text, taskId, false);
+    this.store.set("communication_streams", taskId, true);
+  }
+  capabilities(taskId: string) { const input = this.input(taskId); if (!input) return undefined;
+    const adapter = this.connection(input.connectionId).adapter; return adapter.capabilitiesFor?.(input.replyRoute) ?? adapter.capabilities; }
+  isOwnerInput(input: InboxRecord) { return input.source.scope === "direct" && this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender); }
+  queueContent(taskId: string, content: ChannelContent, sendKey: string): string {
+    const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
+    const adapter = this.connection(input.connectionId).adapter;
+    if ((content.html || content.media?.length || content.card || content.buttons?.length) && !adapter.sendContent) throw new Error("channel_content_unsupported");
+    const capabilities = this.capabilities(taskId);
+    if (content.html && !capabilities?.send.includes("html")) throw new Error("channel_html_unsupported");
+    if (content.media?.length && !capabilities?.send.some((kind) => ["file", "image", "audio", "video"].includes(kind))) throw new Error("channel_media_unsupported");
+    if (!content.text && !content.html && !content.media?.length && !content.card && !content.buttons?.length) throw new Error("channel_content_empty");
+    if (content.card && !capabilities?.send.includes("card")) throw new Error("channel_card_unsupported");
+    const id = digest(key(taskId, "content", sendKey));
+    this.store.insert("communication_outbox", id, { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
+      content, state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+    return id;
+  }
+  delivery(taskId: string, id: string) {
+    const row = this.store.get<OutboxRecord>("communication_outbox", id);
+    if (!row || row.originTaskId !== taskId) throw new Error("channel_delivery_not_found");
+    return { id, state: row.state, externalId: row.externalId ?? null, error: row.error ?? null };
+  }
+  async native(taskId: string, operation: string, args: Record<string, unknown>) {
+    const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
+    const adapter = this.connection(input.connectionId).adapter;
+    if (!adapter.native || !this.capabilities(taskId)?.native.includes(operation)) throw new Error("channel_native_operation_unsupported");
+    return adapter.native(input.replyRoute, operation, args);
   }
   private connection(id: string): Connection {
     const connection = this.connections.get(id);
