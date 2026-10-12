@@ -221,11 +221,10 @@ export class ManagedService {
   }
 }
 
-export function createManagedApp(service: ManagedService, onboarding?: express.Router) {
+export function createManagedApp(service: ManagedService, setup?: express.Router) {
   const app = express(); app.disable("x-powered-by");
   app.set("trust proxy", service.config.trustedProxies ?? false);
   app.use(express.json({ limit: "2mb" }));
-  if (onboarding) app.use(onboarding);
   app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service" }));
   app.use("/_matrix/app/v1", (req, res, next) => {
     if (!equal(bearer(req), service.config.hsToken) ||
@@ -289,6 +288,7 @@ export function createManagedApp(service: ManagedService, onboarding?: express.R
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
   app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  if (setup) app.use(setup);
   const extension = async (id: string) => {
     const runtime = await service.runtime(id);
     if (!runtime.extension) throw new WorkError("channels_not_configured", 404);

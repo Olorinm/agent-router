@@ -14,13 +14,12 @@ const { values } = parseArgs({
     "host-token-file": { type: "string" },
     runtime: { type: "string" },
     label: { type: "string" },
-    registration: { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
   },
 });
 if (values.help) {
   process.stdout.write(
-    "Usage: npm run onboarding:init -- --out /private/onboarding.json [--owner @alice:example.org --host-url http://host:8787 --host-token-file /private/host-token --runtime codex] [--registration]\n",
+    "Usage: npm run onboarding:init -- --out /private/onboarding.json [--owner @alice:example.org --host-url http://host:8787 --host-token-file /private/host-token --runtime codex]\n",
   );
 } else {
   try {
@@ -72,14 +71,13 @@ if (values.help) {
       file,
       onboardingOptionsSchema.parse({
         hosts,
-        registration: values.registration,
       }),
     );
     process.stdout.write(
       JSON.stringify({
         status: "created",
         file,
-        next: "Set AGENT_ROUTER_ONBOARDING_FILE and restart the Router once. Then open /_agent-router/setup.",
+        next: "Set AGENT_ROUTER_ONBOARDING_FILE and restart the Router once. Then use agent-router setup in the existing Go CLI.",
       }) + "\n",
     );
   } catch (error) {

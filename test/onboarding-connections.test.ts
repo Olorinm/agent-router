@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { registerApp } from "@larksuiteoapi/node-sdk";
-import { ConnectionSetup, qrData } from "../src/onboarding/connections.js";
+import { ConnectionSetup, qrTerminal } from "../src/onboarding/connections.js";
 import { FeishuAccount } from "../src/services/feishu/cli.js";
 import {
   apiGetFetch,
@@ -44,7 +44,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "router-connect-ui-"));
+  const directory = mkdtempSync(join(tmpdir(), "router-connect-cli-"));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const agent = { id: randomUUID(), owner: "@alice:example.test" },
     checkpoints = new Map<string, unknown>();
@@ -145,7 +145,7 @@ it("uses separate official app and personal consent steps and returns only conse
     personalTools: true,
   });
   expect(job.state).toBe("application");
-  expect(job.qr).toMatch(/^data:image\/svg\+xml;base64,/);
+  expect(job.qr).toMatch(/^[ █▀▄\n]+$/);
   expect(() => f.setup.status("@bob:example.test", f.agent.id, job.id)).toThrow(
     "agent_not_found",
   );
@@ -244,7 +244,7 @@ it("binds Telegram only after the one-use private /start proof and checkpoints c
     token,
   );
 });
-it("uses Tencent QR redirects and browser pairing codes, rejecting unrelated API origins", async () => {
+it("uses Tencent QR redirects and terminal pairing codes, rejecting unrelated API origins", async () => {
   const f = fixture();
   vi.mocked(apiPostFetch).mockResolvedValue(
     JSON.stringify({
@@ -350,7 +350,7 @@ it("does not save credentials if a canceled Weixin request returns late", async 
   expect(f.current.connections).toHaveLength(0);
 });
 it("renders only HTTPS authorization QR links and requires Host before personal authorization", () => {
-  expect(() => qrData("javascript:alert(1)")).toThrow(
+  expect(() => qrTerminal("javascript:alert(1)")).toThrow(
     "invalid_authorization_url",
   );
   const f = fixture();
@@ -359,4 +359,23 @@ it("renders only HTTPS authorization QR links and requires Host before personal 
     f.setup.begin(f.agent.owner, f.agent.id, "feishu", { personalTools: true }),
   ).toThrow("select_host_before_personal_tools");
   expect(registerApp).not.toHaveBeenCalled();
+});
+
+it("reuses confirmed Weixin consent after an interrupted configuration without a second QR login", async () => {
+  const f = fixture();
+  const { privateFile } = await import("../src/services/feishu/cli.js");
+  privateFile(join(f.directory, "weixin.json"), {accountId: "fixture-bot", userId: "fixture-owner", token: "fixture-weixin-token", baseUrl: "https://ilinkai.weixin.qq.com"});
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "weixin", {});
+  await vi.waitFor(() => expect(f.setup.status(f.agent.owner, f.agent.id, job.id).state).toBe("ready"));
+  expect(apiPostFetch).not.toHaveBeenCalled();
+  expect(apiGetFetch).not.toHaveBeenCalled();
+  expect(f.current.connections[0].kind).toBe("weixin");
+});
+
+it("rejects a reserved connection ID before creating an app and preserves the existing channel", () => {
+  const f = fixture();
+  f.current.connections.push({id: "feishu", kind: "matrix", ownerAddresses: [], peerAddresses: [], groupIds: []});
+  expect(() => f.setup.begin(f.agent.owner, f.agent.id, "feishu", {})).toThrow("connection_id_already_used");
+  expect(registerApp).not.toHaveBeenCalled();
+  expect(f.current.connections[0].kind).toBe("matrix");
 });

@@ -26,8 +26,6 @@ const hostSchema = z
 export const onboardingOptionsSchema = z
   .object({
     hosts: z.array(hostSchema).max(100).default([]),
-    registration: z.boolean().default(false),
-    productLoginUrl: z.url().optional(),
     mailServices: z
       .array(
         z
@@ -41,12 +39,11 @@ export const onboardingOptionsSchema = z
       )
       .max(20)
       .default([]),
-    targets: z.array(z.string().min(1).max(512)).max(100).default([]),
   })
   .strict();
 export type OnboardingOptions = z.infer<typeof onboardingOptionsSchema>;
 
-/** Owner-scoped configuration; browsers select an operator-approved Host, never arbitrary server URLs/files. */
+/** Owner-scoped configuration; clients select an operator-approved Host, never arbitrary server URLs/files. */
 export class OnboardingConfiguration {
   readonly directory: string;
   readonly options: OnboardingOptions;
@@ -83,7 +80,6 @@ export class OnboardingConfiguration {
     }
     for (const raw of [
       ...this.options.mailServices.map((mail) => mail.url),
-      ...(this.options.productLoginUrl ? [this.options.productLoginUrl] : []),
     ]) {
       const url = new URL(raw);
       if (
@@ -157,7 +153,7 @@ export class OnboardingConfiguration {
   hosts(owner: string) {
     return this.options.hosts.filter((host) => host.owners.includes(owner));
   }
-  assertTelegramAvailable(agentId: string, token: string) {
+  assertTelegramAvailable(token: string) {
     for (const agent of this.service.agents())
       for (const connection of this.configuration(agent)?.connections ?? []) {
         if (connection.kind !== "telegram") continue;
@@ -222,7 +218,7 @@ export class OnboardingConfiguration {
             "communication_host",
             "scope",
           );
-        const hasRuns =
+        let hasRuns =
           runtime.connector.store.entries("communication_runs").length > 0;
         const restore = () => {
           if (!hasRuns) {
@@ -242,10 +238,11 @@ export class OnboardingConfiguration {
               unlinkSync(configurationFile);
           }
         };
-        await this.service.configureRuntime(
+        try { await this.service.configureRuntime(
           agentId,
           async (agent, connector) => {
             signal?.throwIfAborted();
+            hasRuns = connector.store.entries("communication_runs").length > 0;
             if (!hasRuns) connector.store.delete("communication_host", "scope");
             this.pending.set(agentId, config);
             return this.runtime(agent, connector, config);
@@ -261,6 +258,11 @@ export class OnboardingConfiguration {
             this.pending.delete(agentId);
           },
         );
+        } catch (error) {
+          if (error instanceof Error && error.message === "host_binding_configuration_changed")
+            throw new WorkError(error.message, 409);
+          throw error;
+        }
         return this.summary(agent);
       });
     this.queue = operation.catch(() => {});

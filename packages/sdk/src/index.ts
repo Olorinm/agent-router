@@ -110,14 +110,6 @@ export class AgentRouterClient {
     return result;
   }
   async revokeSession(options:RequestOptions={}):Promise<void>{await this.request(`${this.baseUrl}/auth/session`,"DELETE",undefined,true,options);}
-  /** Single-use browser handoff; the account token remains at the configured service. */
-  async onboardingLink(options:RequestOptions={}):Promise<{url:string;expiresAt:string}>{
-    const result=record(await this.request(`${this.baseUrl}/onboarding/link`,"POST",{},true,options));
-    const url=string(result.url),expiresAt=string(result.expiresAt),target=new URL(url);
-    if(target.origin!==new URL(this.baseUrl).origin||target.pathname!=="/_agent-router/setup"||target.username||target.password||target.search||
-      !/^#ticket=[a-zA-Z0-9_-]{43}$/.test(target.hash)||!Number.isFinite(Date.parse(expiresAt)))throw new AgentRouterError("invalid_response");
-    return {url,expiresAt};
-  }
   async agents(options:RequestOptions={}):Promise<Agent[]>{const r=record(await this.request(`${this.baseUrl}/agents`,"GET",undefined,true,options));if(!Array.isArray(r.data))throw new AgentRouterError("invalid_response");return r.data.map(parseAgent);}
   async createAgent(name:string,options:RequestOptions={}):Promise<Agent>{return parseAgent(await this.request(`${this.baseUrl}/agents`,"POST",{name},true,options));}
   async resolve(address:string,options:RequestOptions={}):Promise<Agent>{

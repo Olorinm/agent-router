@@ -10,7 +10,7 @@ This initial version is not yet published to npm. After publication, the registr
 npm install @agent-router/sdk
 ```
 
-Before a registry release, build and pack this package and install the resulting `.tgz`. The package contains its compiled JavaScript and TypeScript declarations, and uses the official A2A SDK as its runtime dependency. Do not import server files or rely on a checkout's absolute path.
+Before a registry release, build and pack this package and install the resulting `.tgz`. The package contains its compiled JavaScript and TypeScript declarations, and has no runtime dependencies. Do not import server files or rely on a checkout's absolute path.
 
 ```sh
 npm run build --prefix packages/sdk
@@ -47,8 +47,6 @@ The provider token is sent only to the selected trusted node and its configured 
 A network session lasts **10 minutes**. Before expiry, repeat `exchange` with a current product login token; it returns the same owner and sender with a new network token. A provider role removal prevents subsequent exchange; existing network credentials remain valid until expiry or explicit revocation. Keep network tokens in memory, discard them on product logout/account switching, and call `revokeSession()` when possible. Never silently adopt a new sender for an existing conversation. The callback is read for every authenticated request; it must return credentials belonging to the same captured product account. The SDK does not persist or refresh product login tokens.
 
 Configure the node with your identity provider's URL, subject field, role field, and eligibility rules. The bundled [CONFIGURATION.md](./CONFIGURATION.md) contains a generic deployment example; no server source checkout is needed.
-
-If the operator enables browser onboarding, call `const link = await router.onboardingLink()` and navigate the user to `link.url`. The page shows the account identity before continuing. The link contains a single-use 60-second ticket in its URL fragment; it does not expose the account token. Browser access still expires or is revoked with the underlying Router session. See the [onboarding guide](../../docs/guides/onboarding.md).
 
 ## Add a contact and send
 

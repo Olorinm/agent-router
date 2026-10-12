@@ -1,4 +1,4 @@
-/** Shared official Channel app template for terminal and browser setup. */
+/** Shared official Channel app template for local and managed CLI setup. */
 export const feishuApplication = {
   appPreset: { name: "{user} 的 Agent", desc: "个人 Agent 的飞书对话与工具" },
   addons: {

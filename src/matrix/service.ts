@@ -34,13 +34,13 @@ const service: ManagedService = new ManagedService({
   },
 } : {});
 onboarding?.attach(service);
-const browser = onboarding ? createOnboarding(service, onboarding) : undefined;
+const setup = onboarding ? createOnboarding(service, onboarding) : undefined;
 const channelFile = process.env.AGENT_CHANNELS_CONFIG_FILE;
 const channelIds = channelFile ? configureChannels(service.channels, channelFile, id => { service.agent(id); }) : [];
-const server = createManagedApp(service, browser?.router).listen(Number(process.env.PORT ?? "8790"), process.env.HOST ?? "127.0.0.1");
+const server = createManagedApp(service, setup?.router).listen(Number(process.env.PORT ?? "8790"), process.env.HOST ?? "127.0.0.1");
 let channelTimer: ReturnType<typeof setInterval> | undefined;
 let stopping = false;
-const stop = async () => { if (stopping) return; stopping = true; clearInterval(channelTimer); server.close(); server.closeAllConnections(); await browser?.close(); await service.close(); };
+const stop = async () => { if (stopping) return; stopping = true; clearInterval(channelTimer); server.close(); server.closeAllConnections(); await setup?.close(); await service.close(); };
 process.once("SIGTERM", () => { void stop(); }); process.once("SIGINT", () => { void stop(); });
 service.start().then(() => {
   if (!stopping && channelIds.length) channelTimer = setInterval(() => { for (const id of channelIds) void service.channels.tick(id); }, 1000);

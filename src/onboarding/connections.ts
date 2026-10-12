@@ -30,7 +30,7 @@ interface Job {
   pairingCode?: string;
   operation?: Promise<void>;
 }
-export function qrData(url: string): string {
+export function qrTerminal(url: string): string {
   const parsed = new URL(url);
   if (url.length > 4096 || parsed.protocol !== "https:" || parsed.username || parsed.password)
     throw new Error("invalid_authorization_url");
@@ -48,25 +48,18 @@ export function qrData(url: string): string {
   const qr = new QRCode(-1, 1);
   qr.addData(url);
   qr.make();
-  const size = qr.getModuleCount(),
-    squares: string[] = [];
-  for (let y = 0; y < size; y++)
-    for (let x = 0; x < size; x++)
-      if (qr.isDark(y, x))
-        squares.push("M" + (x + 4) + " " + (y + 4) + "h1v1h-1z");
-  const svg =
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' +
-    (size + 8) +
-    " " +
-    (size + 8) +
-    '"><path fill="white" d="M0 0h' +
-    (size + 8) +
-    "v" +
-    (size + 8) +
-    'H0z"/><path fill="black" d="' +
-    squares.join("") +
-    '"/></svg>';
-  return "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
+  const size = qr.getModuleCount(), lines: string[] = [];
+  const dark = (row: number, col: number) => row >= 0 && row < size && col >= 0 && col < size && qr.isDark(row, col);
+  // Two pixels per terminal cell, with a white quiet zone and no ANSI escapes.
+  for (let y = -4; y < size + 4; y += 2) {
+    let line = "";
+    for (let x = -4; x < size + 4; x++) {
+      const top = dark(y, x), bottom = dark(y + 1, x);
+      line += top ? (bottom ? " " : "▄") : (bottom ? "▀" : "█");
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
 }
 const safeError = (error: unknown) =>
   error instanceof Error && /^[a-z][a-z0-9_]{0,100}$/.test(error.message)
@@ -117,7 +110,7 @@ export class ConnectionSetup {
       kind: job.kind,
       state: job.state,
       expiresAt: new Date(job.expiresAt).toISOString(),
-      ...(job.url ? { url: job.url, qr: qrData(job.url) } : {}),
+      ...(job.url ? { url: job.url, qr: qrTerminal(job.url) } : {}),
       ...(job.error ? { error: job.error } : {}),
     };
   }
@@ -150,6 +143,8 @@ export class ConnectionSetup {
         ?.connections.some((connection) => connection.kind === kind)
     )
       throw new WorkError("platform_already_connected", 409);
+    if (this.configuration.configuration(agent)?.connections.some(connection => connection.id === kind))
+      throw new WorkError("connection_id_already_used", 409);
     if (
       kind === "feishu" &&
       options.personalTools &&
@@ -274,9 +269,6 @@ export class ConnectionSetup {
       owner,
       job.agentId,
       (config) => {
-        config.connections = config.connections.filter(
-          (item) => item.id !== "feishu",
-        );
         config.connections.push({
           id: "feishu",
           kind: "feishu",
@@ -294,7 +286,7 @@ export class ConnectionSetup {
   private async telegram(owner: string, job: Job, token: string) {
     if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token))
       throw new Error("invalid_telegram_token");
-    this.configuration.assertTelegramAvailable(job.agentId, token);
+    this.configuration.assertTelegramAvailable(token);
     const account = token.split(":")[0]!;
     if (this.telegramReservations.has(account))
       throw new Error("telegram_bot_setup_in_progress");
@@ -362,9 +354,20 @@ export class ConnectionSetup {
       this.telegramReservations.delete(account);
     }
   }
+  private async connectWeixin(owner: string, job: Job, file: string, signal: AbortSignal) {
+    loadWeixinCredentials(file);
+    await this.configuration.edit(owner, job.agentId, (config) => {
+      config.connections.push({id: "weixin", kind: "weixin", credentialsFile: file,
+        ownerAddresses: [], peerAddresses: [], groupIds: []});
+    }, signal);
+  }
   private async weixin(owner: string, job: Job) {
     const signal = this.signal(job),
-      base = "https://ilinkai.weixin.qq.com";
+      base = "https://ilinkai.weixin.qq.com",
+      saved = join(this.configuration.agentDirectory(job.agentId), "weixin.json");
+    // A prior confirmed scan may have failed while replacing a busy runtime.
+    // Keep that consent instead of creating another login for the same account.
+    if (existsSync(saved)) { await this.connectWeixin(owner, job, saved, signal); return; }
     let qrcode = "",
       origin = base,
       refreshes = 0;
@@ -450,25 +453,7 @@ export class ConnectionSetup {
             token: value.bot_token,
             baseUrl: weixinOrigin(value.baseurl || base),
           });
-          loadWeixinCredentials(file);
-          await this.configuration.edit(
-            owner,
-            job.agentId,
-            (config) => {
-              config.connections = config.connections.filter(
-                (item) => item.id !== "weixin",
-              );
-              config.connections.push({
-                id: "weixin",
-                kind: "weixin",
-                credentialsFile: file,
-                ownerAddresses: [],
-                peerAddresses: [],
-                groupIds: [],
-              });
-            },
-            signal,
-          );
+          await this.connectWeixin(owner, job, file, signal);
           return;
         }
       }
