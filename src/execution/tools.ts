@@ -1,6 +1,6 @@
 import type { HostCall } from "./host.js";
 export interface HostTool { name: string; description: string; inputSchema: unknown; timeoutMs: number; }
-export interface HostToolResult { success: boolean; contentItems: Array<{ type: "inputText"; text: string }>; }
+export interface HostToolResult { success: boolean; contentItems: Array<{ type: "inputText"; text: string } | { type: "inputImage"; imageUrl: string }>; }
 export interface HostTools {
   definitions: HostTool[];
   instructions: string;

@@ -25,6 +25,7 @@ interface Binding { remoteTaskId: string; remoteContextId: string; }
 export class MatrixConnector {
   /** Optional personal-chat receipt hook. Default Matrix/A2A behavior is unchanged. */
   onTextMessage: ((room: string, event: RoomEvent) => void) | undefined;
+  onChannelEvent: ((room: string, event: RoomEvent) => void) | undefined;
   private running = false;
   private busy = false;
   private flushing = false;
@@ -175,8 +176,12 @@ export class MatrixConnector {
   ingest(room: string, event: RoomEvent, encrypted = false, restoredHistory = false): void {
     if (!event.event_id || !event.sender || !this.store.insert("seen", key(room, event.event_id), true)) return;
     if (encrypted || event.sender === this.userId || this.social?.ignored(event.sender)) return;
+    if (!restoredHistory && this.contact(event.sender)?.receive !== "deny" &&
+      (["m.reaction", "m.room.redaction"].includes(event.type) || event.type === "m.room.message" &&
+      (event.content["m.relates_to"] as { rel_type?: string } | undefined)?.rel_type === "m.replace"))
+      this.onChannelEvent?.(room, event);
     if (!restoredHistory && event.type === "m.room.message" && this.contact(event.sender)?.receive !== "deny" &&
-      event.content.msgtype === "m.text" && typeof event.content.body === "string" &&
+      ["m.text", "m.notice", "m.image", "m.file", "m.audio", "m.video", "m.location"].includes(String(event.content.msgtype)) && typeof event.content.body === "string" &&
       (event.content["m.relates_to"] as { rel_type?: string } | undefined)?.rel_type !== "m.replace") {
       // Do not swallow receipt failures: the outer transaction rolls back the event and /sync cursor.
       this.onTextMessage?.(room, event);

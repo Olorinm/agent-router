@@ -1,6 +1,6 @@
 # Third-party source
 
-`src/channels/weixin/vendor/` contains selected transport, protocol and QR login source from
+`src/channels/weixin/vendor/` contains selected transport, protocol, QR login, AES media and CDN URL source from
 Tencent's [`@tencent-weixin/openclaw-weixin` 2.4.9](https://github.com/Tencent/openclaw-weixin),
 Copyright (C) 2026 Tencent, under MIT. The complete license is included in
 `src/channels/weixin/vendor/LICENSE` and copied to `dist/channels/weixin/vendor/LICENSE` during builds.

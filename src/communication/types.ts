@@ -7,7 +7,13 @@ export interface ReplyRoute {
   messageId: string;
   data: Record<string, string>;
 }
-export interface AttachmentReference { id: string; name: string; mediaType: string; }
+export interface AttachmentReference { id: string; name: string; mediaType: string; kind?: "image" | "audio" | "video" | "file" | "sticker" | undefined; data?: Record<string, unknown> | undefined; }
+export interface MediaContent { name: string; mediaType: string; data: string; }
+export interface ChannelCapabilities {
+  receive: string[]; send: string[]; stream: boolean; buttons: boolean; native: string[];
+  nativeArguments?: Record<string, string>;
+}
+export interface ChannelContent { text: string; html?: string; media?: MediaContent[]; card?: Record<string, unknown>; buttons?: Array<{ label: string; token: string }>; }
 export interface ChannelMessage {
   externalId: string;
   sender: string;
@@ -17,6 +23,10 @@ export interface ChannelMessage {
   text: string;
   reply: Omit<ReplyRoute, "connectionId">;
   attachments?: AttachmentReference[] | undefined;
+  quoted?: { messageId?: string | undefined; text?: string | undefined } | undefined;
+  action?: { token: string } | undefined;
+  event?: { type: string; data: Record<string, unknown> } | undefined;
+  native?: Record<string, unknown> | undefined;
 }
 export interface ChannelContext {
   /** Returns only after durable receipt; a failed receipt must not advance a provider cursor. */
@@ -24,15 +34,23 @@ export interface ChannelContext {
   checkpoint<T>(key: string): T | undefined;
   checkpoint(key: string, value: unknown): void;
   error(code: string): void;
+  disconnected?(code: string): void;
 }
 export interface SendReceipt { externalId: string; }
 export interface ChannelAdapter {
   readonly kind: ChannelKind;
   /** A stable send key can be safely resubmitted, including after a lost response. */
   readonly retrySafe: boolean;
+  readonly capabilities?: ChannelCapabilities;
+  capabilitiesFor?(route: ReplyRoute): ChannelCapabilities;
   start(context: ChannelContext): Promise<void>;
   stop(): Promise<void>;
   send(route: ReplyRoute, text: string, sendKey: string): Promise<SendReceipt>;
+  readAttachment?(message: ChannelMessage, attachment: AttachmentReference): Promise<MediaContent>;
+  readQuote?(message: ChannelMessage): Promise<string | undefined>;
+  sendContent?(route: ReplyRoute, content: ChannelContent, sendKey: string): Promise<SendReceipt>;
+  progress?(route: ReplyRoute, text: string, streamKey: string, final: boolean): Promise<SendReceipt>;
+  native?(route: ReplyRoute, operation: string, args: Record<string, unknown>): Promise<unknown>;
 }
 export class ChannelSendError extends Error {
   constructor(readonly disposition: "retry" | "failed" | "uncertain", code: string, readonly retryAfterMs = 0) {

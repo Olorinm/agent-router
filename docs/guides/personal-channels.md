@@ -1,6 +1,6 @@
 # 多渠道个人对话
 
-当前源码实现五渠道文字对话，以及飞书扫码配置、个人授权和官方 CLI 工具调用；尚未发布到 v0.6.0。Router 负责统一收发、连接凭据和会话映射，Agent Host 负责原生 Agent 执行。
+当前源码实现五渠道对话、媒体双向传输、引用、原生提问和渠道支持的流式输出，以及飞书扫码配置、个人授权和官方 CLI 工具调用；尚未发布到 v0.6.0。Router 负责统一收发、连接凭据和会话映射，Agent Host 负责原生 Agent 执行。
 
 ```text
 飞书 / Telegram / 微信 / 邮件 / Matrix
@@ -17,7 +17,7 @@
 ## 最小启动
 
 1. 按[托管 Agent 指南](managed-agents.md)运行节点并创建一个 Agent，取得其 `agentId`。
-2. 按 [Agent Host 服务指南](../../../agent-host/docs/http-service.md)启动一个 runtime。原生 Agent 的认证由 Host 管理；Router 只持有 Host 服务 token。
+2. 按 [Agent Host 服务指南](https://github.com/Olorinm/agent-host/blob/main/docs/http-service.md)启动一个 runtime。原生 Agent 的认证由 Host 管理；Router 只持有 Host 服务 token。
 3. 使用当前源码构建 Router：`npm ci && npm run build`。Node.js 24+。
 4. 创建私有 `channels.json`，先接 Matrix 与 Host：
 
@@ -41,7 +41,7 @@
 AGENT_ROUTER_CHANNELS_FILE=/absolute/path/channels.json npm run agent:service
 ```
 
-Matrix 默认绑定这个 Agent 的所有者。给 Agent 发普通文字即可进入 Host；未配置的 Agent 保持原有 Matrix/A2A 行为。`host` 可省略，此时消息进入已有队列，由现有 worker 领取。配置了直连 Host 后，这个 Agent 的普通对话由固定实例执行，默认实例名为 `channel-host`；不要让另一个 worker 竞争领取这份队列或使用同名实例凭据。已有 AgentMail 的逐任务 `execution.accessMode` 仍交给支持该约束的外部 worker，直连 Host 不领取这类任务。需要同时使用 AgentMail 和直连个人聊天时，请使用不同的 Agent，避免 worker 竞争。
+Matrix 默认绑定这个 Agent 的所有者。给 Agent 发文字或附件即可进入 Host；未配置的 Agent 保持原有 Matrix/A2A 行为。`host` 可省略，此时消息进入已有队列，由现有 worker 领取。配置了直连 Host 后，这个 Agent 的普通对话由固定实例执行，默认实例名为 `channel-host`；不要让另一个 worker 竞争领取这份队列或使用同名实例凭据。已有 AgentMail 的逐任务 `execution.accessMode` 仍交给支持该约束的外部 worker，直连 Host 不领取这类任务。需要同时使用 AgentMail 和直连个人聊天时，请使用不同的 Agent，避免 worker 竞争。
 
 Compose 部署把 `channels.json`、Host token、Telegram token 等静态配置放在已有 `state/agent-service-secrets/` 只读挂载目录，设置 `AGENT_ROUTER_CHANNELS_FILE=/secrets/channels.json`，重新构建并启动 `agent-service`。飞书授权目录需要写入与刷新，放到 `/state` 可写挂载，不能放在 `/secrets`。`host.url` 必须是 Router 容器能访问的地址；容器里的 `127.0.0.1` 指容器自身。
 
@@ -49,13 +49,13 @@ Compose 部署把 `channels.json`、Host token、Telegram token 等静态配置�
 
 ## 各渠道怎么连接
 
-| 渠道 | 复用实现 | 必填连接配置 | 第一版边界 |
+| 渠道 | 复用实现 | 必填连接配置 | 已接入能力 |
 | --- | --- | --- | --- |
-| 飞书 | [官方 Channel](https://github.com/larksuite/node-sdk/blob/main/docs/channel.md)，SDK 1.74.0；[官方 CLI](https://github.com/larksuite/cli/blob/main/README.zh.md) 1.0.97 | `credentialsFile`；个人资源开启 `personalTools` | 长连接收信、文字回复；个人授权后调用官方工具；群聊需要 @机器人 |
-| Telegram | [grammY](https://grammy.dev/)，1.46.0 | `botTokenFile` | 长轮询，私聊和群组 topic；一个 bot 只有一个收信进程 |
-| 微信 | [腾讯插件](https://github.com/Tencent/openclaw-weixin) 2.4.9 的协议与扫码登录代码 | `credentialsFile` | iLink 私聊，沿用每条消息的 `context_token`；不支持群回复 |
-| 邮件 | 现有 Grove Mail 服务 | `url`、`inboxId`、`apiKeyFile` | 持久化事件 API 收信，原消息 reply API 回复；不自动 reply-all |
-| Matrix | 现有 Application Service / Connector | 无额外 token | 原来的同步进程，普通聊天和原生线程；不支持加密房间 |
+| 飞书 | [官方 Channel](https://github.com/larksuite/node-sdk/blob/main/docs/channel.md)，SDK 1.74.0；[官方 CLI](https://github.com/larksuite/cli/blob/main/README.zh.md) 1.0.97 | `credentialsFile`；个人资源开启 `personalTools` | 文字、图片、文件、音视频、引用、流式卡片、交互按钮、表情和评论；个人授权后调用官方工具；群聊需要 @机器人 |
+| Telegram | [grammY](https://grammy.dev/)，1.46.0 | `botTokenFile` | 文字、图片、文件、音视频、贴纸、引用、原生草稿流、按钮、表情和结构化消息；私聊和群组 topic；一个 bot 只有一个收信进程 |
+| 微信 | [腾讯插件](https://github.com/Tencent/openclaw-weixin) 2.4.9 的协议与扫码登录代码 | `credentialsFile` | iLink 私聊；文字、媒体、已有语音转写、引用和输入状态；保留原 `context_token`；不支持群回复、按钮或已验证的流式编辑 |
+| 邮件 | 现有 Grove Mail 服务 | `url`、`inboxId`、`apiKeyFile` | 持久化收信、文字/HTML、附件和原邮件引用回复；不自动 reply-all |
+| Matrix | 现有 Application Service / Connector | 无额外 token | 原同步进程；文字/HTML、媒体、引用、线程、流式编辑、表情与撤回；不支持加密房间 |
 
 ### 飞书：扫码配置与个人授权
 
@@ -65,7 +65,7 @@ Compose 部署把 `channels.json`、Host token、Telegram token 等静态配置�
 npm run feishu:setup -- /absolute/private/path/feishu
 ```
 
-第一次使用有两个确认步骤：官方 `registerApp` 二维码创建 PersonalAgent 应用，取得机器人身份；官方 CLI Device Flow 二维码授予该应用访问个人资源。应用配置沿用平台默认模板，并增加收发消息和 `im.message.receive_v1` 事件。第二步默认 `--domains all`，授权页展示实际申请的个人权限；可以使用 `--domains calendar,docs,drive` 缩小业务范围。Lark 使用 `--domain lark`。
+第一次使用有两个确认步骤：官方 `registerApp` 二维码创建 PersonalAgent 应用，取得机器人身份；官方 CLI Device Flow 二维码授予该应用访问个人资源。应用配置沿用平台默认模板，并增加收发资源、卡片权限与消息、卡片交互、表情、评论事件。第二步默认 `--domains all`，授权页展示实际申请的个人权限；可以使用 `--domains calendar,docs,drive` 缩小业务范围。Lark 使用 `--domain lark`。
 
 非交互终端或 `--no-wait` 会输出个人授权链接和 PNG 路径后退出。用户确认后续接同一流程：
 
@@ -110,7 +110,7 @@ Telegram 用 [BotFather](https://core.telegram.org/bots/features#botfather) 创�
 npm run weixin:login -- /absolute/path/weixin.json
 ```
 
-终端显示二维码和链接；需要配对码、刷新二维码时沿用腾讯登录流程。登录成功后凭据以 0600 写入文件，不打印 token。配置引用该文件即可；默认把此次扫码返回的 `userId` 绑定为所有者。更换微信账号使用新的连接 ID；同一账号登录过期后重新扫码、更新凭据并重启服务。腾讯协议保存在 `src/channels/weixin/vendor/`，附许可证、版本与原文件哈希；更新脚本不会安装 OpenClaw。
+终端显示二维码和链接；需要配对码、刷新二维码时沿用腾讯登录流程。登录成功后凭据以 0600 写入文件，不打印 token。配置引用该文件即可；默认把此次扫码返回的 `userId` 绑定为所有者。更换微信账号使用新的连接 ID；同一账号登录过期后重新扫码、更新原凭据文件，连接会按退避自动重试。腾讯协议保存在 `src/channels/weixin/vendor/`，附许可证、版本与原文件哈希；更新脚本不会安装 OpenClaw。
 
 微信是腾讯 iLink bot 配对，不是登录并读取个人微信的全部历史、联系人或群聊。当前收发沿用腾讯协议支持的私聊。
 
@@ -126,13 +126,15 @@ Matrix 复用托管节点的 Application Service 身份和原同步进程；所�
 
 群聊同时填写 `groupIds` 和允许的发送人地址。群聊/话题不会共享私人主会话。邮件有多个 To/CC 收件人时按群聊线程处理，只有显式配置相应线程才执行；回复仍只走原邮件 reply。
 
+飞书云文档评论也作为共享线程处理，不进入个人主会话。需要处理某份文档的评论时，在 `groupIds` 中填 `document:文档token`，并让允许的发送人在评论里 @机器人。正文通过官方评论接口读取，回复回到原文档；评论接口只支持相应文本/链接内容，因此该路径不展示 IM 卡片或流式输出。
+
 状态接口沿用托管服务的所有者认证：
 
 ```text
 GET /_agent-router/v1/agents/{agentId}/communication
 ```
 
-返回连接启动状态与错误、最近 100 条 Inbox/Outbox 记录、Host 运行和待处理的原生交互；不返回平台 token。`started` 表示适配器启动成功，实时错误看 `error`，不能把它当成平台实时在线证明。配置或首次连接失败时先修正错误，再重启服务。
+返回连接启动状态与错误、最近 100 条 Inbox/Outbox 记录、Host 运行和待处理的原生交互；不返回平台 token。`started` 表示适配器启动成功，实时错误看 `error`，不能把它当成平台实时在线证明。首次连接失败和轮询登录过期会按 2–60 秒退避重试，并重读凭据；修复原凭据文件后可恢复。修改身份绑定或连接配置仍需要重启。邮件过期游标不会被自动重置。
 
 飞书个人授权沿用同一所有者认证：
 
@@ -164,11 +166,13 @@ POST .../communication/calls/{callId}/result
 { "result": 原生 Agent 所需的 JSON }
 ```
 
-答案格式沿用 Host 的原生交互契约，不转换成统一“同意/拒绝”。当前没有聊天按钮 UI；待处理交互需要通过该接口或已有 Host 产品入口解决，否则该轮继续等待。
+正常使用时，问题直接出现在原聊天：飞书和 Telegram 使用原生按钮，其他渠道展示文字选项。单个问题可直接回复选项名称、编号或答案；多个问题按显示的字段填写 JSON，或引用对应问题后回答。Router 转换成该内核的原生响应并回传同一运行。上述接口保留给产品入口与人工操作。密码、sudo 和 vault 等敏感输入仍由 Host 原生交互入口处理，不要求在 IM 中填写。
+
+`/cancel`、`/stop` 或“停止”取消当前任务；`/steer 补充内容` 交给支持 steering 的当前内核。输入补充答案会续接等待输入的原任务，不再创建一轮新任务。群聊中只有该轮发送者能回答或控制该轮。
 
 ## 恢复与发送语义
 
-Router 保存收到的消息、原始回复路径、执行绑定与发送记录；重启后观察已有 Host run，不重新提交模型请求。保留 Router SQLite、Host 服务状态和原生 Agent 会话存储才能延续原会话。runtime、稳定 instructions、工具定义、实例或 Host 地址变更需要显式迁移/新 Agent，不能直接改配置后把旧上下文接到另一个执行环境。因此已有纯聊天 Host 绑定首次添加 `personalTools` 也需要迁移或新 Agent；日后 token 刷新或重新授权不改变工具定义，可以继续原会话。
+Router 保存收到的消息、原始回复路径、执行绑定与发送记录；重启后观察已有 Host run，不重新提交模型请求。保留 Router SQLite、Host 服务状态和原生 Agent 会话存储才能延续原会话。runtime、稳定 instructions、工具定义、实例或 Host 地址变更需要显式迁移/新 Agent，不能直接改配置后把旧上下文接到另一个执行环境。这次新增稳定的 `channel` 工具，已有旧版 Host 绑定升级时需要显式迁移或新 Agent；首次添加 `personalTools` 同样如此。日后 token 刷新或重新授权不改变工具定义，可以继续原会话。
 
 工具调用按 Host run/call ID 保存执行与结果。已完成调用只重复回传保存的结果；CLI 写操作中断后不自动执行第二次。官方 CLI 的 `confirmation_required` 原样交给 Agent，只有所有者明确确认具体操作后才允许其加 `--yes`；Router 不代替 Agent 作业务决定。
 
@@ -181,11 +185,23 @@ Host 提交响应丢失或运行结果未知会标成 `unknown`，暂停该固�
 
 飞书官方 Channel 内部异步分发消息并处理平台确认，业务处理异常不会回传成平台重投要求；Router 能持久化已进入回调的消息，并报告 `feishu_receipt_failed`，但不承诺磁盘故障窗口内端到端无损收信。Telegram、邮件、微信的游标在同步持久化收信之后推进；Matrix 收信与原游标共用事务。
 
-这版只发送最终文字结果，长回复按渠道限制分片。飞书保留资源引用，尚未实现跨渠道附件下载并提交给 Host；音视频、主动通知、卡片流式更新和聊天交互 UI 不在本版范围。超过 24 KB 的文字输入会收到缩短提示，不会卡住后续收信。
+## 媒体与原生能力
+
+纯附件消息也进入同一对话。Router 使用平台的资源接口下载实际字节，通过 Host 的 `attachments` 接口传入；每轮合计最多 30 MiB、30 个附件，同时遵守平台限制（标准 Telegram Bot API 下载上限 20 MB）。Host 保存不可变文件到工作区 `.agent-host/attachments/`，目录附带 `.gitignore`。这些文件和 Router 的媒体缓存属于私有运行状态，按自己的保留周期管理。
+
+图片通过 Codex、Claude、Pi、OpenClaw 的原生图片输入进入内核；ACP 按其协商出的图片能力处理。其他文件、音视频保留为真实工作区文件，交给内核的文件或媒体工具。微信提供的语音转写同时保留。媒体传输可用不代表所选模型自动具备 ASR、TTS 或视频理解；这些能力由执行端模型/工具提供。飞书贴纸目前提供原生引用和发送，官方消息资源接口不支持其下载。
+
+Agent 获得 `channel` 工具：`capabilities` 返回当前渠道的收发能力及原生参数说明，`message` 返回原消息，`send` 发送文字、支持的 HTML/卡片或 Host 工作区文件，`delivery` 查询投递结果，`native` 调用已声明的原生操作（表情、编辑、输入状态等）。发送只作用于当前对话保存的回复路径；`accepted` 才表示平台接受，`queued` 或 `uncertain` 不能当作发送成功。飞书 CLI 下载/预览/导出出的工作文件也会传到 Host，图片保留原生图片工具结果。
+
+Agent 需要发文件或 Router 需要转移飞书下载产物时，在 Host 配置 `workspaceFiles: true`；入站附件不要求打开额外文件 API。Router 和 Host 应部署本次兼容源码，旧 Host 服务不会接受新增媒体字段。文件 API 仍限制在配置的工作区内。
+
+飞书通过官方流式卡片、Telegram 通过原生草稿、Matrix 通过分段消息编辑展示进度和最终结果。邮件与微信使用完成后的正常回复。消息编辑保留为事件，不自动重跑模型。超过 24 KB 的文字输入会收到缩短提示，不会卡住后续收信。
+
+Grove Mail 的 `public_url` 与 API 地址不同时，在连接配置中增加 `attachmentOrigins: ["https://mail-public.example"]`；附件下载不携带邮箱 API key。
 
 ## 已验证范围
 
-`npm test` 覆盖跨渠道主会话、原路径回复、群聊隔离、游标、去重、分片回执、未知结果、实例撤销和重启恢复，以及个人身份校验、并发授权续接、用户 scope 恢复、工具执行账本和只读接入检查。现有 Matrix/A2A 回归测试继续运行。
+`npm test` 覆盖跨渠道主会话、原路径回复、群聊隔离、游标、去重、分片回执、未知结果、实例撤销和重启恢复、纯附件往返、原生按钮/自由回答、取消/补充、流式更新与丢失回答响应重试，以及个人身份校验、并发授权续接、用户 scope 恢复、工具执行账本和只读接入检查。现有 Matrix/A2A 回归测试继续运行。
 
 真实 Agent Host 服务与 Codex 协议测试程序的集成验证：
 
