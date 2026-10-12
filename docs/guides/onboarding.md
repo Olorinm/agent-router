@@ -202,3 +202,5 @@ checks; worker instance credentials cannot configure channels.
 Local checks cover the Go CLI, protocol fixtures, account boundaries, private
 persistence, rollback and an A2A → Host → reply round trip. Actual provider
 accounts and model execution still need live integration testing.
+
+Authenticated configuration requests are also limited to 600 per minute per account, in addition to the service limit before authentication.

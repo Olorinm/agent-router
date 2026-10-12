@@ -1,4 +1,5 @@
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -16,7 +17,11 @@ const object = z.object({}).strict();
 /** Mounted AFTER the managed service's existing account authentication and Agent ownership checks. */
 export function createOnboarding(service: ManagedService, configuration: OnboardingConfiguration) {
   const app = express.Router(), connections = new ConnectionSetup(service, configuration);
-  app.use((req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
+  // The outer service limits requests before authentication. Keep the account
+  // budget local as well: configuration reads private files and can replace workers.
+  app.use(root, rateLimit({windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
+    keyGenerator: (_req, res) => String(res.locals.owner), message: {error: "rate_limit_exceeded"}}));
+  app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
   app.get(root + "/setup", (_req, res) => {
     res.json({
       hosts: configuration.hosts(res.locals.owner).map(({id, label, runtimeId}) => ({id, label, runtimeId})),
