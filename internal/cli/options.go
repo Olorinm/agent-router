@@ -15,7 +15,7 @@ type options struct {
 	connectorURL, endpointTokenFile, connectorRuntime                                                         string
 	serviceURL, outputFile                                                                                    string
 	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile                             string
-	tags                                                                                                      []string
+	tags, attachments                                                                                         []string
 	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version                              bool
 }
 
@@ -48,6 +48,7 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.StringVar(&o.room, "room", "", "Filter event room")
 	f.StringVar(&o.worker, "worker", "", "Stable worker name")
 	f.StringVar(&o.wait, "wait", "0", "Wait for work or results, in seconds")
+	f.StringArrayVar(&o.attachments, "attachment", nil, "Attach a local file to a channel reply (repeatable; 4 MB total)")
 	f.StringVar(&o.dataFile, "data-file", "", "JSON result object")
 	f.BoolVar(&o.all, "all", false, "Include completed work")
 	f.BoolVarP(&o.help, "help", "h", false, "Show help")
@@ -111,8 +112,8 @@ const help = `Agent Router — Go CLI
   inbox [--all]
   claim [WORK_ID] --worker NAME [--wait SECONDS]
   work WORK_OR_CLAIM_ID
-  progress CLAIM_ID TEXT | reply CLAIM_ID TEXT [--data-file FILE]
-  need-input CLAIM_ID TEXT | fail CLAIM_ID TEXT | cancelled CLAIM_ID
+  progress CLAIM_ID TEXT | reply CLAIM_ID TEXT [--data-file FILE] [--attachment FILE]
+  defer CLAIM_ID TEXT | need-input CLAIM_ID TEXT | fail CLAIM_ID TEXT | cancelled CLAIM_ID
   conversation-open ADDRESS
   history ROOM_ID [--from TOKEN] | read ROOM_ID [EVENT_ID] | leave ROOM_ID
   watch [--since CURSOR] [--room ROOM_ID]

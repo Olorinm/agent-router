@@ -64,6 +64,7 @@ export class ManagedService {
       const work = connector.cli!;
       return {
         send: (request, source) => work.send(request, source), get: (id) => work.get(id), cancel: (id) => work.cancel(id),
+        outputAttachments: (taskId) => work.outputAttachments(taskId),
         acknowledge: (taskId) => { for (const event of work.events()) if (event.value.id === taskId) work.ack(event.id); },
       };
     });
@@ -224,7 +225,12 @@ export class ManagedService {
 export function createManagedApp(service: ManagedService, setup?: express.Router) {
   const app = express(); app.disable("x-powered-by");
   app.set("trust proxy", service.config.trustedProxies ?? false);
-  app.use(express.json({ limit: "2mb" }));
+  const jsonBody = express.json({ limit: "2mb" });
+  // The authenticated runtime parses attachment-bearing updates with a separate bound.
+  app.use((req, res, next) => {
+    if (req.method === "POST" && /^\/_agent-router\/v1\/agents\/[^/]+\/gateway\/api\/work\/[^/]+\/update$/.test(req.path)) next();
+    else jsonBody(req, res, next);
+  });
   app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service" }));
   app.use("/_matrix/app/v1", (req, res, next) => {
     if (!equal(bearer(req), service.config.hsToken) ||

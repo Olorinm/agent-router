@@ -1,3 +1,4 @@
+import { attachmentMetadata, type Attachment } from "../attachments.js";
 import { randomUUID } from "node:crypto";
 import { SendMessageRequest, TaskState, type Task } from "@a2a-js/sdk";
 import { ConnectorStore } from "../matrix/store.js";
@@ -9,6 +10,7 @@ import { evaluateInvocation } from "./policy.js";
 
 type Backend = Omit<ExecutionBackend, "send"> & {
   send(request: SendMessageRequest, source: ExecutionSource): Promise<Task>;
+  outputAttachments?: (taskId: string) => Attachment[];
   acknowledge?: (taskId: string) => void;
 };
 type Decision = "allow" | "ask" | "deny";
@@ -19,6 +21,7 @@ export interface ChannelEvent {
   hash: string; contextKey: string; contextId: string; decision: Decision;
   state: "pending" | "queued" | "submitted" | "delivering" | "replied" | "rejected" | "delivery-failed";
   prepared?: boolean; resumeTaskId?: string; taskId?: string;
+  attachments?: ReturnType<typeof attachmentMetadata>;
   response?: string; deliveryStartedAt?: string; deliveryId?: string; error?: string;
   ruleId?: string;
 }
@@ -195,6 +198,7 @@ export class ChannelRouter {
             messageId: event.id, contextId: event.contextId, ...(event.resumeTaskId ? { taskId: event.resumeTaskId } : {}),
             role: "ROLE_USER", parts: [{ text: event.message.text }],
           } }), { sender: `visitor:${event.visitorId}`, room: `channel:${event.contextKey}`, approved: true,
+            ...(event.message.documents ? { documents: event.message.documents } : {}),
             execution: { accessMode: entry.accessMode } });
           event.taskId = task.id; event.state = "submitted";
           this.store.transaction(() => {
@@ -211,7 +215,13 @@ export class ChannelRouter {
         if (!isTerminal(task) && ![TaskState.TASK_STATE_INPUT_REQUIRED, TaskState.TASK_STATE_AUTH_REQUIRED].includes(task.status?.state ?? 0)) continue;
         if (!event.response) {
           event.response = responseText(task); event.state = "delivering";
-          event.deliveryStartedAt = new Date().toISOString(); this.save(event);
+          event.deliveryStartedAt = new Date().toISOString();
+          const files = backend.outputAttachments?.(event.taskId) ?? [];
+          if (files.length) event.attachments = attachmentMetadata(files);
+          this.store.transaction(() => {
+            if (files.length) this.store.set("channel_reply_attachments", event.id, files);
+            this.save(event);
+          });
         }
         // The provider's idempotency retention is not an unlimited exactly-once
         // guarantee. Stop uncertain delivery after one day for operator review.
@@ -219,7 +229,13 @@ export class ChannelRouter {
           event.state = "delivery-failed"; event.error = "delivery_uncertain_review_required"; this.save(event); continue;
         }
         try {
-          event.deliveryId = await adapter.reply(event.message, event.response, `router-${event.id}`);
+          const files = this.store.get<Attachment[]>("channel_reply_attachments", event.id) ?? [];
+          if (event.attachments?.length && JSON.stringify(attachmentMetadata(files)) !== JSON.stringify(event.attachments)) {
+            throw new ChannelError("channel_reply_attachment_missing", true);
+          }
+          event.deliveryId = files.length
+            ? await adapter.reply(event.message, event.response, `router-${event.id}`, files)
+            : await adapter.reply(event.message, event.response, `router-${event.id}`);
           event.state = "replied"; this.save(event);
         } catch (error) {
           if (error instanceof ChannelError && error.permanent) { event.error = error.code; this.save(event); }

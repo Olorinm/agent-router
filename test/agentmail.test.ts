@@ -18,6 +18,36 @@ function setup(items: ReturnType<typeof mail>[], next: string | undefined = unde
   return { adapter, fetcher };
 }
 describe("AgentMail adapter", () => {
+  it('preserves full long input and downloads text attachments without forwarding credentials', async () => {
+    const body = '完整故事。'.repeat(10000);
+    const message = mail({ extracted_text: body, attachments: [{ attachment_id: 'a', filename: '../../story.txt', size: 12 }] });
+    const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+      if (String(url).startsWith('https://files.example.test/')) {
+        expect(new Headers(init?.headers).has('Authorization')).toBe(false);
+        return new Response('小说附件');
+      }
+      if (String(url).endsWith('/attachments/a')) return json({ attachment_id: 'a', size: 12, download_url: 'https://files.example.test/story.txt' });
+      return json(String(url).includes('messages?') ? { messages: [message] } : message);
+    });
+    const adapter = new AgentMailAdapter({ inbox, apiKey: 'test-token', fetch: fetcher, fullInput: true });
+    const result = (await adapter.poll(undefined, start)).messages[0]!;
+    expect(result.documents).toEqual([{ name: 'mail-body.txt', text: body }, { name: '../../story.txt', text: '小说附件' }]);
+    expect(result.text.length).toBeLessThan(3000);
+    adapter.close();
+  });
+  it("sends binary attachments with the original reply recipient and stable key", async () => {
+    const { adapter, fetcher } = setup([mail()]);
+    const incoming = (await adapter.poll(undefined, start)).messages[0]!;
+    const attachment = { filename: "概念图.png", contentType: "image/png", content: Buffer.from([0, 255, 128, 7]).toString("base64") };
+    await adapter.reply(incoming, "请查收附件。", "attachment-delivery", [attachment]);
+    const init = fetcher.mock.calls.at(-1)![1];
+    const body = JSON.parse(String(init?.body));
+    expect(body.attachments).toEqual([{ filename: attachment.filename, content_type: "image/png", content: attachment.content }]);
+    expect(body.to).toEqual(["alice@example.test"]);
+    expect(new Headers(init?.headers).get("Idempotency-Key")).toBe("attachment-delivery");
+    await expect(adapter.reply(incoming, "bad", "too-large", [{ ...attachment, content: Buffer.alloc(4_000_001).toString("base64") }])).rejects.toThrow();
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/reply'))).toHaveLength(1);
+  });
   it("canonicalizes a single mailbox without trusting its display name", () => {
     expect(mailbox('"Alice" <ALICE@example.test>')).toBe("alice@example.test");
     expect(mailbox("alice@example.test, evil@other.test")).toBeUndefined();

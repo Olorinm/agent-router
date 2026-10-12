@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectorStore } from "../src/matrix/store.js";
 import { CliWork } from "../src/matrix/cli-work.js";
+import type { Attachment } from "../src/attachments.js";
 import { ChannelRouter } from "../src/channels/router.js";
 import { ChannelError, type ChannelEntry, type ChannelMessage } from "../src/channels/types.js";
 import { evaluateInvocation } from "../src/channels/policy.js";
@@ -19,7 +20,7 @@ function setup(config = entry) {
   cleanup.push(() => ledger.close(), () => tasks.close());
   const work = new CliWork(tasks, () => "ask");
   const adapter = { poll: vi.fn(async () => ({ messages: [], cursor: "", more: false })),
-    reply: vi.fn(async (_message: ChannelMessage, _text: string, _id: string) => "sent-1") };
+    reply: vi.fn(async (_message: ChannelMessage, _text: string, _id: string, _attachments?: Attachment[]) => "sent-1") };
   const router = new ChannelRouter(ledger, async () => work);
   router.register(structuredClone(config), adapter);
   return { router, ledger, tasks, work, adapter };
@@ -93,6 +94,37 @@ describe("channel policy and identity", () => {
 });
 
 describe("channel execution and reliable replies", () => {
+  it('retains the email event while deferred and delivers only the eventual result', async () => {
+    const { router, work, adapter } = setup();
+    const original = router.ingest(entry, { ...message('async'), documents: [{ name: 'story.txt', text: '完整故事'.repeat(10000) }] });
+    await router.tick('mail'); const claim = work.claim('worker')!;
+    expect(claim.documents?.[0]?.text.length).toBe(40000);
+    work.update(claim.claimId!, 'defer', 'Waiting for video'); await router.tick('mail');
+    expect(adapter.reply).not.toHaveBeenCalled();
+    expect(router.events('mail')[0]?.state).toBe('submitted');
+    router.ingest(entry, message('other', 'bob@example.test')); await router.tick('mail');
+    expect(work.claim('worker')?.id).not.toBe(claim.id);
+    work.update(claim.claimId!, 'reply', 'Video link'); await router.tick('mail');
+    expect(adapter.reply).toHaveBeenCalledWith(original.message, 'Video link', `router-${original.id}`);
+  });
+  it("snapshots binary replies and retries identical attachments after router restart", async () => {
+    const { router, ledger, work, adapter } = setup();
+    router.ingest(entry, message("picture")); await router.tick("mail");
+    const claim = work.claim("worker")!;
+    const files = [{ filename: "mockup.png", contentType: "image/png", content: Buffer.alloc(1_660_000, 42).toString("base64") }];
+    const result = work.update(claim.claimId!, "reply", "Attached", undefined, "worker", files);
+    expect(work.update(claim.claimId!, "reply", "Attached", undefined, "worker", files)).toEqual(result);
+    expect(JSON.stringify(result).length).toBeLessThan(44000);
+    adapter.reply.mockRejectedValueOnce(new ChannelError("network"));
+    await router.tick("mail");
+    expect(router.events("mail")[0]?.state).toBe("delivering");
+    expect(JSON.stringify(router.events("mail")).length).toBeLessThan(44000);
+    const restarted = new ChannelRouter(ledger, async () => work); restarted.register(entry, adapter);
+    await restarted.tick("mail");
+    expect(adapter.reply.mock.calls[0]?.[3]).toEqual(files);
+    expect(adapter.reply.mock.calls[1]).toEqual(adapter.reply.mock.calls[0]);
+    expect(router.events("mail")[0]?.state).toBe("replied");
+  });
   it("executes through the existing worker contract and sends the result to the original message", async () => {
     const { router, work, adapter } = setup();
     const original = router.ingest(entry, message("one"));

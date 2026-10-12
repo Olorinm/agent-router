@@ -1,3 +1,4 @@
+import type { Attachment } from "../attachments.js";
 import { z } from "zod";
 import { invocationRuleSchema } from "./policy.js";
 
@@ -19,12 +20,13 @@ export const channelMessageSchema = z.object({
   subject: z.string().min(1).max(320), subjectDomain: z.string().max(253).optional(),
   authentication: z.enum(["provider-screened", "unverified"]),
   text: z.string().min(1).max(24000), receivedAt: z.string().datetime(),
+  documents: z.array(z.object({ name: z.string().min(1).max(1000), text: z.string().max(1_000_000) }).strict()).max(11).optional(),
 }).strict();
 export type ChannelMessage = z.infer<typeof channelMessageSchema>;
 export interface ChannelPage { messages: ChannelMessage[]; cursor: string; more: boolean; }
 export interface ChannelAdapter {
   poll(cursor: string | undefined, startedAt: string): Promise<ChannelPage>;
-  reply(message: ChannelMessage, text: string, deliveryId: string): Promise<string>;
+  reply(message: ChannelMessage, text: string, deliveryId: string, attachments?: Attachment[]): Promise<string>;
   close?(): void;
 }
 export class ChannelError extends Error {
