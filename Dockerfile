@@ -5,7 +5,7 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY docs/guides ./docs/guides
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=0.6.0" -o /agent-router ./cmd/agent-router
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=0.7.0-alpha.1" -o /agent-router ./cmd/agent-router
 
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
