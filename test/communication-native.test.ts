@@ -135,6 +135,16 @@ describe("native communication round trips", () => {
     h.receive("edit", "修改原文", { event: { type: "message-edit", data: { messageId: "one" } } }); await h.core.dispatch();
     expect(h.work.list(true)).toHaveLength(2);
   });
+  it("does not treat a reaction as an answer to a pending question or inherit its button action", async () => {
+    const h = fixture(); await h.core.start(); h.receive("one", "安排会议"); await h.tick(); h.pending(); await h.tick();
+    const token = h.sent.find((item) => item.buttons?.length)!.buttons![0]!.token;
+    const sent = h.sent.length;
+    h.receive("reaction", "明天", { action: { token }, event: { type: "reaction", data: { messageId: "one", emoji: "Yes", action: "added" } } });
+    await h.tick();
+    expect(h.resolved).toHaveLength(0); expect(h.starts).toHaveLength(1); expect(h.sent).toHaveLength(sent);
+    h.receive("answer", "", { action: { token } }); await h.tick();
+    expect(h.resolved).toEqual([{ answers: { date: { answers: ["明天"] } } }]);
+  });
   it("reconnects a failed startup after backoff", async () => {
     const h = fixture(); vi.mocked(h.adapter.start).mockRejectedValueOnce(new Error("network_failed")); await h.core.start();
     expect(h.core.status().connections[0]!.started).toBe(false); await h.core.reconnect(Date.now() + 5000);

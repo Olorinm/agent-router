@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SendMessageRequest, TaskState } from "@a2a-js/sdk";
-import { CommunicationCore, type OutboxRecord } from "../src/communication/core.js";
+import { CommunicationCore, type InboxRecord, type OutboxRecord } from "../src/communication/core.js";
 import { DurableStore } from "../src/communication/store.js";
 import { CliWork, WorkError } from "../src/execution/work.js";
 import { HostWorker } from "../src/execution/host-worker.js";
@@ -65,6 +65,35 @@ function message(id: string, sender = "owner-feishu", overrides: Partial<Channel
 async function complete(h: ReturnType<typeof harness>) { await h.core.dispatch(); await h.worker().tick(); await h.core.dispatch(); await h.core.flush(); }
 
 describe("communication receipt and routing", () => {
+  it.each(["feishu", "telegram", "matrix"] as const)("records %s reactions without starting work or sending a receipt", async (channel) => {
+    const h = harness(); await h.core.start();
+    for (const scope of ["direct", "group"] as const) for (const action of ["added", "removed"]) {
+      const input = message(`${scope}-${action}`, `owner-${channel}`, { scope, groupId: "group", text: "",
+        event: { type: "reaction", data: { messageId: "original", emoji: "Yes", action } } });
+      h.core.receive(channel, input); h.core.receive(channel, input);
+    }
+    await complete(h); await complete(h);
+    expect(h.work.list(true)).toHaveLength(0); expect(h.host.starts).toHaveLength(0);
+    expect(h.core.status().outbox).toHaveLength(0);
+    expect(h.core.status().inbox).toHaveLength(4);
+    expect(h.core.status().inbox.every((item) => item.state === "done" && item.taskId === null && item.reason === "reaction_recorded_without_execution")).toBe(true);
+    expect(h.store.entries<InboxRecord>("communication_inbox").map(({ value }) => value.source.event!.data.action)).toEqual(["added", "removed", "added", "removed"]);
+    h.core.receive(channel, message("next", `owner-${channel}`)); await complete(h);
+    expect(h.host.starts).toHaveLength(1); expect(h[channel].sent).toHaveLength(1);
+  });
+  it("records Matrix redactions without executing their reason as a request", async () => {
+    const h = harness(); await h.core.start();
+    h.core.receive("matrix", message("redaction", "owner-matrix", { text: "removed message", event: { type: "message-redaction", data: { redacts: "original" } } }));
+    await complete(h);
+    expect(h.work.list(true)).toHaveLength(0); expect(h.core.status().outbox).toHaveLength(0);
+    expect(h.core.status().inbox[0]).toMatchObject({ state: "done", reason: "message-redaction_recorded_without_execution" });
+  });
+  it.each(["comment", "card-action", "callback", "native-message"])("still dispatches intentional %s inputs", async (type) => {
+    const h = harness(); await h.core.start();
+    h.core.receive("feishu", message("interaction", "owner-feishu", { text: "", event: { type, data: { value: "request" } } }));
+    await complete(h);
+    expect(h.host.starts).toHaveLength(1); expect(h.host.starts[0]!.input).toContain(type);
+  });
   it("shares an owner's private conversation across channels and freezes each reply route", async () => {
     const h = harness(); await h.core.start();
     const first = h.core.receive("feishu", message("one"));

@@ -140,7 +140,13 @@ export class CommunicationCore {
       for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) {
         if (value.state !== "received") continue;
         this.validate();
-        if (value.source.event?.type === "message-edit") { this.store.set("communication_inbox", id, { ...value, state: "done", reason: "edit_recorded_without_reexecution" }); continue; }
+        const eventType = value.source.event?.type;
+        // Message state changes are durable context, not new requests or answers to pending interactions.
+        if (eventType && ["reaction", "message-edit", "message-redaction"].includes(eventType)) {
+          this.store.set("communication_inbox", id, { ...value, state: "done",
+            reason: eventType === "message-edit" ? "edit_recorded_without_reexecution" : `${eventType}_recorded_without_execution` });
+          continue;
+        }
         if (this.control && await this.control(value)) {
           this.store.set("communication_inbox", id, { ...value, state: "done" }); continue;
         }
