@@ -74,6 +74,13 @@ permission change; a missing user scope needs user consent. Do not change identi
 just to bypass a failed request. The worker tells the model to read the CLI's
 bundled skills and preserve its confirmation requirements.
 
+For bot access to **group history**, Feishu additionally requires
+`im:message.group_msg` (read all messages in associated groups), alongside
+`im:message`, `im:message:readonly`, or the legacy history scope. Receiving
+@mentions alone does not grant history access. Enable and publish this permission
+in the application console before expecting group history queries to work. See
+the [official history API prerequisites](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list).
+
 Channel tasks include the provider conversation, message, sender, and quoted
 message IDs. For Feishu, the provider conversation ID is the CLI's `--chat-id`.
 The agent can fetch recent messages or follow a thread when prior discussion is

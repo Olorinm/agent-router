@@ -66,6 +66,10 @@ docker compose -f compose.managed.yaml exec worker \
 权限时走用户授权，不通过切换身份绕过错误。worker 会提示 Agent 先读官方技能，
 并保留 CLI 对具体操作的确认要求。
 
+机器人读取**群历史**还需要 `im:message.group_msg`（获取群组中所有消息），以及
+`im:message`、`im:message:readonly` 或旧版历史读取权限之一。能收到 @消息不代表
+能读取群历史；需要在应用后台开通并发布这项权限。见[官方历史消息接口说明](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)。
+
 渠道任务现在带上平台会话、消息、发送者及引用消息 ID。飞书的平台会话 ID 就是
 `--chat-id`，Agent 可以据此查询近期消息和引用话题。它按需读取历史；不会自动把
 整个群历史塞进上下文，也没有改变会话分组规则。普通回复仍由 Router 送回。
