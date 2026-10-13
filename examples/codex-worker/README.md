@@ -121,3 +121,22 @@ For a worker-only update, `Dockerfile.update` accepts an existing verified
 `WORKER_IMAGE` reference. It replaces only `worker.mjs`, preserving the installed
 Codex/CLI versions and container defaults. Build to a new image tag and retain
 the previous image for rollback; use the full Dockerfile for dependency changes.
+
+## Tools in the execution environment
+
+The full image includes the official `lark-cli` 1.0.97 and its bundled skills.
+The worker calls it directly through the native terminal tool; no MCP server is
+needed. See [setup and verification](../../docs/guides/worker-tools.md) ·
+[简体中文](../../docs/guides/worker-tools.zh-CN.md).
+
+Compose keeps its configuration and token store under `/state/lark`, alongside
+the worker's persistent state. `WORKER_LARK_DIR` selects a different absolute
+directory. All sessions in this worker share that account. Separate users or
+private versus shared agents need separate execution environments and volumes;
+conversation directories alone do not isolate credentials.
+
+`Dockerfile.tools` adds the pinned CLI to an existing worker image without
+replacing an operator's worker implementation. The worker must also pass the
+configured CLI directories to its model subprocess and include the bundled-skill
+guidance, as this example does. Do not replace a customized worker with the example
+just to install a CLI.

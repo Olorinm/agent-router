@@ -34,6 +34,18 @@ process.stdout.write(JSON.stringify(result));
 require('node:assert/strict').equal(process.argv[process.argv.indexOf('--sandbox') + 1], 'read-only');
 require('node:assert/strict').equal(process.argv.includes('use_legacy_landlock'), ${recovers});
 const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
+const assert = require('node:assert/strict');
+assert.equal(process.env.LARKSUITE_CLI_CONFIG_DIR, ${recovers} ? ${JSON.stringify(join(root, 'lark', 'config'))} : undefined);
+assert.equal(process.env.LARKSUITE_CLI_DATA_DIR, ${recovers} ? ${JSON.stringify(join(root, 'lark', 'data'))} : undefined);
+assert.equal(process.env.LARKSUITE_CLI_APP_SECRET, undefined);
+assert.equal(process.env.LARKSUITE_CLI_USER_ACCESS_TOKEN, undefined);
+assert.equal(process.env.CONNECTOR_API_TOKEN, undefined);
+let prompt = '';
+process.stdin.on('data', chunk => { prompt += chunk; });
+process.stdin.on('end', () => {
+  assert.equal(prompt.includes('lark-cli skills read lark-shared'), ${recovers});
+  assert.equal(prompt.includes('lark-cli skills read lark-im'), ${recovers});
+});
 emit({ type: 'thread.started', thread_id: 'native-session-1' });
 emit({ type: 'turn.started' });
 emit({ type: 'error', message: 'Reconnecting... tls handshake eof PRIVATE_OPERATOR_DETAIL' });
@@ -57,6 +69,10 @@ setTimeout(() => {
         WORKER_STATE_DIR: join(root, 'state'),
         WORKER_WORKSPACE_DIR: join(root, 'workspaces'),
         WORKER_TEST_FIXTURE: fixture,
+        WORKER_LARK_DIR: recovers ? join(root, 'lark') : '',
+        LARKSUITE_CLI_APP_SECRET: 'PRIVATE_LARK_SECRET',
+        LARKSUITE_CLI_USER_ACCESS_TOKEN: 'PRIVATE_LARK_TOKEN',
+        CONNECTOR_API_TOKEN: 'PRIVATE_GATEWAY_TOKEN',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

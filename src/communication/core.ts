@@ -166,8 +166,14 @@ export class CommunicationCore {
           value.source.event ? JSON.stringify(value.source.event) : "",
           ...(value.source.attachments ?? []).map((item) => `附件：${item.name} (${item.mediaType})`)].filter(Boolean).join("\n");
         if (Buffer.byteLength(text) > 24_000) text = Buffer.from(text).subarray(0, 23_500).toString("utf8") + "\n[消息上下文已截短；原始消息可通过 channel message 工具读取。]";
+        // Execution tools need provider IDs; the internal session ID cannot fetch channel history.
+        // Select routing facts explicitly: raw events and reply data may contain provider secrets.
+        const channelContext = { channel: this.connection(value.connectionId).adapter.kind, connectionId: value.connectionId,
+          scope: value.source.scope, conversationId: value.replyRoute.target, messageId: value.replyRoute.messageId,
+          senderId: value.source.sender, ...(value.source.quoted?.messageId ? { quotedMessageId: value.source.quoted.messageId } : {}) };
         const request = SendMessageRequest.fromJSON({ message: { messageId: `channel-${id}`, contextId: value.conversationId,
-          ...(resume ? { taskId: previous!.id } : {}), role: "ROLE_USER", parts: [{ text }] }, configuration: { returnImmediately: true } });
+          ...(resume ? { taskId: previous!.id } : {}), role: "ROLE_USER",
+          parts: [{ text }, { text: `Channel context (provider routing IDs): ${JSON.stringify(channelContext)}` }] }, configuration: { returnImmediately: true } });
         // Both steps are independently durable. The stable message ID closes the restart window.
         const task = await this.work.send(request, { sender: resume ? this.work.inspect(previous!.id).from : key("channel", value.connectionId, value.source.sender),
           room: value.conversationId, approved: true });
