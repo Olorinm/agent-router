@@ -9,6 +9,7 @@ import { WorkError } from "../src/matrix/cli-work.js";
 import { OnboardingConfiguration } from "../src/onboarding/configuration.js";
 import { createOnboarding } from "../src/onboarding/routes.js";
 import { privateFile } from "../src/services/feishu/cli.js";
+import { DurableStore } from "../src/communication/store.js";
 import type { EnvironmentProvider } from "../src/onboarding/environments.js";
 
 const cleanup: Array<() => unknown> = [];
@@ -361,4 +362,34 @@ it("renewal failure stays visible and requires reconciliation without replacing 
     for (const close of cleanup.splice(0).reverse()) await close();
     vi.useRealTimers();
   }
+});
+
+it("a second coordinator cannot acquire the same journal and a stale owner cannot mutate cloud resources", async () => {
+  const f = await fixture();
+  const second = new OnboardingConfiguration(
+    f.directory,
+    join(f.directory, "onboarding.json"),
+    undefined,
+    async () => ({ provider: () => f.provider }),
+  );
+  expect(() => second.attach(f.service)).toThrow(
+    "connector_store_already_in_use",
+  );
+  await f.api(f.path, { profileId: "cloud" });
+  await f.settled();
+  const journal = new DurableStore(
+    join(f.directory, "onboarding", "environments.sqlite"),
+    "example.test",
+  );
+  try {
+    journal.set("meta", "lease", {
+      owner: "replacement-coordinator",
+      expires: Date.now() + 60000,
+    });
+  } finally {
+    journal.close();
+  }
+  expect((await f.api(f.path + "/pause", {})).status).toBe(503);
+  expect(f.pauses).toBe(0);
+  expect(f.creates).toBe(1);
 });

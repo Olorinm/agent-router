@@ -183,6 +183,8 @@ export class EnvironmentOnboarding {
       try {
         this.store.acquireLease(this.lease);
       } catch {
+        clearInterval(this.timer);
+        clearInterval(this.leaseTimer);
         this.controller.abort();
       }
     }, 10_000);
@@ -323,7 +325,10 @@ export class EnvironmentOnboarding {
     if (this.jobs.has(record.agentId))
       throw new WorkError("environment_operation_running", 409);
     const job = Promise.resolve()
-      .then(operation)
+      .then(() => {
+        this.assertOpen();
+        return operation();
+      })
       .catch((error) => {
         const code =
           error instanceof WorkError
