@@ -40,6 +40,31 @@ class Weixin extends WeixinChannel {
 const route: ReplyRoute = { connectionId: "channel", target: "chat", messageId: "7", data: {} };
 
 describe("official channel contracts", () => {
+  it("receives delayed Feishu SDK events while skipping pre-activation backlog", async () => {
+    const c = context(), activatedAt = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(activatedAt);
+    const channel = new FeishuChannel({ appId: "fixture", appSecret: "fixture" });
+    vi.spyOn(channel.channel.rawClient, "request").mockResolvedValue({ code: 0, bot: { open_id: "bot", app_name: "Test" } });
+    // Stub only the network handshake; retain the SDK's dispatcher, normalization and safety pipeline.
+    vi.spyOn(channel.channel as unknown as { connectWebSocket(timeout: number): Promise<void> }, "connectWebSocket").mockResolvedValue();
+    await channel.start(c.value);
+    try {
+      clock.mockReturnValue(activatedAt + 2000);
+      await channel.channel.dispatcher.invoke({ schema: "2.0", header: { event_type: "im.message.receive_v1" }, event: {
+        sender: { sender_id: { open_id: "owner" }, sender_type: "user" },
+        message: { message_id: "sdk-delayed-message", chat_id: "chat", chat_type: "p2p", message_type: "text",
+          create_time: String(activatedAt + 1000), content: JSON.stringify({ text: "你好" }) },
+      } }, { needCheck: false });
+      expect(c.errors).toEqual([]);
+      expect(c.messages).toMatchObject([{ externalId: "sdk-delayed-message", sender: "owner", scope: "direct", text: "你好" }]);
+      await channel.channel.dispatcher.invoke({ schema: "2.0", header: { event_type: "im.message.receive_v1" }, event: {
+        sender: { sender_id: { open_id: "owner" }, sender_type: "user" },
+        message: { message_id: "sdk-old-message", chat_id: "chat", chat_type: "p2p", message_type: "text",
+          create_time: String(activatedAt - 1000), content: JSON.stringify({ text: "old" }) },
+      } }, { needCheck: false });
+      expect(c.messages).toHaveLength(1);
+    } finally { await channel.stop(); }
+  });
   it("normalizes Feishu thread routes and uses the official Channel send API", async () => {
     const c = context(), send = vi.fn(async () => ({ messageId: "reply" }));
     const native = { on: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), botIdentity: { openId: "bot" }, send } as unknown as LarkChannel;

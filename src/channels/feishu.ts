@@ -18,7 +18,8 @@ export class FeishuChannel implements ChannelAdapter {
       source: "agent-router", handshakeTimeoutMs: 15_000, includeRawEvent: true,
       policy: { dmMode: "open", requireMention: true, groupAllowlist: options.groupIds ?? [] },
       // Keep each provider message intact: Router owns deduplication and turn serialization.
-      safety: { dedup: { ttl: 0 }, staleMessageWindowMs: 0, chatQueue: { enabled: false },
+      // SDK zero means immediate expiry. Router's durable activation checkpoint filters old backlog.
+      safety: { dedup: { ttl: 0 }, staleMessageWindowMs: Number.MAX_SAFE_INTEGER, chatQueue: { enabled: false },
         batch: { text: { delayMs: 0, maxMessages: 1 }, media: { delayMs: 0, maxItems: 1 } } },
       outbound: { textChunkLimit: 4000, retry: { maxAttempts: 1 } },
     });
