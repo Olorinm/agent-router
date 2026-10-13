@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import { privateFile } from "../services/feishu/cli.js";
 import {
@@ -10,16 +10,17 @@ import {
 } from "../service/channels.js";
 import type { ManagedAgent, ManagedService } from "../matrix/managed.js";
 import type { MatrixConnector } from "../matrix/connector.js";
-import {
-  EnvironmentOnboarding,
-  environmentOptionsSchema,
-  type Environments,
-} from "./environments.js";
+import type { HostPort } from "../execution/host.js";
+import type { ServiceHttp } from "../channels/http.js";
 import { WorkError } from "../matrix/cli-work.js";
+export interface HostBindingProvider {
+  assertReady(agentId: string, binding: string): void;
+  host(agentId: string, binding: string): HostPort;
+  http(agentId: string, binding: string): ServiceHttp;
+}
 
-export const onboardingOptionsSchema = z
+export const connectionOptionsSchema = z
   .object({
-    environments: environmentOptionsSchema.optional(),
     mailServices: z
       .array(
         z
@@ -35,29 +36,25 @@ export const onboardingOptionsSchema = z
       .default([]),
   })
   .strict();
-export type OnboardingOptions = z.infer<typeof onboardingOptionsSchema>;
+export type ConnectionOptions = z.infer<typeof connectionOptionsSchema>;
 
-/** Owner-scoped channels and environment profiles; HTTP clients never supply server URLs/files. */
-export class OnboardingConfiguration {
+/** Owner-scoped channel connections; Host bindings come only from trusted application code. */
+export class ConnectionConfiguration {
   readonly directory: string;
-  readonly options: OnboardingOptions;
+  readonly options: ConnectionOptions;
   private service!: ManagedService;
-  environments: EnvironmentOnboarding | undefined;
-  private readonly base: string;
   private pending = new Map<string, AgentChannelConfig>();
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
     readonly stateDirectory: string,
-    optionsFile: string,
-    private readonly loadEnvironments?: () => Promise<Environments>,
+    options: string | z.input<typeof connectionOptionsSchema>,
+    readonly hosts?: HostBindingProvider,
   ) {
-    const base = dirname(resolve(optionsFile));
-    this.base = base;
-    this.options = onboardingOptionsSchema.parse(
-      JSON.parse(readFileSync(optionsFile, "utf8")),
+    this.options = connectionOptionsSchema.parse(
+      typeof options === "string" ? JSON.parse(readFileSync(options, "utf8")) : options,
     );
     if (new Set(this.options.mailServices.map((mail) => mail.id)).size !== this.options.mailServices.length)
-      throw new Error("duplicate_onboarding_profile");
+      throw new Error("duplicate_mail_service");
     for (const raw of [...this.options.mailServices.map((mail) => mail.url)]) {
       const url = new URL(raw);
       if (
@@ -67,22 +64,14 @@ export class OnboardingConfiguration {
         url.hash ||
         url.search
       )
-        throw new Error("invalid_onboarding_url");
+        throw new Error("invalid_mail_service_url");
     }
-    this.directory = resolve(stateDirectory, "onboarding");
+    this.directory = resolve(stateDirectory, "connections");
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     privateFile(join(this.directory, ".gitignore"), "*\n");
   }
   attach(service: ManagedService) {
     this.service = service;
-    if (this.options.environments)
-      this.environments = new EnvironmentOnboarding(
-        this,
-        service,
-        this.options.environments,
-        this.base,
-        this.loadEnvironments,
-      );
   }
   agentDirectory(id: string): string {
     z.uuid().parse(id);
@@ -101,6 +90,7 @@ export class OnboardingConfiguration {
     config?: AgentChannelConfig,
   ) {
     if (!config) return undefined;
+    if (config.host?.binding && !this.hosts) throw new WorkError("host_binding_provider_required", 503);
     return createChannelRuntime(
       agent,
       connector,
@@ -112,13 +102,13 @@ export class OnboardingConfiguration {
           id: issued.instance.id,
           validate: () => {
             this.service.instance(issued.token, agent.id);
-            if (config.host?.environment)
-              this.environments?.assertReady(agent.id, config.host.environment);
+            if (config.host?.binding)
+              this.hosts!.assertReady(agent.id, config.host.binding);
           },
         };
       },
-      config.host?.environment
-        ? this.environments?.host(agent.id, config.host.environment)
+      config.host?.binding
+        ? this.hosts!.host(agent.id, config.host.binding)
         : undefined,
     );
   }
@@ -232,11 +222,17 @@ export class OnboardingConfiguration {
     this.queue = operation.catch(() => {});
     return operation;
   }
+  /** Quiesce delivery and reject running/unknown work before a trusted lifecycle operation. */
+  async withStoppedRuntime(owner: string, agentId: string, operation: () => Promise<void>, rollback: () => Promise<void>) {
+    this.service.owned(agentId, owner);
+    await this.service.configureRuntime(agentId,
+      async (agent, connector) => { await operation(); return this.factory(agent, connector); },
+      async (agent, connector) => { await rollback(); return this.factory(agent, connector); });
+  }
   summary(agent: ManagedAgent) {
     const config = this.configuration(agent);
     return {
       agent,
-      environment: this.environments?.summary(agent.owner, agent.id) ?? null,
       host: config?.host
         ? { runtimeId: config.host.runtimeId }
         : null,

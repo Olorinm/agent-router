@@ -9,14 +9,14 @@ import (
 )
 
 type options struct {
-	environmentProfile, channel, domain, botTokenFile, apiKeyFile, mailService, inboxID, ownerEmail, pairingCodeFile string
-	noWait, messagingOnly                                                                                            bool
-	profile, homeserver, passwordFile, registrationTokenFile, deviceName                                             string
-	connectorURL, endpointTokenFile, connectorRuntime                                                                string
-	serviceURL, outputFile                                                                                           string
-	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile                                    string
-	tags, attachments                                                                                                []string
-	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version                                     bool
+	domain, botTokenFile, apiKeyFile, mailService, inboxID, ownerEmail, pairingCodeFile string
+	noWait, messagingOnly                                                               bool
+	profile, homeserver, passwordFile, registrationTokenFile, deviceName                string
+	connectorURL, endpointTokenFile, connectorRuntime                                   string
+	serviceURL, outputFile                                                              string
+	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile       string
+	tags, attachments                                                                   []string
+	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version        bool
 }
 
 func parse(args []string, errOut io.Writer) (options, []string, error) {
@@ -53,8 +53,6 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.BoolVar(&o.all, "all", false, "Include completed work")
 	f.BoolVarP(&o.help, "help", "h", false, "Show help")
 	f.BoolVar(&o.version, "version", false, "Show version")
-	f.StringVar(&o.environmentProfile, "environment", "", "Operator-assigned cloud environment profile")
-	f.StringVar(&o.channel, "channel", "", "Optional platform to connect during setup")
 	f.StringVar(&o.domain, "domain", "feishu", "Feishu or Lark")
 	f.BoolVar(&o.messagingOnly, "messaging-only", false, "Connect Feishu messaging without personal tools")
 	f.StringVar(&o.botTokenFile, "bot-token-file", "", "Read Telegram BotFather token from a private file")
@@ -82,13 +80,7 @@ const help = `Agent Router — Go CLI
   register SERVER USERNAME       Register your owner account
   login @name:server             Log in (hidden password prompt)
   whoami | logout                Verify identity / revoke this device
-  setup [NAME] [--environment PROFILE] [--channel PLATFORM]  Create/select and configure your Agent
-  setup-guide [en|zh]            Print the CLI setup guide (default: English)
-  setup-options | setup-check    List assigned services / verify selected Agent
-  environment-create PROFILE     Allocate an environment and start its Host
-  environment-status             Show durable provisioning status
-  environment-resume | environment-pause | environment-destroy
-  environment-reconcile          Inspect/recover an interrupted operation; never recreate
+  connection-options | connection-check  List channel services / verify selected Agent
   channels                       Show connected platforms
   channel-connect PLATFORM       Connect feishu, weixin, telegram, grove-mail or matrix
   channel-jobs | channel-job ID   List / resume a connection and show terminal QR

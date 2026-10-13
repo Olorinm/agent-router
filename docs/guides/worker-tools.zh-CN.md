@@ -7,7 +7,7 @@ MCP 能力连接 MCP 服务。Router 负责消息、渠道凭据和回复。
 
 ## 准备环境
 
-按照[云端开通指南](cloud-environments.zh-CN.md)发布环境方案，在镜像中安装并固定
+按照[云端开通指南](https://github.com/Olorinm/mau/blob/main/docs/environments.zh-CN.md)发布环境方案，在镜像中安装并固定
 工具版本。飞书使用官方 `@larksuite/cli`，通过 `lark-cli skills read lark-shared`
 读取随版本提供的说明。
 
@@ -24,7 +24,7 @@ agent-environment exec --config /private/providers.json --provider cloud \
 
 管理命令需要显式使用与 Host runtime 相同的配置／数据目录环境变量；
 `agent-environment exec` 不自动继承 runtime 配置。这是运营工具，普通用户通过
-`agent-router setup` 和渠道命令开通。
+`mau setup` 和渠道命令开通。
 
 ## 接入并验证飞书
 

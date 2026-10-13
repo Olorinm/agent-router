@@ -32,8 +32,11 @@ const connection = z.discriminatedUnion("kind", [
   z.object({ ...common, kind: z.literal("weixin"), credentialsFile: file }).strict(),
 ]);
 export const agentChannelConfigSchema = z.object({ agentId: z.uuid(), connections: z.array(connection).max(20),
-  host: z.object({ environment: z.uuid().optional(), url: z.url(), tokenFile: file, runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
-    instanceName: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/).default("channel-host"), instructions: z.string().max(200_000).default("") }).strict().optional() }).strict();
+  host: z.object({ binding: z.string().min(1).optional(), url: z.url().optional(), tokenFile: file.optional(), runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
+    instanceName: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/).default("channel-host"), instructions: z.string().max(200_000).default("") }).strict().superRefine((host, context) => {
+    if (host.binding ? host.url !== undefined || host.tokenFile !== undefined : !host.url || !host.tokenFile)
+      context.addIssue({ code: "custom", message: "host_requires_binding_or_http_credentials" });
+  }).optional() }).strict();
 export const channelConfigSchema = z.object({ agents: z.array(agentChannelConfigSchema).min(1).max(100) }).strict().superRefine((config, context) => {
   if (new Set(config.agents.map((agent) => agent.agentId)).size !== config.agents.length) context.addIssue({ code: "custom", message: "duplicate_agent_id" });
   for (const agent of config.agents) {
@@ -127,8 +130,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   let worker: HostWorker | undefined;
   if (config.host) {
     const instance = issue(config.host.instanceName);
-    if (config.host.environment && !suppliedHost) throw new Error("environment_coordinator_required");
-    const host = suppliedHost ?? new HttpAgentHost(new ServiceHttp(config.host.url, secret(directory, config.host.tokenFile)));
+    if (config.host.binding && !suppliedHost) throw new Error("host_binding_provider_required");
+    const host = suppliedHost ?? new HttpAgentHost(new ServiceHttp(config.host.url!, secret(directory, config.host.tokenFile!)));
     const channelTools = new ChannelTools(core, host);
     worker = new HostWorker(agent.id, instance.id, connector.store, connector.cli,
       host, config.host.runtimeId,

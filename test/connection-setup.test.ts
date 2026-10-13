@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { registerApp } from "@larksuiteoapi/node-sdk";
-import { ConnectionSetup, qrTerminal } from "../src/onboarding/connections.js";
+import { ConnectionSetup, qrTerminal } from "../src/connections/connections.js";
 import { FeishuAccount } from "../src/services/feishu/cli.js";
 import {
   apiGetFetch,
   apiPostFetch,
 } from "../src/channels/weixin/vendor/api.js";
 import type { ManagedService } from "../src/matrix/managed.js";
-import type { OnboardingConfiguration } from "../src/onboarding/configuration.js";
+import type { ConnectionConfiguration } from "../src/connections/configuration.js";
 import { agentChannelConfigSchema } from "../src/service/channels.js";
 import { key } from "../src/matrix/protocol.js";
 
@@ -85,7 +85,7 @@ function fixture() {
       update(candidate);
       current = agentChannelConfigSchema.parse(candidate);
     },
-  } as unknown as OnboardingConfiguration;
+  } as unknown as ConnectionConfiguration;
   const setup = new ConnectionSetup(service, config);
   cleanup.push(() => setup.close());
   return {

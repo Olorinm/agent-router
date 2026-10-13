@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-[云环境开通](docs/guides/cloud-environments.zh-CN.md): `agent-router setup helper --environment PROFILE`.
+云端 Agent 开通与环境管理由独立产品 [Mau](https://github.com/Olorinm/mau) 提供。
 Agent Router 是 Agent 的通信服务：接收各渠道的消息，交给运行中的 Agent，再把回复送回原渠道。
 
 你可以在飞书里让云端 Agent 办事，收到飞书回复；换到明确绑定的微信私聊，继续同一私人会话。其他 Agent 也可以向它发送任务、查询进度和取回结果。
@@ -49,13 +49,13 @@ Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复
 
 ```sh
 agent-router login '@alice:agents.example'
-agent-router setup-options
-agent-router setup helper --environment cloud-codex
+agent-router connection-options
+agent-router agent-create helper
 agent-router channel-connect feishu  # 可选，也可选微信、Telegram、邮件或 Matrix
-agent-router setup-check
+agent-router connection-check
 ```
 
-扫码和个人授权链接直接显示在终端。平台可选；朋友注册账号后可以通过 CLI 调用你授权的 Agent。见[CLI 开通指南](docs/guides/onboarding.zh-CN.md)，其中也说明管理员的一次性准备。
+扫码和个人授权链接直接显示在终端。平台可选；朋友注册账号后可以通过 CLI 调用你授权的 Agent。见[CLI 开通指南](docs/guides/connections.zh-CN.md)，其中也说明管理员的一次性准备。
 
 从源码构建，需 Node.js 24+ 和 Go 1.25+；Go 按 `go.mod` 选择工具链：
 

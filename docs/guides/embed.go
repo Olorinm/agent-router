@@ -8,9 +8,3 @@ var AgentConnect string
 
 //go:embed agent-connect.md
 var AgentConnectChinese string
-
-//go:embed onboarding.md
-var Setup string
-
-//go:embed onboarding.zh-CN.md
-var SetupChinese string

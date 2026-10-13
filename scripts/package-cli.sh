@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-release_version=${AGENT_ROUTER_VERSION:-0.6.0}
+release_version=${AGENT_ROUTER_VERSION:-0.7.0-alpha.1}
 release_dir=${AGENT_ROUTER_RELEASE_DIR:-state/release}
 mkdir -p "$release_dir"
 for release_os in darwin linux; do
