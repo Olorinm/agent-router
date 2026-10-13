@@ -20,7 +20,10 @@ must be reconciled first.
    `workspaces`, `projects`, `state/lark`, and
    `home/user/.agent-host-service/state`. Inspect symlinks before packaging: the
    archive must come from a trusted operator, not an uploaded user attachment.
-   Upload it and its SHA-256 manifest through private environment profile files.
+   Upload small bundles through private environment profile files. For large
+   archives, use the provider’s authenticated management transport, verify the
+   full SHA-256 hash at the destination, and keep only the manifest/restore script
+   in profile files. Keep control traffic independent from bulk transfers.
    A migration template can invoke `restore-once.sh` after `ready.json` is present.
 4. With Router stopped, transactionally import `imports.json`: store each
    `binding` in `documents('execution_sessions', contextId)` and each `instanceId`
