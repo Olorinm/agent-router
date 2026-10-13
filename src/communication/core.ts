@@ -36,6 +36,7 @@ export interface OutboxRecord {
   content?: ChannelContent;
   originTaskId?: string;
   final?: boolean;
+  activity?: { key: string; active: boolean };
   attempts: number; nextAt: number; externalId?: string; error?: string;
 }
 interface Connection { definition: ConnectionDefinition; adapter: ChannelAdapter; reload?: () => ChannelAdapter; lastError: string; connected: boolean; failures: number; nextStart: number; }
@@ -58,7 +59,7 @@ export class CommunicationCore {
     this.connections.set(definition.id, { definition, adapter, ...(reload ? { reload } : {}), lastError: "", connected: false, failures: 0, nextStart: 0 });
     for (const { id, value } of this.store.entries<OutboxRecord>("communication_outbox")) {
       if (value.route.connectionId === definition.id && value.state === "submitting") {
-        this.store.set("communication_outbox", id, { ...value, state: adapter.retrySafe ? "queued" : "uncertain", error: "send_interrupted" });
+        this.store.set("communication_outbox", id, { ...value, state: value.activity || adapter.retrySafe ? "queued" : "uncertain", error: "send_interrupted" });
       }
     }
   }
@@ -101,7 +102,7 @@ export class CommunicationCore {
   receive(connectionId: string, input: ChannelMessage): InboxRecord {
     this.validate();
     const source = messageSchema.parse(input);
-    const { definition } = this.connection(connectionId);
+    const { definition, adapter } = this.connection(connectionId);
     const id = digest(key(this.agentId, connectionId, source.externalId));
     const hash = digest(source);
     const existing = this.store.get<InboxRecord>("communication_inbox", id);
@@ -111,7 +112,8 @@ export class CommunicationCore {
     }
     const owner = definition.ownerAddresses.includes(source.sender);
     const allowed = source.scope === "direct" ? owner || Boolean(definition.peerAddresses?.includes(source.sender)) :
-      Boolean(definition.groupIds?.includes(source.groupId ?? source.threadId)) && (owner || Boolean(definition.peerAddresses?.includes(source.sender)));
+      adapter.groupPolicy?.(source) === "open" ||
+        Boolean(definition.groupIds?.includes(source.groupId ?? source.threadId)) && (owner || Boolean(definition.peerAddresses?.includes(source.sender)));
     const oversized = Buffer.byteLength(source.text) > 24_000;
     const conversationId = `c-${digest(key(this.agentId, source.scope === "direct" && owner ? "owner-main" :
       key(connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`;
@@ -138,7 +140,13 @@ export class CommunicationCore {
       for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) {
         if (value.state !== "received") continue;
         this.validate();
-        if (value.source.event?.type === "message-edit") { this.store.set("communication_inbox", id, { ...value, state: "done", reason: "edit_recorded_without_reexecution" }); continue; }
+        const eventType = value.source.event?.type;
+        // Message state changes are durable context, not new requests or answers to pending interactions.
+        if (eventType && ["reaction", "message-edit", "message-redaction"].includes(eventType)) {
+          this.store.set("communication_inbox", id, { ...value, state: "done",
+            reason: eventType === "message-edit" ? "edit_recorded_without_reexecution" : `${eventType}_recorded_without_execution` });
+          continue;
+        }
         if (this.control && await this.control(value)) {
           this.store.set("communication_inbox", id, { ...value, state: "done" }); continue;
         }
@@ -175,6 +183,14 @@ export class CommunicationCore {
       const input = this.input(task.id);
       if (!input) continue; // Matrix/A2A events belong to the existing connector.
       this.store.transaction(() => {
+        const adapter = this.connection(input.connectionId).adapter;
+        const capabilities = adapter.capabilitiesFor?.(input.replyRoute) ?? adapter.capabilities;
+        if (adapter.activity && capabilities?.native.includes("reaction")) {
+          const active = task.status?.state === TaskState.TASK_STATE_WORKING;
+          const id = digest(key(input.id, "activity", String(active)));
+          this.store.insert("communication_outbox", id, { id, taskId: task.id, route: input.replyRoute, text: "",
+            activity: { key: input.id, active }, state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+        }
         if (terminal(task) && input.state !== "done") {
           const parts = task.artifacts.flatMap((artifact) => artifact.parts);
           const answer = this.store.get<string>("communication_results", task.id) ??
@@ -222,18 +238,24 @@ export class CommunicationCore {
         const connection = this.connections.get(value.route.connectionId);
         if (!connection) { this.store.set("communication_outbox", id, { ...value, state: "failed", error: "connection_removed" }); continue; }
         if (!connection.connected) continue;
+        if (value.activity?.active && ((await this.work.get(value.taskId!)).status?.state !== TaskState.TASK_STATE_WORKING || this.input(value.taskId!)?.id !== value.activity.key)) {
+          this.store.set("communication_outbox", id, { ...value, state: "accepted" }); continue;
+        }
         const attempt = { ...value, state: "submitting" as const, attempts: value.attempts + 1 };
         this.store.set("communication_outbox", id, attempt);
         try {
           const streamed = value.taskId && (value.final || id === digest(key(value.taskId, "final"))) && this.store.get("communication_streams", value.taskId);
-          const receipt = streamed && !value.content && connection.adapter.progress
+          const receipt = value.activity && connection.adapter.activity
+            ? await connection.adapter.activity(value.route, value.activity.active, value.activity.key)
+            : streamed && !value.content && connection.adapter.progress
             ? await connection.adapter.progress(value.route, value.text, value.taskId!, true)
             : value.content && connection.adapter.sendContent ? await connection.adapter.sendContent(value.route, value.content, id)
             : await connection.adapter.send(value.route, value.text, id);
           const { error: _error, ...accepted } = attempt;
           this.store.set("communication_outbox", id, { ...accepted, state: "accepted", externalId: receipt.externalId });
         } catch (error) {
-          const disposition = error instanceof ChannelSendError ? error.disposition : connection.adapter.retrySafe ? "retry" : "uncertain";
+          const disposition = value.activity ? (attempt.attempts < 5 ? "retry" : "failed") :
+            error instanceof ChannelSendError ? error.disposition : connection.adapter.retrySafe ? "retry" : "uncertain";
           const nextAt = now + Math.max(error instanceof ChannelSendError ? error.retryAfterMs : 0, Math.min(60_000, 1000 * 2 ** Math.min(attempt.attempts, 6)));
           this.store.set("communication_outbox", id, { ...attempt, state: disposition === "retry" ? "queued" : disposition,
             error: code(error), nextAt });

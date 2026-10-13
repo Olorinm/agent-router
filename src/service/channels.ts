@@ -96,11 +96,11 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
           const { credentials } = loaded;
           if (ownerAddresses.length && (ownerAddresses.length !== 1 || ownerAddresses[0] !== credentials.ownerOpenId)) throw new Error("feishu_owner_binding_mismatch");
           ownerAddresses = [credentials.ownerOpenId];
-          adapter = new FeishuChannel({ appId: credentials.appId, appSecret: loaded.appSecret, domain: credentials.domain, groupIds: definition.groupIds });
+          adapter = new FeishuChannel({ appId: credentials.appId, appSecret: loaded.appSecret, domain: credentials.domain });
           const account = new FeishuAccount(credentials, loaded.directory); accounts.set(definition.id, account);
           if (definition.personalTools) { const tools = new FeishuTools(definition.id, account); personalTools.set(tools.definition.name, tools); }
         } else adapter = new FeishuChannel({ appId: definition.appId!, appSecret: secret(directory, definition.appSecretFile!),
-          domain: definition.domain, groupIds: definition.groupIds });
+          domain: definition.domain });
         break;
       }
       case "telegram": adapter = new TelegramChannel(secret(directory, definition.botTokenFile)); break;
@@ -116,10 +116,10 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       if (definition.kind === "telegram") return new TelegramChannel(secret(directory, definition.botTokenFile));
       if (definition.kind === "weixin") return new WeixinChannel(loadWeixinCredentials(resolve(directory, definition.credentialsFile)));
       if (definition.kind === "grove-mail") return new GroveMailChannel(definition.inboxId, new ServiceHttp(definition.url, secret(directory, definition.apiKeyFile)), definition.initialCursor, definition.attachmentOrigins);
-      if (!definition.credentialsFile) return new FeishuChannel({ appId: definition.appId!, appSecret: secret(directory, definition.appSecretFile!), domain: definition.domain, groupIds: definition.groupIds });
+      if (!definition.credentialsFile) return new FeishuChannel({ appId: definition.appId!, appSecret: secret(directory, definition.appSecretFile!), domain: definition.domain });
       const loaded = loadFeishuCredentials(resolve(directory, definition.credentialsFile));
       if (loaded.credentials.ownerOpenId !== ownerAddresses[0]) throw new Error("feishu_owner_binding_mismatch");
-      return new FeishuChannel({ appId: loaded.credentials.appId, appSecret: loaded.appSecret, domain: loaded.credentials.domain, groupIds: definition.groupIds });
+      return new FeishuChannel({ appId: loaded.credentials.appId, appSecret: loaded.appSecret, domain: loaded.credentials.domain });
     });
     // Install the synchronous Matrix receipt hook before its first /sync transaction.
     if (adapter.kind === "matrix") await adapter.start(core.context(definition.id));

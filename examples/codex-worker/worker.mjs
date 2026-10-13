@@ -183,7 +183,7 @@ try {
       }
       if (!record) {
         put('runs', work.claimId, { phase: 'running', contextId: work.contextId, taskId: work.id });
-        await cli(['progress', work.claimId, '远程 Codex 已接收，正在处理。']);
+        // Claim already emits WORKING; each channel presents native activity feedback.
         log('codex.started', { taskId: work.id, contextId: work.contextId, resumed: Boolean(get('sessions', key)) });
         record = await runCodex(work, key);
         put('runs', work.claimId, { ...record, phase: 'finished', contextId: work.contextId, taskId: work.id });

@@ -3,6 +3,7 @@ import { bindAccount, ChannelSendError, sendChunks, type ChannelAdapter, type Ch
 
 import { mediaContent, readBytes } from "../communication/media.js";
 import { digest } from "../execution/protocol.js";
+import { feishuActivity } from "./feishu-activity.js";
 
 export class FeishuChannel implements ChannelAdapter {
   readonly kind = "feishu";
@@ -12,16 +13,23 @@ export class FeishuChannel implements ChannelAdapter {
   private streams = new Map<string, { set(text: string): Promise<void>; finish(): void; result: Promise<{ messageId: string }> }>();
   private context!: ChannelContext;
   readonly channel: LarkChannel;
-  constructor(options: { appId: string; appSecret: string; domain?: "feishu" | "lark"; groupIds?: string[] }, channel?: LarkChannel) {
+  private readonly appId: string;
+  constructor(options: { appId: string; appSecret: string; domain?: "feishu" | "lark" }, channel?: LarkChannel) {
+    this.appId = options.appId;
     this.channel = channel ?? createLarkChannel({ appId: options.appId, appSecret: options.appSecret,
       domain: options.domain === "lark" ? Domain.Lark : Domain.Feishu, loggerLevel: LoggerLevel.error,
       source: "agent-router", handshakeTimeoutMs: 15_000, includeRawEvent: true,
-      policy: { dmMode: "open", requireMention: true, groupAllowlist: options.groupIds ?? [] },
+      policy: { dmMode: "open", requireMention: true },
       // Keep each provider message intact: Router owns deduplication and turn serialization.
-      safety: { dedup: { ttl: 0 }, staleMessageWindowMs: 0, chatQueue: { enabled: false },
+      // SDK zero means immediate expiry. Router's durable activation checkpoint filters old backlog.
+      safety: { dedup: { ttl: 0 }, staleMessageWindowMs: Number.MAX_SAFE_INTEGER, chatQueue: { enabled: false },
         batch: { text: { delayMs: 0, maxMessages: 1 }, media: { delayMs: 0, maxItems: 1 } } },
       outbound: { textChunkLimit: 4000, retry: { maxAttempts: 1 } },
     });
+  }
+  groupPolicy(message: ChannelMessage): "open" | "allowlist" {
+    // The SDK already requires @bot in IM groups. Document comments keep their own access list.
+    return message.reply.data.commentId ? "allowlist" : "open";
   }
   async start(context: ChannelContext): Promise<void> {
     this.context = context;
@@ -29,7 +37,9 @@ export class FeishuChannel implements ChannelAdapter {
     for (const unsubscribe of this.unsubscribers.splice(0)) if (typeof unsubscribe === "function") unsubscribe();
     this.unsubscribers.push(this.channel.on("message", (message) => this.receive(message)),
       this.channel.on("cardAction", (event) => this.cardAction(event)),
-      this.channel.on("reaction", (event) => { void this.sourceFor(event.messageId, event.operator.openId).then((prior) => {
+      this.channel.on("reaction", (event) => {
+        if (event.operator.openId === this.channel.botIdentity?.openId || (event.raw as { operator_type?: string } | undefined)?.operator_type === "app") return;
+        void this.sourceFor(event.messageId, event.operator.openId).then((prior) => {
         this.context.receive({ ...prior, externalId: `reaction:${digest(event)}`, sender: event.operator.openId, text: "", attachments: [],
           event: { type: "reaction", data: { messageId: event.messageId, emoji: event.emojiType, action: event.action } } });
       }).catch(() => context.error("feishu_reaction_receipt_failed")); }),
@@ -53,6 +63,9 @@ export class FeishuChannel implements ChannelAdapter {
     bindAccount(context, this.channel.botIdentity!.openId);
   }
   async stop(): Promise<void> { for (const unsubscribe of this.unsubscribers.splice(0)) if (typeof unsubscribe === "function") unsubscribe(); for (const stream of this.streams.values()) stream.finish(); await this.channel.disconnect(); }
+  async activity(route: ReplyRoute, active: boolean, activityKey: string) {
+    return feishuActivity(this.channel, this.context, this.appId, route, active, activityKey);
+  }
   receive(message: NormalizedMessage): void {
     if (message.senderId === this.channel.botIdentity?.openId || message.createTime < this.context.checkpoint<number>("activation")!) return;
     if (!this.channel.botIdentity) { this.context.error("feishu_identity_unavailable"); throw new Error("feishu_identity_unavailable"); }

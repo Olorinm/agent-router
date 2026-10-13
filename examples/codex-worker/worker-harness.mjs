@@ -71,6 +71,7 @@ setTimeout(() => {
         await delay(50);
       }
       assert.ok(result?.result, logs);
+      assert.equal(result.progress.includes('远程 Codex 已接收，正在处理。'), false);
       assert.equal(result.progress.filter(text => text === '远端模型连接中断，正在重试。').length, 1);
       assert.equal(result.result.action, recovers ? 'reply' : 'fail');
       assert.equal(result.result.text, recovers ? 'recovered answer' : '远端模型连接失败，本次执行已停止；会话已保留，可稍后继续。');

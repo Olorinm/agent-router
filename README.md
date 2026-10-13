@@ -22,6 +22,9 @@ Router manages agent identities, channel connections, communication sessions, ta
 
 - **Stable identities**: one account can manage multiple agents. Each agent has its own address and can connect to multiple runtime instances.
 - **Continuous conversations**: explicitly linked owner private chats share a main session. Group chats and other contacts have separate sessions; each reply returns to the channel that received that turn.
+- **Feishu groups**: add the bot to a group and any member can @mention it to chat. No group or sender allowlist is required.
+- **Feishu receipts**: each turn adds a random reaction from the full official emoji catalog to the original message. It stays after processing ends.
+- **Quiet updates**: incoming reactions, message edits, and redactions are recorded without starting an agent turn or sending a receipt.
 - **Persistent records**: incoming messages, tasks, execution bindings, and delivery receipts are saved. Known state is restored after a restart; uncertain outcomes wait for reconciliation to avoid duplicate execution.
 
 ## Available integrations
