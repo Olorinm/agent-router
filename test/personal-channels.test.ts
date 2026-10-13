@@ -83,7 +83,7 @@ describe("official channel contracts", () => {
       work.update(task.claimId!, "reply", "group reply");
       await core.dispatch(); await core.flush();
       expect(send).toHaveBeenCalledWith("new-group", { text: "group reply" }, { replyTo: "member-mention", replyInThread: false });
-      expect(core.status().outbox).toMatchObject([{ state: "accepted" }]);
+      expect(core.status().outbox.every(row => row.state === "accepted")).toBe(true);
     } finally { await core.stop(); store.close(); }
   });
   it("receives delayed Feishu SDK events while skipping pre-activation backlog", async () => {

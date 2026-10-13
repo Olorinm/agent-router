@@ -45,6 +45,8 @@ export interface ChannelAdapter {
   capabilitiesFor?(route: ReplyRoute): ChannelCapabilities;
   /** Whether a shared conversation accepts all senders or uses the configured group/peer lists. */
   groupPolicy?(message: ChannelMessage): "open" | "allowlist";
+  /** Durable, retry-safe activity feedback on the original message. */
+  activity?(route: ReplyRoute, active: boolean, activityKey: string): Promise<SendReceipt>;
   start(context: ChannelContext): Promise<void>;
   stop(): Promise<void>;
   send(route: ReplyRoute, text: string, sendKey: string): Promise<SendReceipt>;
