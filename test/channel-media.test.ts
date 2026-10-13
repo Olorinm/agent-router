@@ -138,7 +138,10 @@ it("Telegram receives voice/photo bytes and quotes, and resolves its inline butt
     return { ok: true, result } as any;
   });
   vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([0,255]))));
-  const channel = new Telegram("unused", bot); await channel.activate(c.value); await channel.once();
+  const channel = new Telegram("unused", bot); await channel.activate(c.value);
+  // This is a post-activation message even when initialization crosses a wall-clock second.
+  message.date = c.value.checkpoint<number>("activation")!;
+  await channel.once();
   expect(c.messages[0]!.quoted!.text).toBe("原文"); expect(c.messages[0]!.attachments![0]!.mediaType).toBe("audio/ogg");
   const media = await channel.readAttachment(c.messages[0]!, c.messages[0]!.attachments![0]!); expect(Buffer.from(media.data, "base64")).toEqual(Buffer.from([0,255]));
   await channel.sendContent(route, { text: "选一个", buttons: [{ label: "选项", token: "pick" }] }, "question");
