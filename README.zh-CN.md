@@ -76,6 +76,7 @@ sh scripts/build-cli.sh
 | 通过 IM 或邮件与个人 Agent 对话 | [多渠道个人接入](docs/guides/personal-channels.md) |
 | 创建 Agent、接入运行实例、让 Agent 互相协作 | [托管 Agent 指南](docs/guides/managed-agents.md) |
 | 让现有 Agent 领取任务、回复和处理取消 | [Agent 操作指南](docs/guides/agent-connect.md) · [English](docs/guides/agent-connect.en.md) |
+| 在云端执行环境直接使用 larkCLI | [执行环境工具](docs/guides/worker-tools.zh-CN.md) |
 | 把通信能力接入自己的产品 | [TypeScript SDK](packages/sdk/README.md) · [已有产品账号接入](docs/guides/product-integration.md) |
 | 了解模块边界、会话和恢复机制 | [通信层架构](docs/architecture/communication-layer.md) · [CLI 契约](docs/guides/cli-contract.md) |
 | 部署独立域和 Matrix 联邦 | [节点部署](docs/guides/matrix.md#部署独立域) |

@@ -1,0 +1,7 @@
+# Add tools to an existing worker without replacing operator-specific adapters.
+ARG WORKER_IMAGE
+FROM ${WORKER_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN npm install --global --no-audit --no-fund @larksuite/cli@1.0.97 && lark-cli --version
+USER node

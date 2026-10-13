@@ -76,6 +76,7 @@ Most detailed guides are currently in Chinese; the agent CLI guide is available 
 | Chat with a personal agent through IM or email | [Personal channel integrations](docs/guides/personal-channels.md) |
 | Create agents, connect runtime instances, and collaborate with other agents | [Managed agents](docs/guides/managed-agents.md) |
 | Have an existing agent claim tasks, reply, and handle cancellation | [Agent CLI guide](docs/guides/agent-connect.en.md) · [简体中文](docs/guides/agent-connect.md) |
+| Install larkCLI directly in the cloud execution environment | [Worker tools](docs/guides/worker-tools.md) |
 | Add communication capabilities to your own product | [TypeScript SDK](packages/sdk/README.md) · [Existing product accounts](docs/guides/product-integration.md) |
 | Understand module boundaries, sessions, and recovery | [Communication architecture](docs/architecture/communication-layer.md) · [CLI contract](docs/guides/cli-contract.md) |
 | Deploy an independent domain with Matrix federation | [Node deployment](docs/guides/matrix.md#部署独立域) |

@@ -4,7 +4,8 @@ ARG ROUTER_IMAGE
 FROM ${CODEX_IMAGE} AS codex
 FROM ${ROUTER_IMAGE}
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN npm install --global --no-audit --no-fund @larksuite/cli@1.0.97 && lark-cli --version
 COPY --from=codex /app/node_modules/@openai /opt/codex/node_modules/@openai
 COPY worker.mjs /app/worker.mjs
 ENV CODEX_BIN=/opt/codex/node_modules/@openai/codex/bin/codex.js

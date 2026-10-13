@@ -65,6 +65,23 @@ function message(id: string, sender = "owner-feishu", overrides: Partial<Channel
 async function complete(h: ReturnType<typeof harness>) { await h.core.dispatch(); await h.worker().tick(); await h.core.dispatch(); await h.core.flush(); }
 
 describe("communication receipt and routing", () => {
+  it("delivers provider IDs for history lookup without including raw credentials or reply data", async () => {
+    const h = harness(); await h.core.start();
+    const incoming = message("om_current", "owner-feishu", { scope: "group", groupId: "group",
+      quoted: { messageId: "om_parent", text: "earlier discussion" },
+      reply: { target: "oc_chat", messageId: "om_current", data: { token: "PRIVATE_REPLY_TOKEN" } },
+      native: { secret: "PRIVATE_NATIVE_VALUE" } });
+    h.core.receive("feishu", incoming); await complete(h);
+    const claim = h.work.list(true)[0]!;
+    const context = 'Channel context (provider routing IDs): ';
+    const part = claim.input.parts!.find((part: any) => part.text?.startsWith(context)) as any;
+    expect(JSON.parse(part.text.slice(context.length))).toEqual({ channel: "feishu", connectionId: "feishu", scope: "group",
+      conversationId: "oc_chat", messageId: "om_current", senderId: "owner-feishu", quotedMessageId: "om_parent" });
+    expect(h.host.starts[0]!.input).toContain('"conversationId":"oc_chat"');
+    expect(h.host.starts[0]!.input).toContain("earlier discussion");
+    expect(h.host.starts[0]!.input).not.toContain("PRIVATE_");
+    expect(claim.contextId).not.toBe("oc_chat");
+  });
   it.each(["feishu", "telegram", "matrix"] as const)("records %s reactions without starting work or sending a receipt", async (channel) => {
     const h = harness(); await h.core.start();
     for (const scope of ["direct", "group"] as const) for (const action of ["added", "removed"]) {
@@ -144,7 +161,7 @@ describe("communication receipt and routing", () => {
       messageId: "agentmail-read-only", role: "ROLE_USER", parts: [{ text: "mail input" }],
     } }), { sender: "mail-peer", room: "mail-thread", approved: true, execution: { accessMode: "read-only" } });
     h.core.receive("feishu", message("personal")); await complete(h);
-    expect(h.host.starts).toHaveLength(1); expect(h.host.starts[0]!.input).toBe("input-personal");
+    expect(h.host.starts).toHaveLength(1); expect(h.host.starts[0]!.input).toContain("input-personal");
     expect(h.work.inspect(task.id)).toMatchObject({ status: "submitted", claimId: null, execution: { accessMode: "read-only" } });
     expect(h.work.claim("external-worker")).toMatchObject({ id: task.id, execution: { accessMode: "read-only" } });
   });

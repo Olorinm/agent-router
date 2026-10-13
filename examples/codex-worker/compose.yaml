@@ -37,6 +37,11 @@ services:
       WORKER_STATE_DIR: /state
       WORKER_WORKSPACE_DIR: /workspaces
       WORKER_PROJECTS_DIR: /projects
+      WORKER_LARK_DIR: ${WORKER_LARK_DIR:-/state/lark}
+      LARKSUITE_CLI_CONFIG_DIR: ${WORKER_LARK_DIR:-/state/lark}/config
+      LARKSUITE_CLI_DATA_DIR: ${WORKER_LARK_DIR:-/state/lark}/data
+      LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1'
+      LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1'
       WORKER_NAME: codex-experience
       HTTP_PROXY: ${CODEX_PROXY_URL:-}
       HTTPS_PROXY: ${CODEX_PROXY_URL:-}
