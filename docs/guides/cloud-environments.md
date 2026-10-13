@@ -38,7 +38,7 @@ This integration is merged in Router, [Agent Environment PR #1](https://github.c
 1. Build and verify the separate Host and Environment archives. Install Environment into Router's trusted server environment (or use [the derived image recipe](../../examples/cloud-environments/Dockerfile.router)); it is not installed on users' laptops. `modulePath` points to the installed package's `dist/index.js`. If omitted, Node resolves `@olorinm/agent-environment` as an installed dependency.
 2. Prepare an existing Alibaba/Volcengine sandbox endpoint and API key with a cloud template containing Node 24+, Agent Host, the selected native runtime and dependencies. Configure the template's entrypoint to run `agent-host serve --ready-file ...` as described in Host's cloud example. Verify its durable workspace/native state and application-port routing. This flow allocates sandboxes; it does not create VKE/ACS infrastructure.
 3. Copy [the environment profile](../../examples/cloud-environments/environments.json) and [Host configuration](../../examples/cloud-environments/host-profile.json) into a private server directory. Supply Environment's `providers.json` with private sandbox service key files. These keys remain on Router, outside every Agent runtime.
-4. Set each profile's allowed `owners`; an explicit `"*"` enables all registered accounts. Assign user-specific native credential files through `files`, or provision runtime authentication through the chosen image's supported mechanism. Every file/command/URL comes from trusted operator configuration; HTTP callers select only a profile ID. Do not put personal login state in a shared image. Keep profile definitions/configuration files immutable for existing bindings; changing profiles requires deliberate migration.
+4. Set each profile's allowed `owners`; an explicit `"*"` enables all registered accounts. Assign user-specific native credential files through `files`, or provision runtime authentication through the chosen image's supported mechanism. Every file/command/URL comes from trusted operator configuration; HTTP callers select only a profile ID. Do not put personal login state in a shared image. Optional profile `instructions` supply the agent’s shared operating instructions. Keep profile definitions/configuration files immutable for existing bindings; changing profiles requires deliberate migration.
 5. Initialize onboarding and restart the matching Router service:
 
 ```sh
@@ -48,7 +48,7 @@ node dist/onboarding/init.js --out /private/onboarding.json \
 # AGENT_ROUTER_ONBOARDING_FILE=/private/onboarding.json
 ```
 
-Preserve the whole Router state directory, including the provisioning SQLite journal, channel bindings and private per-Agent Host tokens. Run one active provisioning coordinator against that state; it holds a renewable lease. Keep private provider/profile files accessible to the Router service account. The existing fixed `hosts` profiles remain supported.
+Preserve the whole Router state directory, including the provisioning SQLite journal, channel bindings and private per-Agent Host tokens. Run one active provisioning coordinator against that state; it holds a renewable lease. Keep private provider/profile files accessible to the Router service account.
 
 The Host image starts before configuration arrives and waits for `host.json`, its dedicated token and a final SHA-256 manifest. Router uploads the bundle, checks authenticated Host readiness and binds the existing channel/Host worker. Neither a user account credential nor a cloud account key is passed to Host. Agent execution and native sessions remain Host/kernel responsibilities. No scheduling or UI layer is introduced.
 
@@ -65,3 +65,5 @@ npm run verify:cloud -- --environment-archive /path/agent-environment.tgz \
 ```
 
 Cloud lifecycle and the native model protocol in that check are fixtures. Separately, on 2026-10-13 a production Volcengine deployment passed CLI account onboarding → sandbox allocation → Host startup → actual Codex model/tool execution → same-ID pause/resume → file preservation and continued native conversation. [Environment verification](https://github.com/Olorinm/agent-environment/blob/main/docs/verification.md) records that live scope. Alibaba and external durable mount attestation remain unverified for this integration. The fixture commands above do not change live user services.
+
+One-time imports from the retired Codex worker are documented in the [migration guide](../../scripts/migrations/README.md). Old fixed-Host onboarding and static personal-channel bootstrap are removed.

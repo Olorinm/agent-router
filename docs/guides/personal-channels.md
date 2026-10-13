@@ -9,43 +9,26 @@
                   ↕
            现有持久化工作队列
                   ↕
-         执行桥 → 固定 Agent Host runtime
+         执行桥 → Environment 中的 Agent Host runtime
 ```
 
 同一所有者明确绑定的私聊地址共享主会话。每轮回复使用该轮保存的原渠道、原聊天、原消息；群聊和其他联系人使用独立会话。
 
 ## 最小启动
 
-1. 按[托管 Agent 指南](managed-agents.md)运行节点并创建一个 Agent，取得其 `agentId`。
-2. 按 [Agent Host 服务指南](https://github.com/Olorinm/agent-host/blob/main/docs/http-service.md)启动一个 runtime。原生 Agent 的认证由 Host 管理；Router 只持有 Host 服务 token。
-3. 使用当前源码构建 Router：`npm ci && npm run build`。Node.js 24+。
-4. 创建私有 `channels.json`，先接 Matrix 与 Host：
-
-```json
-{
-  "agents": [{
-    "agentId": "替换为已有 Agent 的 UUID",
-    "host": {
-      "url": "http://127.0.0.1:37420",
-      "tokenFile": "host-token",
-      "runtimeId": "personal"
-    },
-    "connections": [{ "id": "matrix", "kind": "matrix" }]
-  }]
-}
-```
-
-`host-token` 文件保存 Host token；所有凭据路径相对 `channels.json` 所在目录。保留原服务的 `MATRIX_*`、`AGENT_SERVICE_URL` 等配置，额外设置：
+运营者先配置[云端环境方案](cloud-environments.zh-CN.md)。用户登录后执行：
 
 ```sh
-AGENT_ROUTER_CHANNELS_FILE=/absolute/path/channels.json npm run agent:service
+agent-router setup helper --environment cloud-codex
+agent-router channel-connect feishu
+agent-router setup-check
 ```
 
-Matrix 默认绑定这个 Agent 的所有者。给 Agent 发文字或附件即可进入 Host；未配置的 Agent 保持原有 Matrix/A2A 行为。`host` 可省略，此时消息进入已有队列，由现有 worker 领取。配置了直连 Host 后，这个 Agent 的普通对话由固定实例执行，默认实例名为 `channel-host`；不要让另一个 worker 竞争领取这份队列或使用同名实例凭据。已有 AgentMail 的逐任务 `execution.accessMode` 仍交给支持该约束的外部 worker，直连 Host 不领取这类任务。需要同时使用 AgentMail 和直连个人聊天时，请使用不同的 Agent，避免 worker 竞争。
+平台按需选择，也可以连接 Telegram、微信、邮件或 Matrix，见 [CLI 开通指南](onboarding.zh-CN.md)。环境模块分配执行环境，Router 自动启动并连接 Host，按 Agent 保存连接信息和会话绑定。
 
-Compose 部署把 `channels.json`、Host token、Telegram token 等静态配置放在已有 `state/agent-service-secrets/` 只读挂载目录，设置 `AGENT_ROUTER_CHANNELS_FILE=/secrets/channels.json`，重新构建并启动 `agent-service`。飞书授权目录需要写入与刷新，放到 `/state` 可写挂载，不能放在 `/secrets`。`host.url` 必须是 Router 容器能访问的地址；容器里的 `127.0.0.1` 指容器自身。
+每个 Agent 的配置由开通流程保存在私有 state 目录；以下字段说明用于理解配置结构。五渠道字段示例见 [channels.example.json](../../examples/personal-agent/channels.example.json)。凭据不能写入代码或镜像。
 
-五渠道示例见 [channels.example.json](../../examples/personal-agent/channels.example.json)。删除不用的连接；示例里的地址和 UUID 都需要替换，不能直接用于真实账号。
+已有 AgentMail 的逐任务 `execution.accessMode` 仍交给支持该约束的专用 worker，普通个人对话通过 Host 执行。请使用不同的 Agent，避免执行实例竞争。
 
 ## 各渠道怎么连接
 

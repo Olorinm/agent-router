@@ -10,6 +10,8 @@ import type { HostTools, HostToolResult } from "./tools.js";
 
 interface ToolReceipt { hash: string; phase: "executing" | "completed" | "uncertain"; result?: HostToolResult; }
 
+export interface ExecutionSession { sessionId: string; runtimeId: string; tools?: false; }
+
 interface RunBinding {
   claimId: string; taskId: string; contextId: string; sessionId: string; input: string;
   phase: "submitting" | "running" | "finished" | "unknown"; runId?: string; error?: string;
@@ -56,17 +58,17 @@ export class HostWorker {
         if (!input.trim()) { this.work.update(claim.claimId, "fail", "此执行入口目前需要文字输入。", undefined, this.instanceId); return; }
         const blocked = this.store.entries<RunBinding>("communication_runs").some(({ value }) => value.contextId === claim.contextId && value.phase === "unknown");
         if (blocked) { this.work.update(claim.claimId, "fail", "上一轮执行结果尚未确认，请先检查运行状态。", undefined, this.instanceId); return; }
-        const sessionId = `h-${digest(key(this.agentId, this.instanceId, claim.contextId)).slice(0, 40)}`;
+        const { sessionId, runtimeId } = this.session(claim.contextId);
         binding = { claimId: claim.claimId, taskId: claim.id, contextId: claim.contextId, sessionId, input, phase: "submitting" };
         this.store.set("communication_runs", claim.claimId, binding);
         try {
-          const withTools = this.tools?.allowed(claim.contextId, claim.id) === true;
-          const started = await this.host.start({ sessionId, runtimeId: this.runtimeId,
+          const withTools = this.session(claim.contextId).tools !== false && this.tools?.allowed(claim.contextId, claim.id) === true;
+          const started = await this.host.start({ sessionId, runtimeId,
             instructions: this.instructions + (withTools ? this.tools!.instructions : ""), input,
             ...(attachments?.length ? { attachments } : {}),
             ...(withTools ? { tools: this.tools!.definitions } : {}),
             context: { agentId: this.agentId, conversationId: claim.contextId, source: claim.from } });
-          if (started.sessionId !== sessionId || started.runtimeId !== this.runtimeId) throw new Error("host_run_scope_mismatch");
+          if (started.sessionId !== sessionId || started.runtimeId !== runtimeId) throw new Error("host_run_scope_mismatch");
           binding = { ...binding, phase: "running", runId: started.id };
           this.store.set("communication_runs", claim.claimId, binding);
         } catch (error) {
@@ -88,7 +90,7 @@ export class HostWorker {
       if (!binding.runId) return;
       if (claim.cancelRequested) await this.host.cancel(binding.runId);
       const result = await this.host.get(binding.runId);
-      if (result.sessionId !== binding.sessionId || result.runtimeId !== this.runtimeId) throw new Error("host_run_scope_mismatch");
+      if (result.sessionId !== binding.sessionId || result.runtimeId !== this.session(binding.contextId).runtimeId) throw new Error("host_run_scope_mismatch");
       try { await this.observe(binding, result.answer); } catch { this.lastError = "channel_progress_failed"; }
       if (result.status === "running") {
         this.pending = (await this.host.calls(binding.runId)).filter((call) => call.status === "pending");
@@ -133,6 +135,16 @@ export class HostWorker {
       }
     }
     finally { this.busy = false; }
+  }
+  private session(contextId: string): ExecutionSession {
+    const existing = this.store.get<ExecutionSession>("execution_sessions", contextId);
+    if (existing) {
+      if (!existing.sessionId || !existing.runtimeId || (existing.tools !== undefined && existing.tools !== false)) throw new Error("invalid_execution_session");
+      return existing;
+    }
+    const session = { sessionId: `h-${digest(key(this.agentId, this.instanceId, contextId)).slice(0, 40)}`, runtimeId: this.runtimeId };
+    this.store.set("execution_sessions", contextId, session);
+    return session;
   }
   private async observe(binding: RunBinding, fallback: string) {
     if (!this.communication || !binding.runId) return;
@@ -266,7 +278,7 @@ export class HostWorker {
     const current = this.work.inspect(claimId);
     if (current.claimId !== claimId || current.newInput) throw new WorkError("claim_not_current");
     const result = await this.host.get(runId);
-    if (result.sessionId !== binding.sessionId || result.runtimeId !== this.runtimeId || result.outcome?.outcomeUnknown) throw new WorkError("host_run_not_reconcilable");
+    if (result.sessionId !== binding.sessionId || result.runtimeId !== this.session(binding.contextId).runtimeId || result.outcome?.outcomeUnknown) throw new WorkError("host_run_not_reconcilable");
     this.store.set("communication_runs", claimId, { ...binding, phase: "running", runId });
   }
   /** Close a stopped, uncertain turn after owner inspection. This never submits another run. */

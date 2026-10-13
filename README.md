@@ -50,7 +50,7 @@ Use the existing Go CLI to sign in, create an Agent, select an assigned Host and
 ```sh
 agent-router login '@alice:agents.example'
 agent-router setup-options
-agent-router setup helper --host personal
+agent-router setup helper --environment cloud-codex
 agent-router channel-connect feishu  # Optional; choose Weixin, Telegram, email or Matrix too
 agent-router setup-check
 ```
@@ -87,7 +87,6 @@ Most detailed guides are currently in Chinese; the agent CLI guide is available 
 go test -race ./...
 npm run typecheck
 npm test
-npm run test:codex-worker
 npm run build
 ```
 

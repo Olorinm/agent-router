@@ -89,7 +89,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 func validateArgs(command string, args []string) error {
 	limits := map[string][2]int{
-		"setup-guide": {0, 1}, "setup": {0, 1}, "environment-create": {1, 1}, "environment-status": {0, 0}, "environment-resume": {0, 0}, "environment-pause": {0, 0}, "environment-destroy": {0, 0}, "environment-reconcile": {0, 0}, "setup-options": {0, 0}, "setup-check": {0, 0}, "host-use": {1, 1}, "channels": {0, 0}, "channel-connect": {1, 1}, "channel-jobs": {0, 0}, "channel-job": {1, 1}, "channel-pair": {1, 1}, "channel-auth": {1, 2},
+		"setup-guide": {0, 1}, "setup": {0, 1}, "environment-create": {1, 1}, "environment-status": {0, 0}, "environment-resume": {0, 0}, "environment-pause": {0, 0}, "environment-destroy": {0, 0}, "environment-reconcile": {0, 0}, "setup-options": {0, 0}, "setup-check": {0, 0}, "channels": {0, 0}, "channel-connect": {1, 1}, "channel-jobs": {0, 0}, "channel-job": {1, 1}, "channel-pair": {1, 1}, "channel-auth": {1, 2},
 		"agents": {0, 0}, "agent-create": {1, 1}, "agent-use": {1, 1}, "agent-current": {0, 0},
 		"agent-instances": {0, 0}, "agent-instance-create": {1, 1}, "agent-instance-revoke": {1, 1}, "agent-attach": {1, 1}, "agent-resolve": {1, 1},
 		"register": {2, 2}, "login": {0, 2}, "logout": {0, 0}, "whoami": {0, 0}, "bind": {1, 1}, "configure": {0, 0}, "discover": {1, 1}, "find": {1, 1}, "lookup": {0, 1}, "profile-set": {1, 1},

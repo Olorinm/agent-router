@@ -39,6 +39,7 @@ export const environmentOptionsSchema = z
             kernel: z.string().min(1).max(48),
             runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
             hostConfigFile: z.string().min(1),
+            instructions: z.string().max(200_000).optional(),
             directory: remotePath.default("/home/user/.agent-host-service"),
             port: z.number().int().min(1).max(65535).default(37420),
             lifetimeSeconds: z.number().int().min(600).max(86400).default(3600),
@@ -457,7 +458,7 @@ export class EnvironmentOnboarding {
         tokenFile,
         runtimeId: profile.runtimeId,
         instanceName: "channel-host",
-        instructions: "",
+        instructions: profile.instructions ?? "",
         environment: record.operationId,
       };
     });

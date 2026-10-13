@@ -138,7 +138,6 @@ async function fixture() {
   const settings = new OnboardingConfiguration(
     directory,
     optionsFile,
-    undefined,
     async () => ({ provider: () => provider }),
   );
   const service = new ManagedService(
@@ -369,7 +368,6 @@ it("a second coordinator cannot acquire the same journal and a stale owner canno
   const second = new OnboardingConfiguration(
     f.directory,
     join(f.directory, "onboarding.json"),
-    undefined,
     async () => ({ provider: () => f.provider }),
   );
   expect(() => second.attach(f.service)).toThrow(

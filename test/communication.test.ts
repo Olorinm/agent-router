@@ -331,6 +331,22 @@ describe("direct Agent Host execution bridge", () => {
     await h.work.cancel(claim.id); await h.worker().tick(); expect(h.host.starts).toHaveLength(0);
     expect((await h.work.get(claim.id)).status!.state).toBe(TaskState.TASK_STATE_CANCELED);
   });
+  it("retains an imported native runtime and session across a restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "router-import-")); cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+    const path = join(directory, "router.sqlite"), first = harness(path);
+    first.core.receive("feishu", message("one")); await first.core.dispatch();
+    const contextId = first.work.list()[0]!.contextId;
+    const binding = { sessionId: "existing-native-session", runtimeId: "workspace-specific-runtime", tools: false as const };
+    first.store.set("execution_sessions", contextId, binding);
+    const tools: HostTools = { definitions: [{ name: "channel", description: "channel", inputSchema: {} }], instructions: "extra tools", allowed: () => true, execute: async () => ({ success: true, contentItems: [] }) };
+    await first.worker(tools).tick(); await first.core.dispatch();
+    expect(first.host.starts[0]).toMatchObject({ sessionId: binding.sessionId, runtimeId: binding.runtimeId, instructions: "instructions" });
+    expect(first.host.starts[0]!.tools).toBeUndefined();
+    first.store.close(); cleanup.pop();
+    const second = harness(path); second.core.receive("telegram", message("two", "owner-telegram")); await second.core.dispatch(); await second.worker(tools).tick();
+    expect(second.host.starts[0]).toMatchObject({ sessionId: binding.sessionId, runtimeId: binding.runtimeId });
+    expect(second.store.get("execution_sessions", contextId)).toEqual(binding);
+  });
   it("treats explicit Host conflicts as rejected, rather than uncertain", async () => {
     const h = harness(); h.host.error = new ChannelHttpError(409, "session_active"); h.core.receive("feishu", message("one")); await h.core.dispatch();
     const worker = h.worker(); await worker.tick(); expect(worker.status().runs[0]!.phase).toBe("finished"); expect(h.work.list()).toHaveLength(0);

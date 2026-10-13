@@ -20,7 +20,6 @@ services:
       AGENT_SERVICE_STATE: /state
       MATRIX_AS_TOKEN_FILE: /secrets/as-token
       MATRIX_HS_TOKEN_FILE: /secrets/hs-token
-      AGENT_ROUTER_CHANNELS_FILE: ${AGENT_ROUTER_CHANNELS_FILE:-}
       AGENT_ROUTER_ONBOARDING_FILE: ${AGENT_ROUTER_ONBOARDING_FILE:-}
     volumes:
       - ./state/agent-service:/state

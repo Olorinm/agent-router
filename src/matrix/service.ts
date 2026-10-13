@@ -2,7 +2,6 @@
 import { readFileSync } from "node:fs";
 import { externalIdentityConfigSchema } from "./external-identity.js";
 import { ManagedService, createManagedApp } from "./managed.js";
-import { createChannelRuntime, loadChannelConfiguration } from "../service/channels.js";
 import { configureChannels } from "../channels/config.js";
 import { OnboardingConfiguration } from "../onboarding/configuration.js";
 import { createOnboarding } from "../onboarding/routes.js";
@@ -13,9 +12,8 @@ const externalIdentity=externalFile?externalIdentityConfigSchema.parse({
   providers:JSON.parse(readFileSync(externalFile,"utf8")),
   adminToken:readFileSync(required("MATRIX_ADMIN_TOKEN_FILE"),"utf8").trim(),
 }):undefined;
-const channels = process.env.AGENT_ROUTER_CHANNELS_FILE ? loadChannelConfiguration(process.env.AGENT_ROUTER_CHANNELS_FILE) : undefined;
 const stateDir = process.env.AGENT_SERVICE_STATE ?? "state/agent-service";
-const onboarding = process.env.AGENT_ROUTER_ONBOARDING_FILE ? new OnboardingConfiguration(stateDir, process.env.AGENT_ROUTER_ONBOARDING_FILE, channels) : undefined;
+const onboarding = process.env.AGENT_ROUTER_ONBOARDING_FILE ? new OnboardingConfiguration(stateDir, process.env.AGENT_ROUTER_ONBOARDING_FILE) : undefined;
 const service: ManagedService = new ManagedService({
   ...(process.env.AGENT_TRUST_PROXY ? { trustedProxies: process.env.AGENT_TRUST_PROXY.split(",").map(v => v.trim()).filter(Boolean) } : {}),
   ...(externalIdentity?{externalIdentity}:{}),
@@ -23,16 +21,7 @@ const service: ManagedService = new ManagedService({
   publicUrl: required("AGENT_SERVICE_URL").replace(/\/$/, ""), stateDir,
   asToken: readFileSync(required("MATRIX_AS_TOKEN_FILE"), "utf8").trim(),
   hsToken: readFileSync(required("MATRIX_HS_TOKEN_FILE"), "utf8").trim(),
-}, onboarding ? { configure: onboarding.factory } : channels ? {
-  configure: async (agent, connector) => {
-    const config = channels.agents.find((item) => item.agentId === agent.id);
-    if (!config) return undefined;
-    return createChannelRuntime(agent, connector, config, channels.directory, (name) => {
-      const issued = service.issue(agent.id, name);
-      return { id: issued.instance.id, validate: () => { service.instance(issued.token, agent.id); } };
-    });
-  },
-} : {});
+}, onboarding ? { configure: onboarding.factory } : {});
 onboarding?.attach(service);
 const setup = onboarding ? createOnboarding(service, onboarding) : undefined;
 const channelFile = process.env.AGENT_CHANNELS_CONFIG_FILE;

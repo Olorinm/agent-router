@@ -5,70 +5,23 @@ import { parseArgs } from "node:util";
 import { onboardingOptionsSchema } from "./configuration.js";
 import { privateFile } from "../services/feishu/cli.js";
 import { environmentOptionsSchema } from "./environments.js";
-import { mxid } from "../matrix/protocol.js";
 
 const { values } = parseArgs({
   options: {
     out: { type: "string" },
-    owner: { type: "string" },
     "environments-file": { type: "string" },
-    "host-url": { type: "string" },
-    "host-token-file": { type: "string" },
-    runtime: { type: "string" },
-    label: { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
 if (values.help) {
   process.stdout.write(
-    "Usage: npm run onboarding:init -- --out /private/onboarding.json [--environments-file /private/environments.json] [--owner @alice:example.org --host-url http://host:8787 --host-token-file /private/host-token --runtime codex]\n",
+    "Usage: npm run onboarding:init -- --out /private/onboarding.json [--environments-file /private/environments.json]\n",
   );
 } else {
   try {
     if (!values.out) throw new Error("output_file_required");
     const file = resolve(values.out);
     if (existsSync(file)) throw new Error("configuration_already_exists");
-    const anyHost = [
-      values.owner,
-      values["host-url"],
-      values["host-token-file"],
-      values.runtime,
-    ].some(Boolean);
-    if (
-      anyHost &&
-      ![
-        values.owner,
-        values["host-url"],
-        values["host-token-file"],
-        values.runtime,
-      ].every(Boolean)
-    )
-      throw new Error("all_host_options_required");
-    const hosts = anyHost
-      ? [
-          {
-            id: "personal",
-            label: values.label ?? "Personal execution service",
-            owners: [mxid.parse(values.owner)],
-            url: values["host-url"]!,
-            tokenFile: resolve(values["host-token-file"]!),
-            runtimeId: values.runtime!,
-          },
-        ]
-      : [];
-    for (const host of hosts) {
-      const url = new URL(host.url);
-      if (
-        !["http:", "https:"].includes(url.protocol) ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash
-      )
-        throw new Error("invalid_host_url");
-      if (!readFileSync(host.tokenFile, "utf8").trim())
-        throw new Error("empty_host_token");
-    }
     let environments;
     if (values["environments-file"]) {
       const source = resolve(values["environments-file"]),
@@ -88,7 +41,6 @@ if (values.help) {
     privateFile(
       file,
       onboardingOptionsSchema.parse({
-        hosts,
         ...(environments ? { environments } : {}),
       }),
     );

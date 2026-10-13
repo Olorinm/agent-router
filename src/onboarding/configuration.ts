@@ -7,7 +7,6 @@ import {
   createChannelRuntime,
   loadChannelConfiguration,
   type AgentChannelConfig,
-  type ChannelConfiguration,
 } from "../service/channels.js";
 import type { ManagedAgent, ManagedService } from "../matrix/managed.js";
 import type { MatrixConnector } from "../matrix/connector.js";
@@ -18,20 +17,9 @@ import {
 } from "./environments.js";
 import { WorkError } from "../matrix/cli-work.js";
 
-const hostSchema = z
-  .object({
-    id: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),
-    label: z.string().min(1).max(100),
-    url: z.url(),
-    tokenFile: z.string().min(1),
-    runtimeId: z.string().min(1).max(160),
-    owners: z.array(z.string().min(1)).min(1),
-  })
-  .strict();
 export const onboardingOptionsSchema = z
   .object({
     environments: environmentOptionsSchema.optional(),
-    hosts: z.array(hostSchema).max(100).default([]),
     mailServices: z
       .array(
         z
@@ -49,7 +37,7 @@ export const onboardingOptionsSchema = z
   .strict();
 export type OnboardingOptions = z.infer<typeof onboardingOptionsSchema>;
 
-/** Owner-scoped configuration; clients select an operator-approved Host, never arbitrary server URLs/files. */
+/** Owner-scoped channels and environment profiles; HTTP clients never supply server URLs/files. */
 export class OnboardingConfiguration {
   readonly directory: string;
   readonly options: OnboardingOptions;
@@ -61,7 +49,6 @@ export class OnboardingConfiguration {
   constructor(
     readonly stateDirectory: string,
     optionsFile: string,
-    readonly initial?: ChannelConfiguration,
     private readonly loadEnvironments?: () => Promise<Environments>,
   ) {
     const base = dirname(resolve(optionsFile));
@@ -69,25 +56,8 @@ export class OnboardingConfiguration {
     this.options = onboardingOptionsSchema.parse(
       JSON.parse(readFileSync(optionsFile, "utf8")),
     );
-    if (
-      new Set(this.options.hosts.map((host) => host.id)).size !==
-        this.options.hosts.length ||
-      new Set(this.options.mailServices.map((mail) => mail.id)).size !==
-        this.options.mailServices.length
-    )
+    if (new Set(this.options.mailServices.map((mail) => mail.id)).size !== this.options.mailServices.length)
       throw new Error("duplicate_onboarding_profile");
-    for (const host of this.options.hosts) {
-      host.tokenFile = resolve(base, host.tokenFile);
-      const url = new URL(host.url);
-      if (
-        !["https:", "http:"].includes(url.protocol) ||
-        url.username ||
-        url.password ||
-        url.hash ||
-        url.search
-      )
-        throw new Error("invalid_host_url");
-    }
     for (const raw of [...this.options.mailServices.map((mail) => mail.url)]) {
       const url = new URL(raw);
       if (
@@ -123,24 +93,7 @@ export class OnboardingConfiguration {
     if (pending) return pending;
     const file = join(this.agentDirectory(agent.id), "channels.json");
     if (existsSync(file)) return loadChannelConfiguration(file).agents[0];
-    const source = this.initial?.agents.find(
-      (item) => item.agentId === agent.id,
-    );
-    if (!source) return undefined;
-    const copy = structuredClone(source),
-      base = this.initial!.directory;
-    if (copy.host) copy.host.tokenFile = resolve(base, copy.host.tokenFile);
-    for (const connection of copy.connections) {
-      if ("credentialsFile" in connection && connection.credentialsFile)
-        connection.credentialsFile = resolve(base, connection.credentialsFile);
-      if ("appSecretFile" in connection && connection.appSecretFile)
-        connection.appSecretFile = resolve(base, connection.appSecretFile);
-      if ("botTokenFile" in connection)
-        connection.botTokenFile = resolve(base, connection.botTokenFile);
-      if ("apiKeyFile" in connection)
-        connection.apiKeyFile = resolve(base, connection.apiKeyFile);
-    }
-    return copy;
+    return undefined;
   }
   private runtime(
     agent: ManagedAgent,
@@ -171,9 +124,6 @@ export class OnboardingConfiguration {
   }
   factory = async (agent: ManagedAgent, connector: MatrixConnector) =>
     this.runtime(agent, connector, this.configuration(agent));
-  hosts(owner: string) {
-    return this.options.hosts.filter((host) => host.owners.includes(owner));
-  }
   assertTelegramAvailable(token: string) {
     for (const agent of this.service.agents())
       for (const connection of this.configuration(agent)?.connections ?? []) {
@@ -182,21 +132,6 @@ export class OnboardingConfiguration {
         if (existing.split(":")[0] === token.split(":")[0])
           throw new WorkError("telegram_bot_already_connected", 409);
       }
-  }
-  async host(owner: string, agentId: string, hostId: string) {
-    if (this.environments?.summary(owner, agentId))
-      throw new WorkError("environment_already_bound", 409);
-    const host = this.hosts(owner).find((item) => item.id === hostId);
-    if (!host) throw new WorkError("host_not_assigned_to_account", 403);
-    return this.edit(owner, agentId, (config) => {
-      config.host = {
-        url: host.url,
-        tokenFile: host.tokenFile,
-        runtimeId: host.runtimeId,
-        instanceName: "channel-host",
-        instructions: "",
-      };
-    });
   }
   async edit(
     owner: string,
@@ -299,19 +234,11 @@ export class OnboardingConfiguration {
   }
   summary(agent: ManagedAgent) {
     const config = this.configuration(agent);
-    const profile =
-      config?.host &&
-      this.hosts(agent.owner).find(
-        (host) =>
-          host.url === config.host!.url &&
-          host.tokenFile === config.host!.tokenFile &&
-          host.runtimeId === config.host!.runtimeId,
-      );
     return {
       agent,
       environment: this.environments?.summary(agent.owner, agent.id) ?? null,
       host: config?.host
-        ? { runtimeId: config.host.runtimeId, profileId: profile?.id ?? null }
+        ? { runtimeId: config.host.runtimeId }
         : null,
       connections: (config?.connections ?? []).map((connection) => ({
         id: connection.id,

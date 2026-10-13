@@ -50,7 +50,7 @@ Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复
 ```sh
 agent-router login '@alice:agents.example'
 agent-router setup-options
-agent-router setup helper --host personal
+agent-router setup helper --environment cloud-codex
 agent-router channel-connect feishu  # 可选，也可选微信、Telegram、邮件或 Matrix
 agent-router setup-check
 ```
@@ -87,7 +87,6 @@ sh scripts/build-cli.sh
 go test -race ./...
 npm run typecheck
 npm test
-npm run test:codex-worker
 npm run build
 ```
 

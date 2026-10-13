@@ -16,18 +16,13 @@ agent-router login '@alice:agents.example'
 # agent-router register agents.example alice --registration-token-file /private/invite
 
 agent-router setup-options
-agent-router setup helper --host personal
+agent-router setup helper --environment cloud-codex
 ```
 
-密码在终端隐藏输入。`setup-options` 显示分配给你账号的 Host。
+密码在终端隐藏输入。`setup-options` 显示分配给你账号的环境方案。
 `setup helper` 创建并选中 helper；已有同名 Agent 时复用它。
-`--host personal` 连接管理员配置的 personal 执行端，并检查 Host 与 runtime。
-不填名字的 `setup` 使用当前选中的 Agent。
-
-平台可选。不接 IM 也能通过 CLI 发消息。没有分配 Host 时，可以用原来的
-`agent-instance-create worker --out /private/worker.json` 签发实例凭证，
-让运行机器执行 `agent-attach`、`claim`；见[托管 Agent](managed-agents.md)
-和 [Codex worker](../../examples/codex-worker/README.md)。
+`--environment cloud-codex` 选择分配给账号的环境方案，自动分配环境并启动 Host。
+聊天平台可选。环境生命周期与运营者配置见[云端开通说明](cloud-environments.zh-CN.md)。
 
 ## 选择连接的平台
 
@@ -39,11 +34,11 @@ agent-router channel-connect matrix
 ```
 
 只执行需要的平台。也可以合成一步：
-`agent-router setup helper --host personal --channel feishu`。
+`agent-router setup helper --environment cloud-codex --channel feishu`。
 
 - **飞书**：终端先显示官方应用配置二维码／链接，再显示个人授权二维码／链接。
   两步完成后启用个人工具。Lark 用 `--domain lark`；仅收发消息用
-  `--messaging-only`。个人工具需要直连 Host。
+  `--messaging-only`。个人工具由 Host 调用。
 - **微信**：微信扫描终端二维码；腾讯要求配对码时隐藏输入。
   支持腾讯 iLink 私聊。
 - **Telegram**：先用 BotFather 创建机器人，token 从文件或隐藏提示输入。
@@ -119,35 +114,21 @@ agent-router contact-add bob/client@agents.example --allow-receive --allow-execu
 
 ## 管理员准备一次
 
-先部署[已有 Router 节点](managed-agents.md#部署节点)和配置好的 Host。
-账号注册策略由账号服务负责。这次新增的配置接口复用已有登录和账号鉴权。
+先部署 [Router 节点](managed-agents.md#部署节点)，再按[云端开通说明](cloud-environments.zh-CN.md)
+配置沙箱服务、镜像模板和按账号分配的环境方案。
 
 ```sh
 npm ci
 npm run build
 sh scripts/build-cli.sh
-npm run onboarding:init -- \
-  --out /private/router/onboarding.json \
-  --owner '@alice:agents.example' \
-  --host-url http://host:8787 \
-  --host-token-file /private/router/host-token \
-  --runtime codex
+npm run onboarding:init -- --out /private/router/onboarding.json \
+  --environments-file /private/router/environments.json
 ```
 
-在原有服务环境中设置
-`AGENT_ROUTER_ONBOARDING_FILE=/private/router/onboarding.json`，重启一次
-`agent:service`。Compose 中挂载配置文件和 Host token，填写容器内可见的路径，
-保留可写的服务状态卷。完整配置结构见[英文说明](onboarding.md#operator-setup)。
-
-Host 必须明确分配给账号；多人共用 runtime 时，执行端需要提供相应工作区隔离。
-开通流程不会创建每人一个 runtime，也不会调度。用户选择 profile ID，不能提交
-任意服务器地址或服务器上的凭据路径。不配置 Host 的 `onboarding:init --out FILE`
-也可以为外部 worker 开启渠道配置。
-
-原 `AGENT_ROUTER_CHANNELS_FILE` 是初始配置，Agent 保存个人配置后使用覆盖文件。
-修改先验证渠道账号不重复，再停止旧消费者、原子保存、启动替换；失败回滚。
-运行中或结果不确定的任务会阻止替换。已有执行记录后，改变 Host、runtime 或个人工具
-定义需要新 Agent 或显式迁移上下文，不会偷偷搬动旧会话。
+设置 `AGENT_ROUTER_ONBOARDING_FILE`，挂载私有配置和沙箱密钥后重启服务。
+用户只选择方案 ID，原生授权按账号提供，不能共享运营者的个人凭据。
+渠道配置修改先停止旧消费者再原子替换，失败回滚；运行中或结果不确定的任务会阻止替换。
+已有会话改变执行端需显式迁移。原固定 Host 开通入口和专用 Codex exec worker 已移除。
 
 Router 数据库与 `state/agent-service/onboarding/` 一起备份。
 每个 Agent 的配置和平台凭据存放在私有目录（0700）中的私有文件（0600）。

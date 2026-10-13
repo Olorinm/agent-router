@@ -1,6 +1,5 @@
 import express from "express";
 import { rateLimit } from "express-rate-limit";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { ManagedService } from "../matrix/managed.js";
@@ -44,9 +43,6 @@ export function createOnboarding(
         configuration.environments
           ?.profiles(res.locals.owner)
           .map(({ id, label, kernel }) => ({ id, label, kernel })) ?? [],
-      hosts: configuration
-        .hosts(res.locals.owner)
-        .map(({ id, label, runtimeId }) => ({ id, label, runtimeId })),
       mailServices: configuration.options.mailServices.map(({ id, label }) => ({
         id,
         label,
@@ -105,37 +101,6 @@ export function createOnboarding(
           action,
         ),
       );
-  });
-  app.post(root + "/agents/:agentId/setup/host", async (req, res) => {
-    const { hostId } = z
-      .object({ hostId: z.string().min(1).max(48) })
-      .strict()
-      .parse(req.body);
-    const host = configuration
-      .hosts(res.locals.owner)
-      .find((host) => host.id === hostId);
-    if (!host) throw new WorkError("host_not_assigned_to_account", 403);
-    const http = new ServiceHttp(
-      host.url,
-      readFileSync(host.tokenFile, "utf8").trim(),
-    );
-    try {
-      if ((await http.request("/v1/health")).protocolVersion !== 1)
-        throw new Error();
-      const inspect = await http.request("/v1/runtimes/inspect", {
-        body: { runtimeId: host.runtimeId },
-      });
-      if (!inspect.available) throw new Error();
-    } catch {
-      throw new WorkError("host_runtime_unavailable", 409);
-    }
-    res.json(
-      await configuration.host(
-        res.locals.owner,
-        String(req.params.agentId),
-        hostId,
-      ),
-    );
   });
   app.post(root + "/agents/:agentId/setup/connections", async (req, res) => {
     const body = z
