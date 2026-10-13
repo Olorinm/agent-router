@@ -28,11 +28,11 @@ agent-router environment-destroy       # 销毁环境
 
 运营者先完成一次服务器配置：
 
-1. 安装配套的环境模块和支持 `--ready-file` 的 Host。当前这些改动尚未发布，旧 Host 安装包没有这个参数。
+1. 安装配套的环境模块和支持 `--ready-file` 的 Host。相关 PR 已合并，需从配套版本构建安装包；旧 Host 安装包没有这个参数，目前不假设已有 npm 发布。
 2. 配置已有的阿里云或火山沙箱服务、镜像模板、原生运行时和持久化目录。模板启动 Host，Host 等配置完整后才监听。
 3. 将[环境方案](../../examples/cloud-environments/environments.json)和 [Host 配置](../../examples/cloud-environments/host-profile.json)放在服务器私有目录。按用户设置 `owners`，明确填 `"*"` 才对所有注册账号开放。用户自己的原生授权文件通过 `files` 注入，不能打包进共享镜像。云服务密钥只保留在 Router。
 4. 用 `onboarding:init --environments-file` 生成开通配置，设置 `AGENT_ROUTER_ONBOARDING_FILE` 后重启 Router。原有固定 Host 的接入方式继续可用。
 
 Router 会保存“账号 → Agent → 环境 → Host”的绑定，每 30 秒为就绪环境续期。Router 离线超过环境的 `lifetimeSeconds` 后，按云厂商的超时策略处理。火山目前需显式暂停，过期策略为销毁，因此要认真配置存储和运行时长。续期失败会显示需要处理，不会默默重建环境或重放任务。
 
-已有测试覆盖完整安装包、Go CLI、真实 Host 进程、重启和会话续接；其中云生命周期和模型协议为测试替身。此前火山环境模块的实测不等于这条新开通链路已完成云端验收，也未因此变更生产服务。部署步骤、网关要求和验证命令见[英文说明](cloud-environments.md)。
+已有测试覆盖完整安装包、Go CLI、真实 Host 进程、重启和会话续接；其中云生命周期和模型协议为测试替身。2026-10-13 已另外完成火山生产部署实测：CLI 开通、分配沙箱、Host 自动启动、真实 Codex 模型与工具执行、同一环境暂停恢复、文件保留和原生会话续接均通过。阿里云及外部持久化挂载尚未在这条链路中验收。详见[环境模块的验证记录](https://github.com/Olorinm/agent-environment/blob/main/docs/verification.md)。部署步骤、网关要求和验证命令见[英文说明](cloud-environments.md)。
