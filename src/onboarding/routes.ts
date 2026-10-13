@@ -15,22 +15,96 @@ const root = "/_agent-router/v1";
 const object = z.object({}).strict();
 
 /** Mounted AFTER the managed service's existing account authentication and Agent ownership checks. */
-export function createOnboarding(service: ManagedService, configuration: OnboardingConfiguration) {
-  const app = express.Router(), connections = new ConnectionSetup(service, configuration);
+export function createOnboarding(
+  service: ManagedService,
+  configuration: OnboardingConfiguration,
+) {
+  const app = express.Router(),
+    connections = new ConnectionSetup(service, configuration);
   // The outer service limits requests before authentication. Keep the account
   // budget local as well: configuration reads private files and can replace workers.
-  app.use(root, rateLimit({windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
-    keyGenerator: (_req, res) => String(res.locals.owner), message: {error: "rate_limit_exceeded"}}));
-  app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
+  app.use(
+    root,
+    rateLimit({
+      windowMs: 60_000,
+      limit: 600,
+      standardHeaders: "draft-8",
+      legacyHeaders: false,
+      keyGenerator: (_req, res) => String(res.locals.owner),
+      message: { error: "rate_limit_exceeded" },
+    }),
+  );
+  app.use((_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
   app.get(root + "/setup", (_req, res) => {
     res.json({
-      hosts: configuration.hosts(res.locals.owner).map(({id, label, runtimeId}) => ({id, label, runtimeId})),
-      mailServices: configuration.options.mailServices.map(({id, label}) => ({id, label})),
+      environments:
+        configuration.environments
+          ?.profiles(res.locals.owner)
+          .map(({ id, label, kernel }) => ({ id, label, kernel })) ?? [],
+      hosts: configuration
+        .hosts(res.locals.owner)
+        .map(({ id, label, runtimeId }) => ({ id, label, runtimeId })),
+      mailServices: configuration.options.mailServices.map(({ id, label }) => ({
+        id,
+        label,
+      })),
     });
   });
   app.get(root + "/agents/:agentId/setup", async (req, res) => {
-    const agent = service.owned(String(req.params.agentId), res.locals.owner), runtime = await service.runtime(agent.id);
-    res.json({...configuration.summary(agent), communication: runtime.extension?.status() ?? null});
+    const agent = service.owned(String(req.params.agentId), res.locals.owner),
+      runtime = await service.runtime(agent.id);
+    res.json({
+      ...configuration.summary(agent),
+      communication: runtime.extension?.status() ?? null,
+    });
+  });
+  app.get(root + "/agents/:agentId/setup/environment", (req, res) => {
+    service.owned(String(req.params.agentId), res.locals.owner);
+    res.json(
+      configuration.environments?.summary(
+        res.locals.owner,
+        String(req.params.agentId),
+      ) ?? { state: "unconfigured", busy: false },
+    );
+  });
+  app.post(root + "/agents/:agentId/setup/environment", async (req, res) => {
+    const { profileId } = z
+      .object({ profileId: z.string().min(1).max(48) })
+      .strict()
+      .parse(req.body);
+    service.owned(String(req.params.agentId), res.locals.owner);
+    if (!configuration.environments)
+      throw new WorkError("environment_provisioning_not_enabled", 409);
+    res
+      .status(202)
+      .json(
+        await configuration.environments.begin(
+          res.locals.owner,
+          String(req.params.agentId),
+          profileId,
+        ),
+      );
+  });
+  app.post(root + "/agents/:agentId/setup/environment/:action", (req, res) => {
+    object.parse(req.body);
+    const action = z
+      .enum(["resume", "pause", "destroy", "reconcile"])
+      .parse(req.params.action);
+    service.owned(String(req.params.agentId), res.locals.owner);
+    if (!configuration.environments)
+      throw new WorkError("environment_provisioning_not_enabled", 409);
+    res
+      .status(202)
+      .json(
+        configuration.environments.action(
+          res.locals.owner,
+          String(req.params.agentId),
+          action,
+        ),
+      );
   });
   app.post(root + "/agents/:agentId/setup/host", async (req, res) => {
     const { hostId } = z
@@ -100,7 +174,11 @@ export function createOnboarding(service: ManagedService, configuration: Onboard
     )
       throw new WorkError("platform_already_connected", 409);
     const connectionId = body.kind === "grove-mail" ? "mail" : body.kind;
-    if (configuration.configuration(agent)?.connections.some(connection => connection.id === connectionId))
+    if (
+      configuration
+        .configuration(agent)
+        ?.connections.some((connection) => connection.id === connectionId)
+    )
       throw new WorkError("connection_id_already_used", 409);
     if (
       body.kind === "feishu" ||
@@ -209,10 +287,16 @@ export function createOnboarding(service: ManagedService, configuration: Onboard
             }>;
           }
         | undefined;
-    const checks = await checkChannels({
-      directory: configuration.agentDirectory(agent.id),
-      agents: [config],
-    });
+    const checks = await checkChannels(
+      {
+        directory: configuration.agentDirectory(agent.id),
+        agents: [config],
+      },
+      undefined,
+      config.host?.environment
+        ? configuration.environments?.http(agent.id, config.host.environment)
+        : undefined,
+    );
     for (const check of checks)
       if (check.connectionId) {
         const running = live?.connections?.find(
@@ -229,5 +313,11 @@ export function createOnboarding(service: ManagedService, configuration: Onboard
       }
     res.json({ checks });
   });
-  return {router: app, close: () => connections.close()};
+  return {
+    router: app,
+    close: async () => {
+      await connections.close();
+      await configuration.environments?.close();
+    },
+  };
 }

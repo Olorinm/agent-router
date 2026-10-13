@@ -186,3 +186,57 @@ func TestSetupGuideIsBundledInBothLanguagesWithoutLogin(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironmentSetupUsesOwnerProfileAndWaitsForReadyBeforeChannel(t *testing.T) {
+	var created, connected bool
+	polls := 0
+	_, _ = setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_agent-router/v1/agents/agent-one/setup/environment":
+			if r.Method == "POST" {
+				var body map[string]string
+				json.NewDecoder(r.Body).Decode(&body)
+				if len(body) != 1 || body["profileId"] != "cloud" {
+					t.Errorf("unexpected body %v", body)
+				}
+				created = true
+				jsonResponse(w, 202, map[string]any{"operationId": "operation-one", "state": "creating", "busy": true})
+				return
+			}
+			polls++
+			jsonResponse(w, 200, map[string]any{"operationId": "operation-one", "state": "ready", "busy": false})
+		case "/_agent-router/v1/agents/agent-one/setup/connections":
+			if !created || polls == 0 {
+				t.Error("channel setup preceded ready environment")
+			}
+			connected = true
+			jsonResponse(w, 200, map[string]any{"connections": []any{map[string]string{"kind": "matrix"}}})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	})
+	out, _, err := run(t, "--profile", "owner", "--allow-http", "setup", "helper", "--environment", "cloud", "--channel", "matrix")
+	if err != nil || !connected || !strings.Contains(out, "connections") {
+		t.Fatalf("%s %v", out, err)
+	}
+}
+func TestEnvironmentNoWaitReturnsDurableJobAndInvalidCombinationsMakeNoRequests(t *testing.T) {
+	store, selected := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_agent-router/v1/agents/agent-one/setup/environment" || r.Method != "POST" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		jsonResponse(w, 202, map[string]any{"operationId": "operation-one", "state": "creating", "busy": true})
+	})
+	store.selectAgent(selected)
+	out, diag, err := run(t, "--profile", "owner", "--allow-http", "environment-create", "cloud", "--no-wait")
+	if err != nil || !strings.Contains(out, "operation-one") || !strings.Contains(diag, "environment-reconcile") {
+		t.Fatalf("%s %s %v", out, diag, err)
+	}
+	if _, _, err = run(t, "setup", "helper", "--host", "existing", "--environment", "cloud"); err == nil || !strings.Contains(err.Error(), "choose_environment_or_host") {
+		t.Fatal(err)
+	}
+	if _, _, err = run(t, "setup", "helper", "--environment", "cloud", "--channel", "matrix", "--no-wait"); err == nil || !strings.Contains(err.Error(), "omit_no_wait") {
+		t.Fatal(err)
+	}
+}

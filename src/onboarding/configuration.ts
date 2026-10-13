@@ -11,6 +11,11 @@ import {
 } from "../service/channels.js";
 import type { ManagedAgent, ManagedService } from "../matrix/managed.js";
 import type { MatrixConnector } from "../matrix/connector.js";
+import {
+  EnvironmentOnboarding,
+  environmentOptionsSchema,
+  type Environments,
+} from "./environments.js";
 import { WorkError } from "../matrix/cli-work.js";
 
 const hostSchema = z
@@ -25,6 +30,7 @@ const hostSchema = z
   .strict();
 export const onboardingOptionsSchema = z
   .object({
+    environments: environmentOptionsSchema.optional(),
     hosts: z.array(hostSchema).max(100).default([]),
     mailServices: z
       .array(
@@ -48,14 +54,18 @@ export class OnboardingConfiguration {
   readonly directory: string;
   readonly options: OnboardingOptions;
   private service!: ManagedService;
+  environments: EnvironmentOnboarding | undefined;
+  private readonly base: string;
   private pending = new Map<string, AgentChannelConfig>();
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
     readonly stateDirectory: string,
     optionsFile: string,
     readonly initial?: ChannelConfiguration,
+    private readonly loadEnvironments?: () => Promise<Environments>,
   ) {
     const base = dirname(resolve(optionsFile));
+    this.base = base;
     this.options = onboardingOptionsSchema.parse(
       JSON.parse(readFileSync(optionsFile, "utf8")),
     );
@@ -78,9 +88,7 @@ export class OnboardingConfiguration {
       )
         throw new Error("invalid_host_url");
     }
-    for (const raw of [
-      ...this.options.mailServices.map((mail) => mail.url),
-    ]) {
+    for (const raw of [...this.options.mailServices.map((mail) => mail.url)]) {
       const url = new URL(raw);
       if (
         !["https:", "http:"].includes(url.protocol) ||
@@ -97,6 +105,14 @@ export class OnboardingConfiguration {
   }
   attach(service: ManagedService) {
     this.service = service;
+    if (this.options.environments)
+      this.environments = new EnvironmentOnboarding(
+        this,
+        service,
+        this.options.environments,
+        this.base,
+        this.loadEnvironments,
+      );
   }
   agentDirectory(id: string): string {
     z.uuid().parse(id);
@@ -143,9 +159,14 @@ export class OnboardingConfiguration {
           id: issued.instance.id,
           validate: () => {
             this.service.instance(issued.token, agent.id);
+            if (config.host?.environment)
+              this.environments?.assertReady(agent.id, config.host.environment);
           },
         };
       },
+      config.host?.environment
+        ? this.environments?.host(agent.id, config.host.environment)
+        : undefined,
     );
   }
   factory = async (agent: ManagedAgent, connector: MatrixConnector) =>
@@ -163,6 +184,8 @@ export class OnboardingConfiguration {
       }
   }
   async host(owner: string, agentId: string, hostId: string) {
+    if (this.environments?.summary(owner, agentId))
+      throw new WorkError("environment_already_bound", 409);
     const host = this.hosts(owner).find((item) => item.id === hostId);
     if (!host) throw new WorkError("host_not_assigned_to_account", 403);
     return this.edit(owner, agentId, (config) => {
@@ -238,28 +261,34 @@ export class OnboardingConfiguration {
               unlinkSync(configurationFile);
           }
         };
-        try { await this.service.configureRuntime(
-          agentId,
-          async (agent, connector) => {
-            signal?.throwIfAborted();
-            hasRuns = connector.store.entries("communication_runs").length > 0;
-            if (!hasRuns) connector.store.delete("communication_host", "scope");
-            this.pending.set(agentId, config);
-            return this.runtime(agent, connector, config);
-          },
-          async (agent, connector) => {
-            restore();
-            return this.runtime(agent, connector, prior);
-          },
-          () => {
-            signal?.throwIfAborted();
-            commitAttempted = true;
-            privateFile(configurationFile, { agents: [config] });
-            this.pending.delete(agentId);
-          },
-        );
+        try {
+          await this.service.configureRuntime(
+            agentId,
+            async (agent, connector) => {
+              signal?.throwIfAborted();
+              hasRuns =
+                connector.store.entries("communication_runs").length > 0;
+              if (!hasRuns)
+                connector.store.delete("communication_host", "scope");
+              this.pending.set(agentId, config);
+              return this.runtime(agent, connector, config);
+            },
+            async (agent, connector) => {
+              restore();
+              return this.runtime(agent, connector, prior);
+            },
+            () => {
+              signal?.throwIfAborted();
+              commitAttempted = true;
+              privateFile(configurationFile, { agents: [config] });
+              this.pending.delete(agentId);
+            },
+          );
         } catch (error) {
-          if (error instanceof Error && error.message === "host_binding_configuration_changed")
+          if (
+            error instanceof Error &&
+            error.message === "host_binding_configuration_changed"
+          )
             throw new WorkError(error.message, 409);
           throw error;
         }
@@ -280,6 +309,7 @@ export class OnboardingConfiguration {
       );
     return {
       agent,
+      environment: this.environments?.summary(agent.owner, agent.id) ?? null,
       host: config?.host
         ? { runtimeId: config.host.runtimeId, profileId: profile?.id ?? null }
         : null,
