@@ -33,7 +33,7 @@ While an environment is ready, Router renews its lifetime every 30 seconds. `lif
 
 ## Operator setup
 
-This integration requires the matching, currently unreleased Router, Host bootstrap entrypoint and Agent Environment application-endpoint API. [Agent Environment PR #1](https://github.com/Olorinm/agent-environment/pull/1) and [Host PR #25](https://github.com/Olorinm/agent-host/pull/25) must be reviewed as dependencies; installing the older published Host archive does not add `--ready-file`. No npm release is assumed.
+This integration is merged in Router, [Agent Environment PR #1](https://github.com/Olorinm/agent-environment/pull/1) and [Host PR #25](https://github.com/Olorinm/agent-host/pull/25). Build matching archives from those merged versions or later; installing an older Host archive does not add `--ready-file`. No npm release is assumed.
 
 1. Build and verify the separate Host and Environment archives. Install Environment into Router's trusted server environment (or use [the derived image recipe](../../examples/cloud-environments/Dockerfile.router)); it is not installed on users' laptops. `modulePath` points to the installed package's `dist/index.js`. If omitted, Node resolves `@olorinm/agent-environment` as an installed dependency.
 2. Prepare an existing Alibaba/Volcengine sandbox endpoint and API key with a cloud template containing Node 24+, Agent Host, the selected native runtime and dependencies. Configure the template's entrypoint to run `agent-host serve --ready-file ...` as described in Host's cloud example. Verify its durable workspace/native state and application-port routing. This flow allocates sandboxes; it does not create VKE/ACS infrastructure.
@@ -64,4 +64,4 @@ npm run verify:cloud -- --environment-archive /path/agent-environment.tgz \
   --host-archive /path/agent-host.tgz --host-fixture /path/agent-host/test/fixtures/codex-server.mjs
 ```
 
-Cloud lifecycle and the native model protocol in that check are fixtures. The earlier Environment Volcengine live acceptance does not certify this new complete onboarding chain. Full cloud/image/model acceptance and production deployment are separate steps; no live user service is changed by these tests.
+Cloud lifecycle and the native model protocol in that check are fixtures. Separately, on 2026-10-13 a production Volcengine deployment passed CLI account onboarding → sandbox allocation → Host startup → actual Codex model/tool execution → same-ID pause/resume → file preservation and continued native conversation. [Environment verification](https://github.com/Olorinm/agent-environment/blob/main/docs/verification.md) records that live scope. Alibaba and external durable mount attestation remain unverified for this integration. The fixture commands above do not change live user services.
