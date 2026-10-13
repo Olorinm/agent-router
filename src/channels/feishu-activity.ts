@@ -5,9 +5,9 @@ import { FEISHU_EMOJIS } from "./feishu-emojis.js";
 
 interface ReactionState {
   emoji: string;
+  // Keep legacy cleanup phases readable across upgrades; new receipts are never removed.
   phase: "selected" | "adding" | "active" | "removing" | "removed";
   reactionId?: string;
-  owned?: boolean;
 }
 
 /** Resolve uncertain API responses by emoji and app identity, without touching anyone else's reactions. */
@@ -33,29 +33,18 @@ export async function feishuActivity(channel: LarkChannel, context: ChannelConte
   chooseEmoji: () => string = () => FEISHU_EMOJIS[randomInt(FEISHU_EMOJIS.length)]!): Promise<{ externalId: string }> {
   const key = `activity:${activityKey}`;
   let saved = context.checkpoint<ReactionState>(key);
+  // A receipt remains on the message, including when replaying an old queued cleanup.
+  if (!active) return { externalId: saved?.reactionId ?? "" };
   const save = (value: ReactionState) => { context.checkpoint(key, value); saved = value; };
-  if (!saved && active) save({ emoji: chooseEmoji(), phase: "selected" });
+  if (!saved) save({ emoji: chooseEmoji(), phase: "selected" });
   if (!saved || saved.phase === "removed") return { externalId: saved?.reactionId ?? "" };
-  if (active) {
-    if (saved.phase === "active" || saved.phase === "removing") return { externalId: saved.reactionId ?? "" };
-    const found = await findReaction(channel, appId, route.messageId, saved.emoji);
-    if (found) save({ ...saved, reactionId: found, owned: saved.phase === "adding", phase: "active" });
-    else {
-      save({ ...saved, phase: "adding", owned: true });
-      const reactionId = await channel.addReaction(route.messageId, saved.emoji);
-      save({ ...saved, phase: "active", reactionId });
-    }
-  } else {
-    if (saved.owned) {
-      const reactionId = saved.phase === "active" ? saved.reactionId : await findReaction(channel, appId, route.messageId, saved.emoji);
-      if (reactionId) {
-        save({ ...saved, phase: "removing", reactionId });
-        // SDK removeReaction discards API error codes. Check the raw response before recording cleanup.
-        const result = await channel.rawClient.im.v1.messageReaction.delete({ path: { message_id: route.messageId, reaction_id: reactionId } });
-        if (result.code) throw new Error("feishu_activity_cleanup_failed");
-      }
-    }
-    save({ ...saved, phase: "removed" });
+  if (saved.phase === "active" || saved.phase === "removing") return { externalId: saved.reactionId ?? "" };
+  const found = await findReaction(channel, appId, route.messageId, saved.emoji);
+  if (found) save({ ...saved, reactionId: found, phase: "active" });
+  else {
+    save({ ...saved, phase: "adding" });
+    const reactionId = await channel.addReaction(route.messageId, saved.emoji);
+    save({ ...saved, phase: "active", reactionId });
   }
   return { externalId: saved.reactionId ?? "" };
 }

@@ -38,43 +38,46 @@ describe("Feishu activity reactions", () => {
     await feishuActivity(f.channel, f.context, "app", route, true, "turn", () => "WRONGED");
     expect(f.add).toHaveBeenCalledTimes(1);
     await f.update(false); await f.update(false);
-    expect(f.remove).toHaveBeenCalledTimes(1);
-    expect(f.reactions.size).toBe(0);
+    expect(f.remove).not.toHaveBeenCalled();
+    expect(f.reactions.get("mine")?.emoji).toBe(emoji);
     // No semantic allowlist: even an emoji unrelated to work passes through unchanged.
     await f.update(true, "other-turn", () => "POOP");
     expect(f.add).toHaveBeenLastCalledWith("source", "POOP");
   });
-  it("recovers a lost add/delete response without changing emoji or duplicating notifications", async () => {
+  it("recovers a lost add response without changing emoji or duplicating notifications", async () => {
     const f = fixture();
     f.add.mockImplementationOnce(async (_id, emoji) => { f.reactions.set("mine", { emoji, app: "app" }); throw new Error("response_lost"); });
     await expect(f.update(true, "turn", () => "HappyDragon")).rejects.toThrow("response_lost");
     await f.update(true, "turn", () => "SMILE");
     expect(f.add).toHaveBeenCalledTimes(1);
-    f.remove.mockImplementationOnce(async () => { f.reactions.delete("mine"); throw new Error("delete_response_lost"); });
-    await expect(f.update(false)).rejects.toThrow("delete_response_lost");
     await f.update(false);
-    expect(f.remove).toHaveBeenCalledTimes(1);
-    expect(f.checkpoints.get("activity:turn")).toMatchObject({ emoji: "HappyDragon", phase: "removed" });
+    expect(f.remove).not.toHaveBeenCalled();
+    expect(f.checkpoints.get("activity:turn")).toMatchObject({ emoji: "HappyDragon", phase: "active" });
+    expect(f.reactions.get("mine")?.emoji).toBe("HappyDragon");
   });
-  it("cleans up an uncertain addition and preserves pre-existing reactions", async () => {
+  it("retains an uncertain addition and preserves pre-existing reactions", async () => {
     const f = fixture();
     f.reactions.set("other-bot", { emoji: "SMILE", app: "another-app" });
     f.add.mockImplementationOnce(async (_id, emoji) => { f.reactions.set("mine", { emoji, app: "app" }); throw new Error("response_lost"); });
     await expect(f.update(true, "turn", () => "SMILE")).rejects.toThrow();
     await f.update(false);
-    expect([...f.reactions.keys()]).toEqual(["other-bot"]);
-    f.reactions.set("existing-mine", { emoji: "SMILE", app: "app" });
+    expect([...f.reactions.keys()]).toEqual(["other-bot", "mine"]);
     await f.update(true, "next", () => "SMILE"); await f.update(false, "next");
-    expect([...f.reactions.keys()]).toEqual(["other-bot", "existing-mine"]);
+    expect([...f.reactions.keys()]).toEqual(["other-bot", "mine"]);
     expect(f.add).toHaveBeenCalledTimes(1);
+    expect(f.remove).not.toHaveBeenCalled();
   });
-  it("retries API-level cleanup errors and does not mark the reaction removed prematurely", async () => {
-    const f = fixture(); await f.update(true);
-    f.remove.mockResolvedValueOnce({ code: 99991400 });
-    await expect(f.update(false)).rejects.toThrow("cleanup_failed");
-    expect(f.checkpoints.get("activity:turn")).toMatchObject({ phase: "removing" });
+  it("ignores old queued cleanup operations without calling Feishu or changing checkpoints", async () => {
+    const f = fixture();
     await f.update(false);
-    expect(f.reactions.size).toBe(0);
+    expect(f.checkpoints.size).toBe(0);
+    for (const phase of ["selected", "adding", "active", "removing", "removed"]) {
+      const saved = { emoji: "SMILE", phase, reactionId: "mine", owned: true };
+      f.checkpoints.set("activity:turn", saved);
+      await f.update(false); await f.update(false);
+      expect(f.checkpoints.get("activity:turn")).toEqual(saved);
+    }
+    expect(f.list).not.toHaveBeenCalled(); expect(f.add).not.toHaveBeenCalled(); expect(f.remove).not.toHaveBeenCalled();
   });
   it("ignores bot reaction callbacks so automatic feedback cannot start another agent turn", async () => {
     const f = fixture(), channel = new FeishuChannel({ appId: "app", appSecret: "fixture" }, f.channel);
@@ -84,7 +87,7 @@ describe("Feishu activity reactions", () => {
     expect(f.context.receive).not.toHaveBeenCalled(); expect(f.context.error).not.toHaveBeenCalled();
     await channel.stop();
   });
-  it("follows task status, keeps useful progress, and delivers the answer even when cleanup fails", async () => {
+  it("keeps useful progress and delivers the answer while retaining the receipt", async () => {
     const f = fixture(), store = new DurableStore(":memory:", "agent"), work = new CliWork(store, () => "allow");
     const core = new CommunicationCore("agent", store, work), adapter = new FeishuChannel({ appId: "app", appSecret: "fixture" }, f.channel);
     core.register({ id: "feishu", ownerAddresses: ["owner"] }, adapter);
@@ -99,18 +102,17 @@ describe("Feishu activity reactions", () => {
       await core.dispatch(); await core.flush();
       expect(f.add).toHaveBeenCalledTimes(1);
       expect(f.native.send).toHaveBeenCalledWith("group", { text: "Connection retrying." }, expect.anything());
-      f.remove.mockRejectedValueOnce(new Error("temporarily_offline"));
       work.update(task.claimId!, "reply", "answer");
       await core.dispatch(); await core.flush();
       expect(f.native.send).toHaveBeenLastCalledWith("group", { text: "answer" }, expect.anything());
-      const cleanup = store.entries<OutboxRecord>("communication_outbox").find(r => r.value.activity?.active === false)!;
-      expect(cleanup.value.state).toBe("queued");
+      const stopped = store.entries<OutboxRecord>("communication_outbox").find(r => r.value.activity?.active === false)!;
+      expect(stopped.value.state).toBe("accepted");
       await core.flush(Date.now() + 60_000);
-      expect(store.get<OutboxRecord>("communication_outbox", cleanup.id)?.state).toBe("accepted");
-      expect(f.reactions.size).toBe(0);
+      expect(f.remove).not.toHaveBeenCalled();
+      expect(f.reactions.size).toBe(1);
     } finally { await core.stop(); store.close(); }
   });
-  it("recovers an interrupted outbox send and removes feedback while waiting for user input", async () => {
+  it("recovers an interrupted outbox send and retains the receipt while waiting for user input", async () => {
     const f = fixture(), store = new DurableStore(":memory:", "agent"), work = new CliWork(store, () => "allow");
     const adapter = new FeishuChannel({ appId: "app", appSecret: "fixture" }, f.channel);
     let core = new CommunicationCore("agent", store, work);
@@ -131,7 +133,8 @@ describe("Feishu activity reactions", () => {
       expect(store.get<OutboxRecord>("communication_outbox", pending.id)?.state).toBe("accepted");
       work.update(task.claimId!, "need-input", "Which option?");
       await core.dispatch(); await core.flush();
-      expect(f.reactions.size).toBe(0);
+      expect(f.reactions.size).toBe(1);
+      expect(f.remove).not.toHaveBeenCalled();
       expect(f.native.send).toHaveBeenCalledWith("group", { text: "Which option?" }, expect.anything());
     } finally { await core.stop(); store.close(); }
   });
