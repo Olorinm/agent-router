@@ -18,19 +18,14 @@ agent-router login '@alice:agents.example'
 # agent-router register agents.example alice --registration-token-file /private/invite
 
 agent-router setup-options
-agent-router setup helper --host personal
+agent-router setup helper --environment cloud-codex
 ```
 
-Login reads your password with a hidden prompt. `setup-options` lists the Host
-profiles assigned to your account. `setup helper` creates and selects `helper`,
-or selects your existing Agent with that name. `--host personal` connects the
-operator's `personal` profile; the service checks the Host and runtime first.
-`setup` without a name inspects/configures the currently selected Agent.
-
-A platform is optional. Without an assigned Host, use an existing worker instead:
-`agent-instance-create worker --out /private/worker.json`, followed by
-`agent-attach` and `claim` on the worker machine. See [managed Agents](managed-agents.md)
-and the [Codex worker](../../examples/codex-worker/README.md).
+Login reads your password with a hidden prompt. `setup-options` lists the environment
+profiles assigned to your account. `setup helper --environment cloud-codex` creates
+or selects your Agent, allocates its environment and starts Host automatically.
+`setup` without a name inspects the selected Agent. Platforms are optional.
+See [cloud setup](cloud-environments.md) for lifecycle commands and operator configuration.
 
 ## Connect your chosen platforms
 
@@ -42,7 +37,7 @@ agent-router channel-connect matrix
 ```
 
 Run only the commands for the platforms you want. A single command can also do
-initial setup: `agent-router setup helper --host personal --channel feishu`.
+initial setup: `agent-router setup helper --environment cloud-codex --channel feishu`.
 
 - **Feishu:** the terminal displays the official app setup QR/link, then the
   personal authorization QR/link. Both must finish before personal tools are
@@ -135,63 +130,26 @@ approval flow when automatic execution has not been granted.
 
 ## Operator setup
 
-Deploy the existing [Router node](managed-agents.md#部署节点) and a configured
-Host first. Keep account registration policy on the account server. This feature
-adds authenticated configuration endpoints and reuses the existing account login.
-
-Build the Router and generate a private configuration on the server:
+Deploy the [Router node](managed-agents.md#部署节点) and configure a sandbox
+provider, template, Host image and owner-assigned environment profiles as described
+in [cloud setup](cloud-environments.md). Account registration remains on the account server.
 
 ```sh
 npm ci
 npm run build
 sh scripts/build-cli.sh
-npm run onboarding:init -- \
-  --out /private/router/onboarding.json \
-  --owner '@alice:agents.example' \
-  --host-url http://host:8787 \
-  --host-token-file /private/router/host-token \
-  --runtime codex
+npm run onboarding:init -- --out /private/router/onboarding.json \
+  --environments-file /private/router/environments.json
 ```
 
-Set `AGENT_ROUTER_ONBOARDING_FILE=/private/router/onboarding.json` and restart
-`agent:service` once with its existing Matrix/service environment. In Compose,
-mount the file and Host token in the service container; use container-visible
-paths. Retain the writable service state volume.
-
-Profiles can be edited in that private file before restarting:
-
-```json
-{
-  "hosts": [{
-    "id": "personal",
-    "label": "Personal execution service",
-    "url": "http://host:8787",
-    "tokenFile": "host-token",
-    "runtimeId": "codex",
-    "owners": ["@alice:agents.example"]
-  }],
-  "mailServices": [{
-    "id": "mail",
-    "label": "Mail service",
-    "url": "https://mail.example",
-    "attachmentOrigins": []
-  }]
-}
-```
-
-Host token paths are relative to this file unless absolute. Assign account owners
-explicitly. A shared Host runtime must provide appropriate workspace isolation;
-this setup does not create per-user runtimes or schedule them. Owners choose
-profile IDs, not arbitrary server URLs or credential paths.
-
-Use `onboarding:init --out FILE` without Host options to enable channel setup for
-external workers. Existing static `AGENT_ROUTER_CHANNELS_FILE` configuration is
-retained as the starting configuration until an Agent saves its own override.
-Changes validate account uniqueness, stop the previous consumer, save atomically,
-then start the replacement. Failed replacements restore the previous configuration.
-Active/uncertain work blocks replacement. Once execution history exists, changing
-Host/runtime or personal tool definitions requires a new Agent or an explicit
-context migration; existing conversations are not silently moved.
+Set `AGENT_ROUTER_ONBOARDING_FILE` to that private file and restart `agent:service`.
+Mount the provider/profile files and sandbox key, and retain the writable service
+state volume. Native credentials must belong to the profile's assigned users.
+Users select a profile ID, never arbitrary server URLs or credential paths.
+Channel updates stop the old consumer and save atomically, with rollback on failure.
+Active or uncertain work blocks replacement. Existing execution history requires
+an explicit migration before changing Host/runtime or tool definitions.
+The former fixed-Host setup endpoint and Codex exec worker have been removed.
 
 Back up the Router databases and `state/agent-service/onboarding/` together.
 Per-Agent configuration and platform credentials are private files (0600) under

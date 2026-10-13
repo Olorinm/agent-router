@@ -24,7 +24,6 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run test:codex-worker
       - run: npm run build
       - run: npm --prefix examples/echo-agent ci
       - run: npm --prefix examples/echo-agent run typecheck

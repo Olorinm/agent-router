@@ -90,16 +90,13 @@ func setupPath(selected *agentSelection) string {
 }
 func (a *app) setupCommand(command string, args []string) (bool, error) {
 	switch command {
-	case "environment-create", "environment-status", "environment-resume", "environment-pause", "environment-destroy", "environment-reconcile", "setup", "setup-options", "setup-check", "host-use", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
+	case "environment-create", "environment-status", "environment-resume", "environment-pause", "environment-destroy", "environment-reconcile", "setup", "setup-options", "setup-check", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
 	default:
 		return false, nil
 	}
 	return true, a.runSetup(command, args)
 }
 func (a *app) runSetup(command string, args []string) error {
-	if a.o.environmentProfile != "" && a.o.hostProfile != "" {
-		return errors.New("choose_environment_or_host")
-	}
 	if a.o.environmentProfile != "" && command != "setup" {
 		return errors.New("environment_option_requires_setup")
 	}
@@ -140,8 +137,6 @@ func (a *app) runSetup(command string, args []string) error {
 			return err
 		}
 		return a.finishEnvironment(path, data)
-	case "host-use":
-		return a.setupAPI(path+"/host", "POST", map[string]string{"hostId": args[0]})
 	case "channels":
 		return a.setupAPI(path, "GET", nil)
 	case "setup-check":
@@ -207,11 +202,6 @@ func (a *app) runSetup(command string, args []string) error {
 			}
 			if a.o.noWait {
 				return nil
-			}
-		}
-		if a.o.hostProfile != "" {
-			if _, err = a.setupRequest(path+"/host", "POST", map[string]string{"hostId": a.o.hostProfile}); err != nil {
-				return err
 			}
 		}
 		if a.o.channel != "" {

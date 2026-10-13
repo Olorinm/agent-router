@@ -41,20 +41,11 @@ func setupFixture(t *testing.T, handler http.HandlerFunc) (*profileStore, *agent
 	selected := &agentSelection{Version: 1, ServiceURL: server.URL + "/_agent-router/v1", Agent: agent}
 	return store, selected
 }
-func TestSetupReusesAccountAndCreatesAgentWithOptionalHostAndNoPlatform(t *testing.T) {
-	var host bool
+func TestSetupReusesAccountAndCreatesAgentWithoutExecutionOrPlatform(t *testing.T) {
 	store, selected := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/_agent-router/v1/setup":
-			jsonResponse(w, 200, map[string]any{"hosts": []any{map[string]string{"id": "personal"}}})
-		case "/_agent-router/v1/agents/agent-one/setup/host":
-			var body map[string]string
-			json.NewDecoder(r.Body).Decode(&body)
-			if body["hostId"] != "personal" || len(body) != 1 {
-				t.Errorf("unexpected host binding %v", body)
-			}
-			host = true
-			jsonResponse(w, 200, map[string]any{})
+			jsonResponse(w, 200, map[string]any{"environments": []any{}})
 		case "/_agent-router/v1/agents/agent-one/setup":
 			jsonResponse(w, 200, map[string]any{"agent": selectedAgent(), "connections": []any{}})
 		case "/_agent-router/v1/agents/agent-one/setup/check":
@@ -64,8 +55,8 @@ func TestSetupReusesAccountAndCreatesAgentWithOptionalHostAndNoPlatform(t *testi
 			w.WriteHeader(404)
 		}
 	})
-	out, _, err := run(t, "--profile", "owner", "--allow-http", "setup", "helper", "--host", "personal")
-	if err != nil || !host || !strings.Contains(out, "connections") {
+	out, _, err := run(t, "--profile", "owner", "--allow-http", "setup", "helper")
+	if err != nil || !strings.Contains(out, "connections") {
 		t.Fatalf("%s %v", out, err)
 	}
 	saved, err := store.selection()
@@ -110,7 +101,7 @@ func TestSetupCanListAssignedServicesBeforeSelectingAgent(t *testing.T) {
 		if r.URL.Path != "/_agent-router/v1/setup" {
 			t.Errorf("unexpected request %s", r.URL.Path)
 		}
-		jsonResponse(w, 200, map[string]any{"hosts": []any{}})
+		jsonResponse(w, 200, map[string]any{"environments": []any{}})
 	})
 	if _, _, err := run(t, "--profile", "owner", "--allow-http", "setup-options"); err != nil {
 		t.Fatal(err)
@@ -126,7 +117,7 @@ func TestSetupRejectsWorkerCredentialsAndDifferentServiceOrigin(t *testing.T) {
 	if err := store.selectAgent(selected); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := run(t, "--profile", "owner", "--allow-http", "host-use", "personal"); err == nil || !strings.Contains(err.Error(), "owner_account_required") {
+	if _, _, err := run(t, "--profile", "owner", "--allow-http", "environment-create", "cloud"); err == nil || !strings.Contains(err.Error(), "owner_account_required") {
 		t.Fatal(err)
 	}
 	selected.InstanceID = ""
@@ -181,7 +172,7 @@ func TestSetupGuideIsBundledInBothLanguagesWithoutLogin(t *testing.T) {
 	isolated(t)
 	for _, language := range []string{"en", "zh"} {
 		out, _, err := run(t, "setup-guide", language)
-		if err != nil || !strings.Contains(out, "agent-router setup helper --host personal") {
+		if err != nil || !strings.Contains(out, "agent-router setup helper --environment cloud-codex") {
 			t.Fatalf("%s %v", out, err)
 		}
 	}
@@ -233,7 +224,7 @@ func TestEnvironmentNoWaitReturnsDurableJobAndInvalidCombinationsMakeNoRequests(
 	if err != nil || !strings.Contains(out, "operation-one") || !strings.Contains(diag, "environment-reconcile") {
 		t.Fatalf("%s %s %v", out, diag, err)
 	}
-	if _, _, err = run(t, "setup", "helper", "--host", "existing", "--environment", "cloud"); err == nil || !strings.Contains(err.Error(), "choose_environment_or_host") {
+	if _, _, err = run(t, "setup", "helper", "--host", "existing", "--environment", "cloud"); err == nil || !strings.Contains(err.Error(), "unknown flag: --host") {
 		t.Fatal(err)
 	}
 	if _, _, err = run(t, "setup", "helper", "--environment", "cloud", "--channel", "matrix", "--no-wait"); err == nil || !strings.Contains(err.Error(), "omit_no_wait") {

@@ -133,26 +133,7 @@ async function fixture() {
   }
   const optionsFile = join(directory, "options.json");
   privateFile(join(directory, "host-token"), "fixture-host-token");
-  privateFile(optionsFile, {
-    hosts: [
-      {
-        id: "personal",
-        label: "Personal",
-        url: "https://host.fixture",
-        tokenFile: "host-token",
-        runtimeId: "personal",
-        owners: [alice],
-      },
-      {
-        id: "other",
-        label: "Other",
-        url: "https://host.fixture",
-        tokenFile: "host-token",
-        runtimeId: "other",
-        owners: [alice],
-      },
-    ],
-  });
+  privateFile(optionsFile, {});
   const settings = new OnboardingConfiguration(directory, optionsFile);
   const service = new ManagedService(config, {
     transport,
@@ -209,6 +190,9 @@ async function fixture() {
     hostRuns,
     tokens,
     client,
+    host: (agent: ManagedAgent, runtimeId = "personal") => settings.edit(agent.owner, agent.id, config => {
+      config.host = { url: "https://host.fixture", tokenFile: join(directory, "host-token"), runtimeId, instanceName: "channel-host", instructions: "" };
+    }),
   };
 }
 
@@ -218,8 +202,8 @@ describe("managed CLI setup", () => {
     expect((await fetch(f.base + "/_agent-router/setup")).status).toBe(404);
     expect((await fetch(f.base + root + "/setup")).status).toBe(401);
     const options = (await a.api("/setup")).data;
-    expect(options.hosts.map((h: any) => h.id)).toEqual(["personal", "other"]);
-    expect((await b.api("/setup")).data.hosts).toEqual([]);
+    expect(options.environments).toEqual([]);
+    expect(options).not.toHaveProperty("hosts");
     expect(JSON.stringify(options)).not.toContain("fixture-host-token");
     expect(JSON.stringify(options)).not.toContain(f.directory);
     expect(f.service.agents()).toHaveLength(0);
@@ -238,9 +222,8 @@ describe("managed CLI setup", () => {
     const path = "/agents/" + agent.id + "/setup";
     expect((await a.api(path)).data.connections).toEqual([]);
     const other = (await b.api("/agents", {name: "helper"})).data;
-    expect((await b.api("/agents/" + other.id + "/setup/host", {hostId: "personal"})).status).toBe(403);
-    expect((await a.api(path + "/host", {hostId: "personal", url: "https://evil.fixture"})).status).toBe(400);
-    expect((await a.api(path + "/host", {hostId: "personal"})).status).toBe(200);
+    expect((await a.api(path + "/host", {hostId: "personal"})).status).toBe(404);
+    await f.host(agent);
     expect(f.settings.configuration(agent)?.connections).toEqual([]);
     expect((await a.api(path + "/connections", {kind: "matrix"})).status).toBe(200);
     expect((await a.api(path + "/connections", {kind: "matrix"})).status).toBe(409);
@@ -255,7 +238,7 @@ describe("managed CLI setup", () => {
     expect(f.hostRuns.size).toBe(0);
     const runtime = await f.service.runtime(agent.id), before = readFileSync(file, "utf8");
     runtime.connector.store.set("communication_runs", "uncertain", {phase: "unknown"});
-    expect((await a.api(path + "/host", {hostId: "other"})).data.error).toBe("agent_has_active_or_unknown_run");
+    await expect(f.host(agent, "other")).rejects.toThrow("agent_has_active_or_unknown_run");
     expect(readFileSync(file, "utf8")).toBe(before);
     runtime.connector.store.delete("communication_runs", "uncertain");
     const original = f.settings.factory;
@@ -269,7 +252,7 @@ describe("managed CLI setup", () => {
     const f = await fixture(), a = f.client("alice"), b = f.client("bob");
     const agent = (await a.api("/agents", {name: "helper"})).data;
     const caller = (await b.api("/agents", {name: "client"})).data;
-    await a.api("/agents/" + agent.id + "/setup/host", {hostId: "personal"});
+    await f.host(agent);
     const gateway = "/agents/" + agent.id + "/gateway";
     expect((await b.api(gateway + "/api/contacts", {address: caller.matrixId, receive: "allow", execution: "allow"})).status).toBe(404);
     expect((await a.api(gateway + "/api/contacts", {address: caller.matrixId, note: "Friend", tags: [], receive: "allow", execution: "allow"})).status).toBe(201);
@@ -287,7 +270,7 @@ describe("managed CLI setup", () => {
     const second = await sdk.send({...input, text: "continue", contextId: task.contextId, messageId: randomUUID()});
     await vi.waitFor(async () => expect((await sdk.get({agentId: caller.id, address: agent.address, resolvedTarget: agent, taskId: second.id})).status.state).toBe("TASK_STATE_COMPLETED"), {timeout: 7000});
     expect([...f.hostRuns.values()][1].sessionId).toBe([...f.hostRuns.values()][0].sessionId);
-    expect((await a.api("/agents/" + agent.id + "/setup/host", {hostId: "other"})).data.error).toBe("host_binding_configuration_changed");
+    await expect(f.host(agent, "other")).rejects.toThrow("host_binding_configuration_changed");
     expect(f.hostRuns.size).toBe(2);
   }, 20000);
 });
@@ -311,8 +294,10 @@ it.skipIf(!existsSync(cliBinary))("runs the standalone Go CLI against Router set
     return result.stdout ? JSON.parse(result.stdout) : null;
   };
   const options = await cli("alice", "setup-options");
-  expect(options.hosts[0].id).toBe("personal");
-  const setup = await cli("alice", "setup", "helper", "--host", "personal");
+  expect(options.environments).toEqual([]);
+  const created = await cli("alice", "agent-create", "helper");
+  await f.host(f.service.agent(created.id));
+  const setup = await cli("alice", "setup", "helper");
   expect(setup.configuration.connections).toEqual([]);
   expect(setup.checks[0].status).toBe("verified");
   const target = setup.configuration.agent;
