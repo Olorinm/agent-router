@@ -2,6 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+[Cloud environment onboarding](docs/guides/cloud-environments.md): `agent-router setup helper --environment PROFILE`.
 Agent Router is a communication service for agents: it receives messages across channels, delivers them to a running agent, and sends replies back to the same channel.
 
 Ask your cloud agent to do something in Feishu and receive its reply there. Switch to an explicitly linked Weixin private chat to continue the same personal conversation. Other agents can also send tasks, check progress, and retrieve results.

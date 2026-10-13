@@ -11,7 +11,7 @@ import { TelegramChannel } from "../channels/telegram.js";
 import { GroveMailChannel } from "../channels/grove-mail.js";
 import { ServiceHttp } from "../channels/http.js";
 import { WeixinChannel } from "../channels/weixin/index.js";
-import { HttpAgentHost } from "../execution/host.js";
+import { HttpAgentHost, type HostPort } from "../execution/host.js";
 import { HostWorker } from "../execution/host-worker.js";
 import type { ChannelAdapter } from "../communication/types.js";
 import { digest, key } from "../execution/protocol.js";
@@ -32,7 +32,7 @@ const connection = z.discriminatedUnion("kind", [
   z.object({ ...common, kind: z.literal("weixin"), credentialsFile: file }).strict(),
 ]);
 export const agentChannelConfigSchema = z.object({ agentId: z.uuid(), connections: z.array(connection).max(20),
-  host: z.object({ url: z.url(), tokenFile: file, runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
+  host: z.object({ environment: z.uuid().optional(), url: z.url(), tokenFile: file, runtimeId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/),
     instanceName: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/).default("channel-host"), instructions: z.string().max(200_000).default("") }).strict().optional() }).strict();
 export const channelConfigSchema = z.object({ agents: z.array(agentChannelConfigSchema).min(1).max(100) }).strict().superRefine((config, context) => {
   if (new Set(config.agents.map((agent) => agent.agentId)).size !== config.agents.length) context.addIssue({ code: "custom", message: "duplicate_agent_id" });
@@ -81,7 +81,7 @@ export function loadWeixinCredentials(path: string) {
 }
 
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
-  directory: string, issue: (name: string) => { id: string; validate: () => void }): Promise<ServiceExtension> {
+  directory: string, issue: (name: string) => { id: string; validate: () => void }, suppliedHost?: HostPort): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   const accounts = new Map<string, FeishuAccount>(), personalTools = new Map<string, FeishuTools>();
@@ -127,7 +127,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   let worker: HostWorker | undefined;
   if (config.host) {
     const instance = issue(config.host.instanceName);
-    const host = new HttpAgentHost(new ServiceHttp(config.host.url, secret(directory, config.host.tokenFile)));
+    if (config.host.environment && !suppliedHost) throw new Error("environment_coordinator_required");
+    const host = suppliedHost ?? new HttpAgentHost(new ServiceHttp(config.host.url, secret(directory, config.host.tokenFile)));
     const channelTools = new ChannelTools(core, host);
     worker = new HostWorker(agent.id, instance.id, connector.store, connector.cli,
       host, config.host.runtimeId,

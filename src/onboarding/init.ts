@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { onboardingOptionsSchema } from "./configuration.js";
 import { privateFile } from "../services/feishu/cli.js";
+import { environmentOptionsSchema } from "./environments.js";
 import { mxid } from "../matrix/protocol.js";
 
 const { values } = parseArgs({
   options: {
     out: { type: "string" },
     owner: { type: "string" },
+    "environments-file": { type: "string" },
     "host-url": { type: "string" },
     "host-token-file": { type: "string" },
     runtime: { type: "string" },
@@ -19,7 +21,7 @@ const { values } = parseArgs({
 });
 if (values.help) {
   process.stdout.write(
-    "Usage: npm run onboarding:init -- --out /private/onboarding.json [--owner @alice:example.org --host-url http://host:8787 --host-token-file /private/host-token --runtime codex]\n",
+    "Usage: npm run onboarding:init -- --out /private/onboarding.json [--environments-file /private/environments.json] [--owner @alice:example.org --host-url http://host:8787 --host-token-file /private/host-token --runtime codex]\n",
   );
 } else {
   try {
@@ -67,10 +69,27 @@ if (values.help) {
       if (!readFileSync(host.tokenFile, "utf8").trim())
         throw new Error("empty_host_token");
     }
+    let environments;
+    if (values["environments-file"]) {
+      const source = resolve(values["environments-file"]),
+        base = dirname(source);
+      environments = environmentOptionsSchema.parse(
+        JSON.parse(readFileSync(source, "utf8")),
+      );
+      environments.configFile = resolve(base, environments.configFile);
+      if (environments.modulePath)
+        environments.modulePath = resolve(base, environments.modulePath);
+      for (const profile of environments.profiles) {
+        profile.hostConfigFile = resolve(base, profile.hostConfigFile);
+        for (const item of profile.files)
+          item.source = resolve(base, item.source);
+      }
+    }
     privateFile(
       file,
       onboardingOptionsSchema.parse({
         hosts,
+        ...(environments ? { environments } : {}),
       }),
     );
     process.stdout.write(
