@@ -101,7 +101,7 @@ export class CommunicationCore {
   receive(connectionId: string, input: ChannelMessage): InboxRecord {
     this.validate();
     const source = messageSchema.parse(input);
-    const { definition } = this.connection(connectionId);
+    const { definition, adapter } = this.connection(connectionId);
     const id = digest(key(this.agentId, connectionId, source.externalId));
     const hash = digest(source);
     const existing = this.store.get<InboxRecord>("communication_inbox", id);
@@ -111,7 +111,8 @@ export class CommunicationCore {
     }
     const owner = definition.ownerAddresses.includes(source.sender);
     const allowed = source.scope === "direct" ? owner || Boolean(definition.peerAddresses?.includes(source.sender)) :
-      Boolean(definition.groupIds?.includes(source.groupId ?? source.threadId)) && (owner || Boolean(definition.peerAddresses?.includes(source.sender)));
+      adapter.groupPolicy?.(source) === "open" ||
+        Boolean(definition.groupIds?.includes(source.groupId ?? source.threadId)) && (owner || Boolean(definition.peerAddresses?.includes(source.sender)));
     const oversized = Buffer.byteLength(source.text) > 24_000;
     const conversationId = `c-${digest(key(this.agentId, source.scope === "direct" && owner ? "owner-main" :
       key(connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`;

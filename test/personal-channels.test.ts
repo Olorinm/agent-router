@@ -12,6 +12,7 @@ import type { MatrixTransport } from "../src/matrix/transport.js";
 import type { RoomEvent } from "../src/matrix/protocol.js";
 import { CommunicationCore } from "../src/communication/core.js";
 import { DurableStore } from "../src/communication/store.js";
+import { CliWork } from "../src/execution/work.js";
 import { ServiceHttp, ChannelHttpError } from "../src/channels/http.js";
 import type { ChannelContext, ChannelMessage, ReplyRoute } from "../src/communication/types.js";
 import { channelConfigSchema } from "../src/service/channels.js";
@@ -40,6 +41,51 @@ class Weixin extends WeixinChannel {
 const route: ReplyRoute = { connectionId: "channel", target: "chat", messageId: "7", data: {} };
 
 describe("official channel contracts", () => {
+  it.each([{ groupIds: [] }, { groupIds: ["previously-enabled-group"] }])("accepts Feishu group mentions from any member with legacy groupIds=$groupIds", async ({ groupIds }) => {
+    const store = new DurableStore(":memory:", "agent"), work = new CliWork(store, () => "allow");
+    const core = new CommunicationCore("agent", store, work);
+    const channel = new FeishuChannel({ appId: "fixture", appSecret: "fixture" });
+    vi.spyOn(channel.channel.rawClient, "request").mockResolvedValue({ code: 0, bot: { open_id: "bot", app_name: "Test" } });
+    vi.spyOn(channel.channel as unknown as { connectWebSocket(timeout: number): Promise<void> }, "connectWebSocket").mockResolvedValue();
+    const send = vi.spyOn(channel.channel, "send").mockResolvedValue({ messageId: "reply" });
+    core.register({ id: "feishu", ownerAddresses: ["owner"], peerAddresses: [], groupIds }, channel);
+    try {
+      await core.start();
+      const receive = async (id: string, sender: string, chat: string, chatType = "group", mention?: string) => {
+        await channel.channel.dispatcher.invoke({ schema: "2.0", header: { event_type: "im.message.receive_v1" }, event: {
+          sender: { sender_id: { open_id: sender }, sender_type: "user" },
+          message: { message_id: id, chat_id: chat, chat_type: chatType, message_type: "text", create_time: String(Date.now()),
+            content: JSON.stringify({ text: mention ? "@_user_1 hello" : "hello" }),
+            ...(mention ? { mentions: [{ key: "@_user_1", id: { open_id: mention }, name: "Test" }] } : {}) },
+        } }, { needCheck: false });
+      };
+      await receive("no-mention", "new-member", "new-group");
+      await receive("other-mention", "new-member", "new-group", "group", "someone-else");
+      expect(core.status().inbox).toHaveLength(0);
+      await receive("member-mention", "new-member", "new-group", "group", "bot");
+      await receive("owner-mention", "owner", "new-group", "group", "bot");
+      await receive("another-group", "new-member", "another-group", "group", "bot");
+      await receive("private-owner", "owner", "private-chat", "p2p");
+      await receive("private-member", "new-member", "private-member-chat", "p2p");
+      const [member, owner, otherGroup, privateOwner, privateMember] = core.status().inbox;
+      expect([member, owner, otherGroup, privateOwner].every((row) => row?.state === "received")).toBe(true);
+      expect(privateMember?.state).toBe("ignored");
+      expect(member!.conversationId).toBe(owner!.conversationId);
+      expect(new Set([member!.conversationId, otherGroup!.conversationId, privateOwner!.conversationId]).size).toBe(3);
+
+      // Document comments are separate shared threads, not IM groups.
+      expect(core.receive("feishu", { externalId: "comment", sender: "new-member", threadId: "comment:doc:one",
+        scope: "group", groupId: "document:doc", text: "comment", reply: { target: "doc", messageId: "one", data: { commentId: "one", fileType: "docx" } } }).state).toBe("ignored");
+      await core.dispatch();
+      expect(work.list()).toHaveLength(4);
+      const task = work.claim("test-worker")!;
+      expect(core.isOwnerTask(member!.conversationId, task.id)).toBe(false);
+      work.update(task.claimId!, "reply", "group reply");
+      await core.dispatch(); await core.flush();
+      expect(send).toHaveBeenCalledWith("new-group", { text: "group reply" }, { replyTo: "member-mention", replyInThread: false });
+      expect(core.status().outbox).toMatchObject([{ state: "accepted" }]);
+    } finally { await core.stop(); store.close(); }
+  });
   it("receives delayed Feishu SDK events while skipping pre-activation backlog", async () => {
     const c = context(), activatedAt = 1_800_000_000_000;
     const clock = vi.spyOn(Date, "now").mockReturnValue(activatedAt);

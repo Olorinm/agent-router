@@ -12,17 +12,21 @@ export class FeishuChannel implements ChannelAdapter {
   private streams = new Map<string, { set(text: string): Promise<void>; finish(): void; result: Promise<{ messageId: string }> }>();
   private context!: ChannelContext;
   readonly channel: LarkChannel;
-  constructor(options: { appId: string; appSecret: string; domain?: "feishu" | "lark"; groupIds?: string[] }, channel?: LarkChannel) {
+  constructor(options: { appId: string; appSecret: string; domain?: "feishu" | "lark" }, channel?: LarkChannel) {
     this.channel = channel ?? createLarkChannel({ appId: options.appId, appSecret: options.appSecret,
       domain: options.domain === "lark" ? Domain.Lark : Domain.Feishu, loggerLevel: LoggerLevel.error,
       source: "agent-router", handshakeTimeoutMs: 15_000, includeRawEvent: true,
-      policy: { dmMode: "open", requireMention: true, groupAllowlist: options.groupIds ?? [] },
+      policy: { dmMode: "open", requireMention: true },
       // Keep each provider message intact: Router owns deduplication and turn serialization.
       // SDK zero means immediate expiry. Router's durable activation checkpoint filters old backlog.
       safety: { dedup: { ttl: 0 }, staleMessageWindowMs: Number.MAX_SAFE_INTEGER, chatQueue: { enabled: false },
         batch: { text: { delayMs: 0, maxMessages: 1 }, media: { delayMs: 0, maxItems: 1 } } },
       outbound: { textChunkLimit: 4000, retry: { maxAttempts: 1 } },
     });
+  }
+  groupPolicy(message: ChannelMessage): "open" | "allowlist" {
+    // The SDK already requires @bot in IM groups. Document comments keep their own access list.
+    return message.reply.data.commentId ? "allowlist" : "open";
   }
   async start(context: ChannelContext): Promise<void> {
     this.context = context;
