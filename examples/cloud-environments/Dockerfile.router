@@ -1,0 +1,7 @@
+# Build the Router image normally, then add the separately verified environment archive.
+FROM agent-router-matrix:managed
+USER root
+COPY agent-environment.tgz /tmp/agent-environment.tgz
+RUN npm install --prefix /opt/agent-environment --omit=dev /tmp/agent-environment.tgz \
+    && rm /tmp/agent-environment.tgz
+USER node

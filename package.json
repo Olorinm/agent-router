@@ -42,7 +42,8 @@
     "weixin:login": "node dist/channels/weixin/login.js",
     "feishu:setup": "node dist/services/feishu/setup.js",
     "channels:check": "node dist/service/check-cli.js",
-    "onboarding:init": "node dist/onboarding/init.js"
+    "onboarding:init": "node dist/onboarding/init.js",
+    "verify:cloud": "npm run build && node scripts/verify-cloud-onboarding.mjs"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
@@ -82,7 +83,8 @@
     "scripts/update-weixin-transport.py",
     "scripts/verify-agent-host.mjs",
     "examples/personal-agent",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "examples/cloud-environments"
   ],
   "allowScripts": {
     "@larksuite/cli@1.0.97": true

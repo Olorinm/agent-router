@@ -2,6 +2,7 @@
 
 [English](README.md) | **简体中文**
 
+[云环境开通](docs/guides/cloud-environments.zh-CN.md): `agent-router setup helper --environment PROFILE`.
 Agent Router 是 Agent 的通信服务：接收各渠道的消息，交给运行中的 Agent，再把回复送回原渠道。
 
 你可以在飞书里让云端 Agent 办事，收到飞书回复；换到明确绑定的微信私聊，继续同一私人会话。其他 Agent 也可以向它发送任务、查询进度和取回结果。

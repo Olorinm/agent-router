@@ -8,12 +8,13 @@ import { loadWeixinCredentials, type ChannelConfiguration } from "./channels.js"
 
 export interface Check { agentId: string; connectionId?: string; kind: string; status: "verified" | "needs_action" | "not_verified"; detail: string; }
 /** Checks access without starting consumers, consuming messages, sending replies or running a model. */
-export async function checkChannels(configuration: ChannelConfiguration, node?: ServiceHttp): Promise<Check[]> {
+export async function checkChannels(configuration: ChannelConfiguration, node?: ServiceHttp, suppliedHost?: ServiceHttp): Promise<Check[]> {
   const checks: Check[] = [], file = (path: string) => readFileSync(resolve(configuration.directory, path), "utf8").trim();
   for (const agent of configuration.agents) {
     if (agent.host) {
       try {
-        const host = new ServiceHttp(agent.host.url, file(agent.host.tokenFile));
+        if (agent.host.environment && !suppliedHost) throw new Error("environment_coordinator_required");
+        const host = suppliedHost ?? new ServiceHttp(agent.host.url, file(agent.host.tokenFile));
         const health = await host.request("/v1/health"), runtimes = await host.request("/v1/runtimes");
         if (health.protocolVersion !== 1 || !runtimes.runtimes?.some((item: { id: string }) => item.id === agent.host!.runtimeId)) throw new Error("host_runtime_not_found");
         checks.push({ agentId: agent.agentId, kind: "host", status: "verified", detail: "HTTP service and runtime exist; model execution has not been tested" });

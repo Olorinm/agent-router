@@ -90,13 +90,23 @@ func setupPath(selected *agentSelection) string {
 }
 func (a *app) setupCommand(command string, args []string) (bool, error) {
 	switch command {
-	case "setup", "setup-options", "setup-check", "host-use", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
+	case "environment-create", "environment-status", "environment-resume", "environment-pause", "environment-destroy", "environment-reconcile", "setup", "setup-options", "setup-check", "host-use", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
 	default:
 		return false, nil
 	}
 	return true, a.runSetup(command, args)
 }
 func (a *app) runSetup(command string, args []string) error {
+	if a.o.environmentProfile != "" && a.o.hostProfile != "" {
+		return errors.New("choose_environment_or_host")
+	}
+	if a.o.environmentProfile != "" && command != "setup" {
+		return errors.New("environment_option_requires_setup")
+	}
+	if a.o.environmentProfile != "" && a.o.noWait && a.o.channel != "" {
+		return errors.New("connect_channel_after_environment_ready_or_omit_no_wait")
+	}
+
 	if command == "setup" && len(args) == 1 {
 		// Creation is already idempotent and selects the existing Agent with this name.
 		previous := a.out
@@ -116,6 +126,20 @@ func (a *app) runSetup(command string, args []string) error {
 	}
 	path := setupPath(selected)
 	switch command {
+	case "environment-status":
+		return a.setupAPI(path+"/environment", "GET", nil)
+	case "environment-create", "environment-resume", "environment-pause", "environment-destroy", "environment-reconcile":
+		target, body := path+"/environment", any(map[string]any{})
+		if command == "environment-create" {
+			body = map[string]string{"profileId": args[0]}
+		} else {
+			target += "/" + strings.TrimPrefix(command, "environment-")
+		}
+		data, err := a.setupRequest(target, "POST", body)
+		if err != nil {
+			return err
+		}
+		return a.finishEnvironment(path, data)
 	case "host-use":
 		return a.setupAPI(path+"/host", "POST", map[string]string{"hostId": args[0]})
 	case "channels":
@@ -167,6 +191,24 @@ func (a *app) runSetup(command string, args []string) error {
 	case "channel-connect":
 		return a.connectChannel(path, args[0])
 	case "setup":
+		if a.o.environmentProfile != "" {
+			data, err := a.setupRequest(path+"/environment", "POST", map[string]string{"profileId": a.o.environmentProfile})
+			if err != nil {
+				return err
+			}
+			previous := a.out
+			if !a.o.noWait {
+				a.out = io.Discard
+			}
+			err = a.finishEnvironment(path, data)
+			a.out = previous
+			if err != nil {
+				return err
+			}
+			if a.o.noWait {
+				return nil
+			}
+		}
 		if a.o.hostProfile != "" {
 			if _, err = a.setupRequest(path+"/host", "POST", map[string]string{"hostId": a.o.hostProfile}); err != nil {
 				return err
@@ -327,6 +369,60 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 		case <-timer.C:
 		}
 		data, err = a.setupRequest(path+"/jobs/"+url.PathEscape(job.ID), "GET", nil)
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// Provisioning is server-side and durable. Interrupting this poll does not cancel creation.
+func (a *app) finishEnvironment(path string, data json.RawMessage) error {
+	announced := false
+	deadline := time.Now().Add(15 * time.Minute)
+	for {
+		var status struct {
+			OperationID string `json:"operationId"`
+			State       string `json:"state"`
+			Busy        bool   `json:"busy"`
+			Error       string `json:"error"`
+		}
+		if json.Unmarshal(data, &status) != nil || status.OperationID == "" {
+			return errors.New("invalid_environment_status")
+		}
+		if !announced {
+			fmt.Fprintln(a.errOut, "Environment operation:", status.OperationID, "— inspect with environment-status; recover with environment-reconcile")
+			announced = true
+		}
+		if !status.Busy {
+			if err := a.output(data); err != nil {
+				return err
+			}
+			if status.Error != "" {
+				if safeCode.MatchString(status.Error) {
+					return errors.New(status.Error)
+				}
+				return errors.New("environment_needs_action")
+			}
+			if status.State == "ready" || status.State == "paused" || status.State == "deleted" {
+				return nil
+			}
+			return errors.New("environment_needs_action")
+		}
+		if a.o.noWait {
+			return a.output(data)
+		}
+		if time.Now().After(deadline) {
+			return errors.New("environment_still_pending_use_environment_status")
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-a.ctx.Done():
+			timer.Stop()
+			return a.ctx.Err()
+		case <-timer.C:
+		}
+		var err error
+		data, err = a.setupRequest(path+"/environment", "GET", nil)
 		if err != nil {
 			return err
 		}
