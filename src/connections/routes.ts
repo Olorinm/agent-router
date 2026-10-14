@@ -59,6 +59,7 @@ export function createConnections(
         z
           .object({
             kind: z.literal("feishu"),
+            appId: z.string().regex(/^cli_[a-zA-Z0-9_]{1,128}$/).optional(),
             domain: z.enum(["feishu", "lark"]).default("feishu"),
             personalTools: z.boolean().default(true),
           })
@@ -214,7 +215,7 @@ export function createConnections(
         : undefined,
     );
     for (const check of checks)
-      if (check.connectionId) {
+      if (check.connectionId && check.kind !== "feishu_personal") {
         const running = live?.connections?.find(
           (connection) => connection.id === check.connectionId,
         );

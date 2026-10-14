@@ -151,3 +151,32 @@ func TestConnectionJobCanResumePairingAndCannotInjectTerminalControls(t *testing
 		t.Fatal("accepted QR terminal controls")
 	}
 }
+
+func TestFeishuRecoveryUsesExistingAppAndRetainsFailureInstructions(t *testing.T) {
+	store, selected := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_agent-router/v1/agents/agent-one/connections" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["appId"] != "cli_fixture" || body["domain"] != "lark" || body["personalTools"] != false {
+			t.Errorf("wrong recovery request %v", body)
+		}
+		jsonResponse(w, 202, connectionJob{ID: "recovery", Kind: "feishu", State: "failed", Error: "feishu_authorization_expired",
+			Recovery: &connectionRecovery{Action: "authorize_existing_app", AppID: "cli_fixture", Domain: "lark", PersonalTools: false}})
+	})
+	store.selectAgent(selected)
+	out, diag, err := run(t, "--profile", "owner", "--allow-http", "channel-connect", "feishu", "--app-id", "cli_fixture", "--domain", "lark", "--messaging-only")
+	if err == nil || err.Error() != "feishu_authorization_expired" || !strings.Contains(out, "authorize_existing_app") || !strings.Contains(diag, "channel-connect feishu --app-id cli_fixture --domain lark --messaging-only") {
+		t.Fatalf("%s %s %v", out, diag, err)
+	}
+	if _, _, err := run(t, "channel-connect", "matrix", "--app-id", "cli_fixture"); err == nil || err.Error() != "app_id_requires_feishu_channel_connect" {
+		t.Fatal(err)
+	}
+}
+func TestBindingIsAValidConnectionPhase(t *testing.T) {
+	a := &app{o: options{noWait: true}, out: new(bytes.Buffer), errOut: new(bytes.Buffer)}
+	if err := a.finishConnection("unused", json.RawMessage(`{"id":"job","kind":"feishu","state":"binding"}`)); err != nil {
+		t.Fatal(err)
+	}
+}

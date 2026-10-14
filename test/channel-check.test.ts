@@ -64,5 +64,16 @@ it("requires personal authorization separately from a valid Feishu bot", async (
   ] }] }).agents[0]!.connections;
   vi.spyOn(Client.prototype, "request").mockResolvedValue({ code: 0, bot: { open_id: "bot" } });
   vi.spyOn(FeishuAccount.prototype, "status").mockResolvedValue({ appId: "app", ownerOpenId: "ou_owner", authorized: false, verified: false, status: "missing", scope: [], userName: "" });
-  expect((await checkChannels(f.configuration)).find((c) => c.kind === "feishu")!.status).toBe("needs_action");
+  const checks = await checkChannels(f.configuration);
+  expect(checks.find((c) => c.kind === "feishu")!.status).toBe("verified");
+  expect(checks.find((c) => c.kind === "feishu_personal")!.status).toBe("needs_action");
+  vi.mocked(FeishuAccount.prototype.status).mockRejectedValueOnce(new Error("CLI unavailable"));
+  expect((await checkChannels(f.configuration)).find((c) => c.kind === "feishu")!.status).toBe("verified");
+});
+
+it("reports missing messaging connections even when the Host passes", async () => {
+  const f = fixture(); f.configuration.agents[0]!.connections = [];
+  const checks = await checkChannels(f.configuration);
+  expect(checks.find(c => c.kind === "host")!.status).toBe("verified");
+  expect(checks.find(c => c.kind === "connections")!.status).toBe("not_verified");
 });

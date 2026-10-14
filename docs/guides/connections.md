@@ -26,10 +26,10 @@ agent-router channel-connect matrix
 
 Run only the commands for the platforms you want.
 
-- **Feishu:** the terminal displays the official app setup QR/link, then the
-  personal authorization QR/link. Both must finish before personal tools are
-  enabled. Use `--domain lark` for Lark, or `--messaging-only` to connect messages
-  without personal tools. Personal tools require a direct Host.
+- **Feishu:** the terminal displays the official app setup QR/link. App consent
+  connects messaging; personal tools request personal consent separately when
+  needed (or through `channel-auth`). Use `--domain lark` for Lark, or
+  `--messaging-only` to omit personal tools. Personal tools require a direct Host.
 - **Weixin:** scan the terminal QR in WeChat. If Tencent requires a pairing code,
   the CLI prompts without echo. This is Tencent iLink private chat support.
 - **Telegram:** create a bot with BotFather and supply its token using a file
@@ -62,10 +62,30 @@ agent-router channel-job JOB_ID
 agent-router channel-pair JOB_ID --pairing-code-file /private/pairing-code
 ```
 
-Jobs expire after ten minutes and are not persisted across Router restarts.
-Connected credentials and configuration are persisted. Reconnecting an already
-configured platform requires operator configuration; it does not replace it silently.
-For Feishu personal authorization renewal:
+Feishu app consent uses the expiry reported by the official SDK (`expireIn`),
+including its fallback. Router no longer adds a separate ten-minute consent limit.
+Other setup jobs have a ten-minute deadline. Recent job history, credentials and channel
+configuration survive Router restarts. An interrupted consent poll is reported as
+failed with recovery instructions; the SDK does not expose a durable app-registration
+resume token. `channel-job` resumes observation of a running poll, not a lost poll.
+
+If the app was created but setup expired before credentials were saved, select its
+App ID from the developer console and authorize that same app through the official
+page. No App Secret needs to be copied:
+
+```sh
+agent-router channel-connect feishu --app-id cli_YOUR_EXISTING_APP_ID
+```
+
+Use the original `--domain` and `--messaging-only` choices when retrying. A saved
+credential is reused after a binding failure. An uncertain creation result blocks
+creating another app until an existing App ID is supplied; never delete the pending
+marker merely to retry. Apps already assigned to another Agent are rejected.
+Connecting an already configured platform does not silently replace it.
+The API accepts optional `appId` on the Feishu connection request. Failed jobs
+include a `recovery` object (`action`, optional `appId`, `domain`, `personalTools`).
+
+For Feishu personal authorization:
 
 ```sh
 agent-router channel-auth feishu status
@@ -82,7 +102,9 @@ agent-router connection-check
 ```
 
 Checks verify configuration, access and connection startup. They do not consume
-new messages, send a test message or run a model. Send a real message in your
+new messages, send a test message or run a model. An empty connections list is
+reported explicitly. Feishu bot access and personal authorization have separate
+check entries; missing personal consent does not fail the bot check. Send a real message in your
 chosen platform to verify a complete round trip.
 
 The existing CLI `send/get` path also works without an IM connection. Select a

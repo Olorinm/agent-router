@@ -1,11 +1,12 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { registerApp } from "@larksuiteoapi/node-sdk";
 import { ConnectionSetup, qrTerminal } from "../src/connections/connections.js";
-import { FeishuAccount } from "../src/services/feishu/cli.js";
+import { DurableStore } from "../src/communication/store.js";
+import { FeishuAccount, privateFile } from "../src/services/feishu/cli.js";
 import {
   apiGetFetch,
   apiPostFetch,
@@ -37,9 +38,10 @@ vi.mock("../src/channels/weixin/vendor/api.js", async (original) => ({
   apiGetFetch: vi.fn(),
   apiPostFetch: vi.fn(),
 }));
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0).reverse()) close();
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
@@ -64,8 +66,12 @@ function fixture() {
       throw new Error("agent_not_found");
     return agent;
   };
+  const store = new DurableStore(join(directory, "registry.sqlite"), "fixture");
+  cleanup.push(() => store.close());
   const service = {
+    store,
     owned,
+    agents: () => [agent],
     runtime: async () => ({
       connector: {
         store: {
@@ -79,6 +85,7 @@ function fixture() {
     agentDirectory: () => directory,
     configuration: () => current,
     assertTelegramAvailable: vi.fn(),
+    assertFeishuAvailable: vi.fn(),
     edit: async (owner: string, id: string, update: (value: any) => void) => {
       owned(id, owner);
       const candidate = structuredClone(current);
@@ -93,6 +100,7 @@ function fixture() {
     agent,
     directory,
     checkpoints,
+    service, config, store,
     get current() {
       return current;
     },
@@ -107,84 +115,104 @@ const verified = {
   scope: [],
   userName: "Fixture",
 };
-it("uses separate official app and personal consent steps and returns only consent URLs", async () => {
+const appResult = (appId = "cli_fixture") => ({ client_id: appId, client_secret: "fixture-app-secret",
+  user_info: { open_id: "ou_fixture_owner", tenant_brand: "feishu" } }) as any;
+const status = (f: ReturnType<typeof fixture>, id: string) => f.setup.status(f.agent.owner, f.agent.id, id);
+it("connects messaging after app consent without waiting for personal consent", async () => {
   const f = fixture();
-  let completeApp!: () => void, completeUser!: () => void;
-  const appWait = new Promise<void>((resolve) => {
-      completeApp = resolve;
-    }),
-    userWait = new Promise<void>((resolve) => {
-      completeUser = resolve;
-    });
+  let completeApp!: () => void;
+  const appWait = new Promise<void>((resolve) => { completeApp = resolve; });
   vi.mocked(registerApp).mockImplementation(async (options) => {
-    options.onQRCodeReady?.({
-      url: "https://accounts.feishu.cn/fixture",
-      expireIn: 600,
-    });
+    options.onQRCodeReady?.({ url: "https://accounts.feishu.cn/fixture", expireIn: 1800 });
     await appWait;
-    return {
-      client_id: "fixture-app",
-      client_secret: "fixture-app-secret",
-      user_info: { open_id: "ou_fixture_owner", tenant_brand: "feishu" },
-    } as any;
+    return appResult();
   });
-  vi.spyOn(FeishuAccount.prototype, "status").mockResolvedValue({
-    ...verified,
-    authorized: false,
-    verified: false,
-    status: "missing",
-  });
-  vi.spyOn(FeishuAccount.prototype, "authorizationLink").mockResolvedValue(
-    "https://accounts.feishu.cn/personal-fixture",
-  );
-  vi.spyOn(FeishuAccount.prototype, "complete").mockImplementation(async () => {
-    await userWait;
-    return verified;
-  });
-  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", {
-    personalTools: true,
-  });
+  const personal = vi.spyOn(FeishuAccount.prototype, "authorizationLink");
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { personalTools: true });
   expect(job.state).toBe("application");
   expect(job.qr).toMatch(/^[ █▀▄\n]+$/);
-  expect(() => f.setup.status("@bob:example.test", f.agent.id, job.id)).toThrow(
-    "agent_not_found",
-  );
-  expect(JSON.stringify(job)).not.toContain("fixture-app-secret");
+  expect(Date.parse(job.expiresAt) - Date.now()).toBeGreaterThan(1_799_000);
+  expect(() => f.setup.status("@bob:example.test", f.agent.id, job.id)).toThrow("agent_not_found");
   completeApp();
-  await vi.waitFor(() =>
-    expect(f.setup.status(f.agent.owner, f.agent.id, job.id).state).toBe(
-      "authorization",
-    ),
-  );
-  expect(f.setup.status(f.agent.owner, f.agent.id, job.id).url).toContain(
-    "personal-fixture",
-  );
+  await vi.waitFor(() => expect(status(f, job.id).state).toBe("ready"));
+  expect(personal).not.toHaveBeenCalled();
+  expect(f.current.connections[0]).toMatchObject({ kind: "feishu", personalTools: true });
+  expect(JSON.parse(readFileSync(join(f.directory, "feishu", "credentials.json"), "utf8")).ownerOpenId).toBe("ou_fixture_owner");
+  expect(statSync(join(f.directory, "feishu", "app-secret")).mode & 0o777).toBe(0o600);
+  expect(registerApp).toHaveBeenCalledWith(expect.objectContaining({ createOnly: true, source: "agent-router", addons: expect.any(Object) }));
+  expect(JSON.stringify(f.setup.list(f.agent.owner, f.agent.id))).not.toContain("fixture-app-secret");
+  expect(JSON.stringify(f.store.entries("connection_setup_jobs"))).not.toContain("fixture-app-secret");
+});
+it("preserves unknown creation outcomes and recovers only the explicitly selected existing app", async () => {
+  const f = fixture(), marker = join(f.directory, "feishu", "creation-pending.json");
+  privateFile(marker, { startedAt: Date.now() - 900_000 });
+  const blocked = f.setup.begin(f.agent.owner, f.agent.id, "feishu", {});
+  await vi.waitFor(() => expect(status(f, blocked.id)).toMatchObject({ state: "failed", error: "feishu_creation_outcome_unknown",
+    recovery: { action: "authorize_existing_app" } }));
+  expect(registerApp).not.toHaveBeenCalled();
+  vi.mocked(registerApp).mockResolvedValue(appResult());
+  const recovered = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(status(f, recovered.id).state).toBe("ready"));
+  expect(registerApp).toHaveBeenCalledWith(expect.objectContaining({ appId: "cli_fixture" }));
+  expect(vi.mocked(registerApp).mock.calls[0]![0]).not.toHaveProperty("createOnly");
+  expect(existsSync(marker)).toBe(false);
+});
+it("does not accept a different app from the official registration response", async () => {
+  const f = fixture();
+  vi.mocked(registerApp).mockResolvedValue(appResult("cli_other"));
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(status(f, job.id).error).toBe("feishu_registered_app_mismatch"));
+  expect(existsSync(join(f.directory, "feishu", "credentials.json"))).toBe(false);
   expect(f.current.connections).toHaveLength(0);
-  completeUser();
-  await vi.waitFor(() =>
-    expect(f.setup.status(f.agent.owner, f.agent.id, job.id).state).toBe(
-      "ready",
-    ),
-  );
-  expect(f.current.connections[0]).toMatchObject({
-    kind: "feishu",
-    personalTools: true,
+});
+it("reuses durable credentials after binding fails, without another app consent", async () => {
+  const f = fixture(), edit = vi.spyOn(f.config, "edit").mockRejectedValueOnce(new Error("host_busy"));
+  vi.mocked(registerApp).mockResolvedValue(appResult());
+  const first = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(status(f, first.id)).toMatchObject({ state: "failed", recovery: { action: "retry_binding", appId: "cli_fixture" } }));
+  edit.mockRestore();
+  const second = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(status(f, second.id).state).toBe("ready"));
+  expect(registerApp).toHaveBeenCalledTimes(1);
+});
+it("keeps owner-scoped history after restart and marks lost consent polling interrupted", async () => {
+  const f = fixture();
+  f.store.set("connection_setup_jobs", "interrupted", { id: "interrupted", agentId: f.agent.id, kind: "feishu",
+    state: "application", appId: "cli_fixture", expiresAt: Date.now() + 900_000, url: "https://accounts.feishu.cn/expired" });
+  const restarted = new ConnectionSetup(f.service, f.config);
+  const job = restarted.status(f.agent.owner, f.agent.id, "interrupted");
+  expect(job).toMatchObject({ state: "failed", error: "connection_setup_interrupted", recovery: { action: "authorize_existing_app", appId: "cli_fixture" } });
+  expect(job).not.toHaveProperty("url");
+  expect(() => restarted.list("@bob:example.test", f.agent.id)).toThrow("agent_not_found");
+  expect(() => restarted.pairing(f.agent.owner, f.agent.id, "interrupted", "123")).toThrow("invalid_pairing_code");
+  expect(restarted.list(f.agent.owner, f.agent.id)).toHaveLength(1);
+});
+it("rejects apps assigned elsewhere before invoking registration", async () => {
+  const f = fixture();
+  vi.mocked(f.config.assertFeishuAvailable).mockImplementation(() => { throw new Error("feishu_app_already_connected"); });
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(status(f, job.id).error).toBe("feishu_app_already_connected"));
+  expect(registerApp).not.toHaveBeenCalled();
+});
+it("honors the SDK's longer deadline and rejects late results after shutdown", async () => {
+  const f = fixture();
+  let complete!: () => void;
+  const wait = new Promise<void>(resolve => { complete = resolve; });
+  vi.mocked(registerApp).mockImplementation(async options => {
+    options.onQRCodeReady?.({ url: "https://accounts.feishu.cn/fixture", expireIn: 1800 });
+    await wait;
+    return appResult();
   });
-  expect(
-    JSON.parse(
-      readFileSync(join(f.directory, "feishu", "credentials.json"), "utf8"),
-    ).ownerOpenId,
-  ).toBe("ou_fixture_owner");
-  expect(statSync(join(f.directory, "feishu", "app-secret")).mode & 0o777).toBe(
-    0o600,
-  );
-  expect(registerApp).toHaveBeenCalledWith(
-    expect.objectContaining({
-      createOnly: true,
-      source: "agent-router",
-      addons: expect.any(Object),
-    }),
-  );
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", {});
+  vi.useFakeTimers();
+  await vi.advanceTimersByTimeAsync(660_000);
+  expect(vi.mocked(registerApp).mock.calls[0]![0].signal!.aborted).toBe(false);
+  expect(f.setup.begin(f.agent.owner, f.agent.id, "feishu", {}).id).toBe(job.id);
+  const closing = f.setup.close();
+  complete(); await closing;
+  vi.useRealTimers();
+  expect(status(f, job.id).state).toBe("failed");
+  expect(existsSync(join(f.directory, "feishu", "credentials.json"))).toBe(false);
 });
 it("binds Telegram only after the one-use private /start proof and checkpoints consumed updates", async () => {
   const f = fixture(),
@@ -378,4 +406,47 @@ it("rejects a reserved connection ID before creating an app and preserves the ex
   expect(() => f.setup.begin(f.agent.owner, f.agent.id, "feishu", {})).toThrow("connection_id_already_used");
   expect(registerApp).not.toHaveBeenCalled();
   expect(f.current.connections[0].kind).toBe("matrix");
+});
+
+it("reconciles a binding committed immediately before the process was interrupted", async () => {
+  const f = fixture();
+  f.current.connections.push({ id: "feishu", kind: "feishu" });
+  f.store.set("connection_setup_jobs", "committed", { id: "committed", agentId: f.agent.id, kind: "feishu", state: "binding", expiresAt: Date.now() });
+  const restarted = new ConnectionSetup(f.service, f.config);
+  expect(restarted.status(f.agent.owner, f.agent.id, "committed").state).toBe("ready");
+});
+it("reports SDK expiry with a recoverable existing-app action and no provider diagnostics", async () => {
+  const f = fixture();
+  vi.mocked(registerApp).mockRejectedValue({ code: "expired_token", description: "sensitive provider diagnostics" });
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(status(f, job.id)).toMatchObject({ error: "feishu_authorization_expired", recovery: { action: "authorize_existing_app" } }));
+  expect(JSON.stringify(status(f, job.id))).not.toContain("sensitive");
+});
+
+it("reserves an existing app during consent so a second Agent cannot reauthorize it concurrently", async () => {
+  const f = fixture(), other = { id: randomUUID(), owner: f.agent.owner };
+  vi.spyOn(f.service, "owned").mockImplementation((id, owner) => {
+    if (owner !== f.agent.owner) throw new Error("agent_not_found");
+    return (id === other.id ? other : f.agent) as any;
+  });
+  vi.spyOn(f.config, "agentDirectory").mockImplementation(id => id === other.id ? join(f.directory, "other") : f.directory);
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  vi.mocked(registerApp).mockImplementation(async () => { await pending; return appResult(); });
+  const first = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_fixture" });
+  const second = f.setup.begin(other.owner, other.id, "feishu", { appId: "cli_fixture" });
+  await vi.waitFor(() => expect(f.setup.status(other.owner, other.id, second.id).error).toBe("feishu_app_setup_in_progress"));
+  expect(registerApp).toHaveBeenCalledTimes(1);
+  finish();
+  await vi.waitFor(() => expect(status(f, first.id).state).toBe("ready"));
+});
+it("never overwrites saved credentials for a different requested app", async () => {
+  const f = fixture(), directory = join(f.directory, "feishu");
+  privateFile(join(directory, "app-secret"), "original-secret");
+  privateFile(join(directory, "credentials.json"), { version: 1, appId: "cli_original", appSecretFile: "app-secret", domain: "feishu", ownerOpenId: "ou_owner" });
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { appId: "cli_other" });
+  await vi.waitFor(() => expect(status(f, job.id)).toMatchObject({ error: "feishu_saved_app_mismatch", recovery: { appId: "cli_original" } }));
+  expect(registerApp).not.toHaveBeenCalled();
+  expect(readFileSync(join(directory, "app-secret"), "utf8")).toBe("original-secret");
+  expect(f.current.connections).toHaveLength(0);
 });

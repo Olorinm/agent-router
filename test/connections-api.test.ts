@@ -16,6 +16,7 @@ import type { ApplicationInbox } from "../src/matrix/application-service.js";
 import type { MatrixTransport } from "../src/matrix/transport.js";
 import type { RoomEvent } from "../src/matrix/protocol.js";
 import { WorkError } from "../src/matrix/cli-work.js";
+import { ConnectionSetup } from "../src/connections/connections.js";
 import { ConnectionConfiguration } from "../src/connections/configuration.js";
 import { createConnections } from "../src/connections/routes.js";
 import { privateFile } from "../src/services/feishu/cli.js";
@@ -215,6 +216,28 @@ describe("managed CLI setup", () => {
     expect((await a.api(path, undefined, instance.token)).status).toBe(401);
     f.tokens.delete("fixture-alice");
     expect((await a.api(path)).status).toBe(401);
+  });
+  it("accepts existing app recovery only for the owning account and validates its App ID", async () => {
+    const f = await fixture(), a = f.client("alice"), b = f.client("bob");
+    const agent = (await a.api("/agents", { name: "helper" })).data, path = "/agents/" + agent.id;
+    const begin = vi.spyOn(ConnectionSetup.prototype, "begin").mockReturnValue({ id: "job", kind: "feishu", state: "starting", expiresAt: new Date().toISOString() });
+    expect((await b.api(path + "/connections", { kind: "feishu", appId: "cli_fixture" })).status).toBe(404);
+    expect((await a.api(path + "/connections", { kind: "feishu", appId: "bad id" })).status).toBe(400);
+    expect(begin).not.toHaveBeenCalled();
+    expect((await a.api(path + "/connections", { kind: "feishu", appId: "cli_fixture", domain: "lark" })).status).toBe(202);
+    expect(begin).toHaveBeenCalledWith(alice, agent.id, "feishu", expect.objectContaining({ appId: "cli_fixture", domain: "lark", personalTools: true }));
+    expect((await b.api(path + "/connection-jobs")).status).toBe(404);
+  });
+  it("protects another Agent's saved app even when its binding did not complete", async () => {
+    const f = await fixture(), a = f.client("alice"), b = f.client("bob");
+    const agent = (await a.api("/agents", { name: "helper" })).data;
+    const other = (await b.api("/agents", { name: "other" })).data;
+    const directory = join(f.settings.agentDirectory(other.id), "feishu");
+    privateFile(join(directory, "app-secret"), "fixture-secret");
+    privateFile(join(directory, "credentials.json"), { version: 1, appId: "cli_existing", appSecretFile: "app-secret", domain: "feishu", ownerOpenId: "ou_other" });
+    expect(() => f.settings.assertFeishuAvailable("cli_existing", agent.id)).toThrow("feishu_app_already_assigned");
+    expect(() => f.settings.assertFeishuAvailable("cli_new", agent.id)).not.toThrow();
+    expect(() => f.settings.assertFeishuAvailable("cli_existing", other.id)).not.toThrow();
   });
   it("configures an optional Host and Matrix channel, persists private files and protects active work", async () => {
     const f = await fixture(), a = f.client("alice"), b = f.client("bob");
