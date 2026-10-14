@@ -15,6 +15,8 @@ import type { ServiceHttp } from "../channels/http.js";
 import { WorkError } from "../matrix/cli-work.js";
 export interface HostBindingProvider {
   assertReady(agentId: string, binding: string): void;
+  /** Called, possibly repeatedly, while deliverable work waits on a binding that is not ready. Must not block or throw. */
+  wake?(agentId: string, binding: string): void;
   host(agentId: string, binding: string): HostPort;
   http(agentId: string, binding: string): ServiceHttp;
 }
@@ -105,6 +107,9 @@ export class ConnectionConfiguration {
             if (config.host?.binding)
               this.hosts!.assertReady(agent.id, config.host.binding);
           },
+          ...(config.host?.binding && this.hosts!.wake
+            ? { wake: () => this.hosts!.wake!(agent.id, config.host!.binding!) }
+            : {}),
         };
       },
       config.host?.binding

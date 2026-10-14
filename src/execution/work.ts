@@ -79,20 +79,27 @@ export class CliWork implements ExecutionBackend {
       this.change(work, TaskState.TASK_STATE_REJECTED, "Request rejected.");
     });
   }
+  private select(worker: string, id: string | undefined, pinContext: boolean, hostCompatibleOnly: boolean) {
+    const rows = this.store.entries<Work>("cli_work").map((r) => r.value);
+    // Retrying a lost claim response with the same worker returns the existing assignment.
+    const owned = rows.find((w) => w.claim?.worker === worker && !w.claim.deferred && !terminal(w.task));
+    if (owned && id && id !== owned.task.id) throw new WorkError("worker_already_has_work");
+    // The public Host runtime contract cannot apply per-task execution overrides.
+    // Leave these tasks for a worker that implements the server-authored policy.
+    if (owned && hostCompatibleOnly && owned.source.execution) return undefined;
+    return owned ?? rows.find((w) => (!id || w.task.id === id) && !w.claim &&
+      (!hostCompatibleOnly || !w.source.execution) &&
+      w.task.status?.state === TaskState.TASK_STATE_SUBMITTED && this.allowed(w) &&
+      (!pinContext || !this.store.get<string>("context_workers", w.task.contextId) || this.store.get<string>("context_workers", w.task.contextId) === worker) &&
+      !rows.some((other) => other.claim && !terminal(other.task) && other.task.contextId === w.task.contextId));
+  }
+  /** Whether this worker has work to observe or claim, without claiming anything. */
+  claimable(worker: string, pinContext = false, hostCompatibleOnly = false): boolean {
+    return this.select(worker, undefined, pinContext, hostCompatibleOnly) !== undefined;
+  }
   claim(worker: string, id?: string, pinContext = false, hostCompatibleOnly = false) {
     return this.store.transaction(() => {
-      const rows = this.store.entries<Work>("cli_work").map((r) => r.value);
-      // Retrying a lost claim response with the same worker returns the existing assignment.
-      const owned = rows.find((w) => w.claim?.worker === worker && !w.claim.deferred && !terminal(w.task));
-      if (owned && id && id !== owned.task.id) throw new WorkError("worker_already_has_work");
-      // The public Host runtime contract cannot apply per-task execution overrides.
-      // Leave these tasks for a worker that implements the server-authored policy.
-      if (owned && hostCompatibleOnly && owned.source.execution) return null;
-      const work = owned ?? rows.find((w) => (!id || w.task.id === id) && !w.claim &&
-        (!hostCompatibleOnly || !w.source.execution) &&
-        w.task.status?.state === TaskState.TASK_STATE_SUBMITTED && this.allowed(w) &&
-        (!pinContext || !this.store.get<string>("context_workers", w.task.contextId) || this.store.get<string>("context_workers", w.task.contextId) === worker) &&
-        !rows.some((other) => other.claim && !terminal(other.task) && other.task.contextId === w.task.contextId));
+      const work = this.select(worker, id, pinContext, hostCompatibleOnly);
       if (!work) return null;
       if (work.claim?.revision !== work.revision) {
         if (pinContext) this.store.set("context_workers", work.task.contextId, worker);

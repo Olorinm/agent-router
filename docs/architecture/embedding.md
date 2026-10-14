@@ -18,6 +18,11 @@ operator environment variables. `connections` accepts a JSON file path or an
 object containing `mailServices`. Router does not load cloud providers or
 initialize environments.
 
+`config.channelConfigFile` selects operator-managed channel entries. It is read
+from `AGENT_CHANNELS_CONFIG_FILE` by `loadServiceConfig()`. `router.start()` starts
+their polling once and `router.close()` stops and drains it, including when Router
+is embedded in Mau. No separate product polling loop is needed.
+
 Trusted application code uses `router.service` for account authentication and
 Agent identity, and `router.connections` for atomic connection/Host binding edits.
 HTTP callers cannot supply arbitrary Host endpoints or local credential paths.
