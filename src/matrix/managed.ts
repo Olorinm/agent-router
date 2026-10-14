@@ -19,7 +19,7 @@ export interface ManagedAgent {
   createdAt: string; status: "provisioning" | "active";
 }
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
-export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; }
+export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string; }
 export interface ServiceExtension {
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
   resolve(callId: string, result: unknown): Promise<void>;

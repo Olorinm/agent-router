@@ -2,6 +2,7 @@
 import { ManagedService, createManagedApp, type ServiceConfig, type ServiceDependencies } from "./matrix/managed.js";
 import { ConnectionConfiguration, type ConnectionOptions, type HostBindingProvider } from "./connections/configuration.js";
 import { createConnections } from "./connections/routes.js";
+import { configureChannels } from "./channels/config.js";
 
 export function createRouter(config: ServiceConfig, options: {
   connections?: string | Partial<ConnectionOptions>;
@@ -12,10 +13,27 @@ export function createRouter(config: ServiceConfig, options: {
   const service = new ManagedService(config, { ...options.dependencies, configure: connections.factory });
   connections.attach(service);
   const routes = createConnections(service, connections);
+  const channelIds = config.channelConfigFile
+    ? configureChannels(service.channels, config.channelConfigFile, id => { service.agent(id); }) : [];
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let starting: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  let closed = false;
   return {
-    service, connections, app: createManagedApp(service, routes.router),
-    start: () => service.start(),
-    close: async () => { await routes.close(); await service.close(); },
+    service, connections, channelIds, app: createManagedApp(service, routes.router),
+    start: () => {
+      if (closed) return Promise.reject(new Error("router_closed"));
+      return starting ??= service.start().then(() => {
+        if (!closed && channelIds.length) {
+          timer = setInterval(() => { for (const id of channelIds) void service.channels.tick(id); }, 1000);
+          timer.unref();
+        }
+      });
+    },
+    close: () => {
+      closed = true; clearInterval(timer);
+      return closing ??= (async () => { await starting?.catch(() => {}); await routes.close(); await service.close(); })();
+    },
   };
 }
 export { ManagedService, type ManagedAgent, type ServiceConfig, type ServiceDependencies } from "./matrix/managed.js";

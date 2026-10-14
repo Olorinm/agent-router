@@ -230,7 +230,7 @@ export async function runConnector(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   if (Number(process.versions.node.split(".")[0]) < 24) { process.stderr.write("The communication service requires Node.js 24 or newer.\n"); process.exitCode = 1; }
-  else if (process.argv.includes("--version")) process.stdout.write(JSON.stringify({ version: "0.7.0-alpha.1", component: "connector" }) + "\n");
+  else if (process.argv.includes("--version")) process.stdout.write(JSON.stringify({ version: "0.7.0-alpha.2", component: "connector" }) + "\n");
   else if (process.argv.includes("--help")) process.stdout.write("Agent Router communication service (Node 24). Start it with agent-router connect; use agent-router --help for agent commands.\n");
   else runConnector().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "startup_failed"}\n`); process.exitCode = 1; });
 }
