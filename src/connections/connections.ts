@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { randomUUID, randomBytes } from "node:crypto";
@@ -6,7 +6,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { registerApp } from "@larksuiteoapi/node-sdk";
 import { Bot } from "grammy";
 import {
-  FeishuAccount,
   loadFeishuCredentials,
   privateFile,
 } from "../services/feishu/cli.js";
@@ -18,7 +17,7 @@ import type { ManagedService } from "../matrix/managed.js";
 import { WorkError } from "../matrix/cli-work.js";
 import type { ConnectionConfiguration } from "./configuration.js";
 
-interface Job {
+interface JobRecord {
   id: string;
   agentId: string;
   kind: string;
@@ -26,6 +25,11 @@ interface Job {
   expiresAt: number;
   url?: string;
   error?: string;
+  appId?: string | undefined;
+  domain?: "feishu" | "lark";
+  personalTools?: boolean;
+}
+interface Job extends JobRecord {
   controller: AbortController;
   pairingCode?: string;
   operation?: Promise<void>;
@@ -61,10 +65,20 @@ export function qrTerminal(url: string): string {
   }
   return lines.join("\n");
 }
-const safeError = (error: unknown) =>
-  error instanceof Error && /^[a-z][a-z0-9_]{0,100}$/.test(error.message)
-    ? error.message
-    : "connection_setup_failed";
+const terminal = (job: JobRecord) => ["ready", "failed"].includes(job.state);
+const jobsCollection = "connection_setup_jobs";
+function safeError(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    if (error.code === "expired_token") return "feishu_authorization_expired";
+    if (error.code === "access_denied") return "feishu_authorization_denied";
+    if (error.code === "abort") return "connection_setup_interrupted";
+  }
+  if (error instanceof Error) {
+    if (["AbortError", "TimeoutError"].includes(error.name)) return "connection_setup_interrupted";
+    if (/^[a-z][a-z0-9_]{0,100}$/.test(error.message)) return error.message;
+  }
+  return "connection_setup_failed";
+}
 const weixinOrigin = (value: string) => {
   const url = new URL(value);
   if (
@@ -83,11 +97,43 @@ const weixinOrigin = (value: string) => {
 /** Connection credentials remain on the server. Jobs return only consent links and sanitized progress. */
 export class ConnectionSetup {
   private jobs = new Map<string, Job>();
+  private feishuReservations = new Set<string>();
   private telegramReservations = new Set<string>();
   constructor(
     readonly service: ManagedService,
     readonly configuration: ConnectionConfiguration,
-  ) {}
+  ) {
+    // Consent polling belongs to the SDK process. Keep history, but never pretend
+    // an interrupted poll can resume from its URL alone.
+    for (const { value: job } of service.store.entries<JobRecord>(jobsCollection)) {
+      if (terminal(job)) continue;
+      const agent = service.agents().find((agent) => agent.id === job.agentId);
+      const connected = agent && configuration.configuration(agent)?.connections.some((connection) => connection.kind === job.kind);
+      job.state = connected ? "ready" : "failed";
+      if (!connected) job.error = "connection_setup_interrupted";
+      delete job.url;
+      service.store.set(jobsCollection, job.id, job);
+    }
+  }
+  private save(job: Job) {
+    const { controller: _controller, operation: _operation, pairingCode: _pairingCode, ...record } = job;
+    this.service.store.set(jobsCollection, job.id, record);
+  }
+  private recovery(job: JobRecord) {
+    if (job.kind !== "feishu" || job.state !== "failed") return undefined;
+    const directory = join(this.configuration.agentDirectory(job.agentId), "feishu");
+    const file = join(directory, "credentials.json");
+    let appId = job.appId, domain = job.domain ?? "feishu";
+    if (existsSync(file)) {
+      try {
+        const { credentials } = loadFeishuCredentials(file);
+        appId = credentials.appId; domain = credentials.domain;
+      } catch { /* Keep the failure visible even when saved credentials need repair. */ }
+    }
+    const action = existsSync(file) ? "retry_binding"
+      : existsSync(join(directory, "creation-pending.json")) || appId ? "authorize_existing_app" : "retry";
+    return { action, ...(appId ? { appId } : {}), domain, personalTools: job.personalTools ?? false };
+  }
   async close() {
     for (const job of this.jobs.values()) job.controller.abort();
     await Promise.allSettled(
@@ -96,15 +142,17 @@ export class ConnectionSetup {
   }
   list(owner: string, agentId: string) {
     this.service.owned(agentId, owner);
-    return [...this.jobs.values()]
+    return this.service.store.entries<JobRecord>(jobsCollection).map(({ value }) => value)
       .filter((job) => job.agentId === agentId)
       .map((job) => this.status(owner, agentId, job.id));
   }
   status(owner: string, agentId: string, id: string) {
     this.service.owned(agentId, owner);
-    const job = this.jobs.get(id);
+    const active = this.jobs.get(id);
+    const job = active ?? this.service.store.get<JobRecord>(jobsCollection, id);
     if (!job || job.agentId !== agentId)
       throw new WorkError("setup_job_not_found", 404);
+    const recovery = this.recovery(job);
     return {
       id,
       kind: job.kind,
@@ -112,19 +160,21 @@ export class ConnectionSetup {
       expiresAt: new Date(job.expiresAt).toISOString(),
       ...(job.url ? { url: job.url, qr: qrTerminal(job.url) } : {}),
       ...(job.error ? { error: job.error } : {}),
+      ...(recovery ? { recovery } : {}),
     };
   }
   pairing(owner: string, agentId: string, id: string, code: string) {
     this.status(owner, agentId, id);
-    const job = this.jobs.get(id)!;
+    const job = this.jobs.get(id);
     if (
-      job.kind !== "weixin" ||
+      !job || job.kind !== "weixin" ||
       job.state !== "pairing" ||
       !/^\d{1,12}$/.test(code)
     )
       throw new WorkError("invalid_pairing_code", 400);
     job.pairingCode = code;
     job.state = "waiting";
+    this.save(job);
   }
   begin(
     owner: string,
@@ -134,6 +184,7 @@ export class ConnectionSetup {
       domain?: "feishu" | "lark";
       personalTools?: boolean;
       token?: string;
+      appId?: string | undefined;
     },
   ) {
     const agent = this.service.owned(agentId, owner);
@@ -151,10 +202,15 @@ export class ConnectionSetup {
       !this.configuration.configuration(agent)?.host
     )
       throw new WorkError("select_host_before_personal_tools", 409);
-    for (const [id, job] of this.jobs)
+    for (const job of this.jobs.values())
       if (job.expiresAt < Date.now()) {
         job.controller.abort();
-        this.jobs.delete(id);
+        if (!terminal(job)) {
+          job.state = "failed";
+          job.error = "connection_setup_expired";
+          delete job.url;
+          this.save(job);
+        }
       }
     const prior = [...this.jobs.values()].find(
       (job) =>
@@ -162,8 +218,12 @@ export class ConnectionSetup {
         job.kind === kind &&
         !["ready", "failed"].includes(job.state),
     );
-    if (prior) return this.status(owner, agentId, prior.id);
-    if (this.jobs.size >= 100) throw new WorkError("too_many_setup_jobs", 429);
+    if (prior) {
+      if (kind === "feishu" && ((options.appId && prior.appId !== options.appId) || prior.domain !== (options.domain ?? "feishu") || prior.personalTools !== (options.personalTools ?? false)))
+        throw new WorkError("connection_setup_in_progress", 409);
+      return this.status(owner, agentId, prior.id);
+    }
+    if ([...this.jobs.values()].filter((job) => !terminal(job)).length >= 100) throw new WorkError("too_many_setup_jobs", 429);
     const job: Job = {
       id: randomUUID(),
       agentId,
@@ -171,8 +231,15 @@ export class ConnectionSetup {
       state: "starting",
       expiresAt: Date.now() + 600_000,
       controller: new AbortController(),
+      ...(kind === "feishu" ? { domain: options.domain ?? "feishu", personalTools: options.personalTools ?? false, ...(options.appId ? { appId: options.appId } : {}) } : {}),
     };
     this.jobs.set(job.id, job);
+    this.save(job);
+    // Retain recent owner-visible history without an ever-growing setup log.
+    const history = this.service.store.entries<JobRecord>(jobsCollection)
+      .filter(({ value }) => value.agentId === agentId && terminal(value));
+    for (const old of history.slice(0, Math.max(0, history.length - 100)))
+      this.service.store.delete(jobsCollection, old.id);
     const operation =
       kind === "feishu"
         ? this.feishu(owner, job, options)
@@ -188,6 +255,9 @@ export class ConnectionSetup {
         job.state = "failed";
         job.error = safeError(error);
         delete job.url;
+      }).finally(() => {
+        this.save(job);
+        this.jobs.delete(job.id);
       });
     return this.status(owner, agentId, job.id);
   }
@@ -200,88 +270,75 @@ export class ConnectionSetup {
   private async feishu(
     owner: string,
     job: Job,
-    options: { domain?: "feishu" | "lark"; personalTools?: boolean },
+    options: { domain?: "feishu" | "lark"; personalTools?: boolean; appId?: string | undefined },
   ) {
-    const directory = join(
-        this.configuration.agentDirectory(job.agentId),
-        "feishu",
-      ),
-      file = join(directory, "credentials.json");
-    const signal = this.signal(job);
-    if (!existsSync(file)) {
-      const marker = join(directory, "creation-pending.json");
-      if (existsSync(marker))
-        throw new Error("feishu_creation_outcome_unknown");
-      const result = await registerApp({
-        source: "agent-router",
-        createOnly: true,
-        signal,
-        ...feishuApplication,
-        ...(options.domain === "lark"
-          ? { domain: "accounts.larksuite.com" }
-          : {}),
-        onQRCodeReady: (info) => {
-          privateFile(marker, { startedAt: Date.now() });
-          job.url = info.url;
-          job.state = "application";
-        },
-      });
-      if (!result.user_info?.open_id)
-        throw new Error("feishu_registration_owner_missing");
-      privateFile(join(directory, "app-secret"), result.client_secret);
-      privateFile(file, {
-        version: 1,
-        appId: result.client_id,
-        appSecretFile: "app-secret",
-        domain: result.user_info.tenant_brand ?? options.domain ?? "feishu",
-        ownerOpenId: result.user_info.open_id,
-      });
-    }
-    if (options.personalTools) {
-      const loaded = loadFeishuCredentials(file),
-        account = new FeishuAccount(loaded.credentials, loaded.directory);
-      let status = await account.status(true);
-      if (!status.authorized || !status.verified) {
-        const authorization = await account.authorizationLink();
-        job.url = authorization;
-        job.state = "authorization";
-        while (!status.authorized || !status.verified) {
-          signal.throwIfAborted();
-          try {
-            status = await account.complete();
-          } catch (error) {
-            if (
-              !(error instanceof Error) ||
-              ![
-                "feishu_authorization_not_completed",
-                "lark_cli_execution_interrupted",
-              ].includes(error.message)
-            )
-              throw error;
-          }
-          if (!status.authorized || !status.verified)
-            await sleep(1500, undefined, { signal });
-        }
-      }
-    }
-    signal.throwIfAborted();
-    await this.configuration.edit(
-      owner,
-      job.agentId,
-      (config) => {
-        config.connections.push({
-          id: "feishu",
-          kind: "feishu",
-          credentialsFile: file,
-          personalTools: options.personalTools ?? false,
-          domain: options.domain ?? "feishu",
-          ownerAddresses: [],
-          peerAddresses: [],
-          groupIds: [],
+    const directory = join(this.configuration.agentDirectory(job.agentId), "feishu"),
+      file = join(directory, "credentials.json"), marker = join(directory, "creation-pending.json");
+    const domain = options.domain ?? "feishu";
+    let reserved: string | undefined;
+    const reserve = (appId: string) => {
+      this.configuration.assertFeishuAvailable(appId, job.agentId);
+      if (this.feishuReservations.has(appId)) throw new Error("feishu_app_setup_in_progress");
+      this.feishuReservations.add(appId);
+      reserved = appId;
+    };
+    try {
+      if (options.appId && !/^cli_[a-zA-Z0-9_]{1,128}$/.test(options.appId))
+        throw new Error("invalid_feishu_app_id");
+      if (existsSync(file)) {
+        const loaded = loadFeishuCredentials(file);
+        if (options.appId && loaded.credentials.appId !== options.appId)
+          throw new Error("feishu_saved_app_mismatch");
+        if (loaded.credentials.domain !== domain) throw new Error("feishu_saved_domain_mismatch");
+        job.appId = loaded.credentials.appId;
+        reserve(job.appId);
+      } else {
+        // An unknown creation outcome must never silently create a second bot.
+        if (existsSync(marker) && !options.appId) throw new Error("feishu_creation_outcome_unknown");
+        if (options.appId) reserve(options.appId);
+        const result = await registerApp({
+          source: "agent-router",
+          ...(options.appId ? { appId: options.appId } : { createOnly: true }),
+          signal: job.controller.signal,
+          ...feishuApplication,
+          ...(domain === "lark" ? { domain: "accounts.larksuite.com" } : {}),
+          onQRCodeReady: (info) => {
+            job.controller.signal.throwIfAborted();
+            if (!options.appId) privateFile(marker, { startedAt: Date.now() });
+            job.url = info.url;
+            job.state = "application";
+            // The official SDK owns polling and enforces this platform deadline.
+            job.expiresAt = Date.now() + (Number.isFinite(info.expireIn) && info.expireIn > 0 ? info.expireIn : 600) * 1000;
+            this.save(job);
+          },
         });
-      },
-      signal,
-    );
+        job.controller.signal.throwIfAborted();
+        if (options.appId && result.client_id !== options.appId) throw new Error("feishu_registered_app_mismatch");
+        if (!result.client_id || !result.client_secret) throw new Error("feishu_registration_credentials_missing");
+        if (!result.user_info?.open_id) throw new Error("feishu_registration_owner_missing");
+        if (result.user_info.tenant_brand && result.user_info.tenant_brand !== domain)
+          throw new Error("feishu_registered_domain_mismatch");
+        if (!reserved) reserve(result.client_id);
+        job.appId = result.client_id;
+        // Persist credentials before binding. Retrying a failed binding reuses them.
+        privateFile(join(directory, "app-secret"), result.client_secret);
+        privateFile(file, { version: 1, appId: result.client_id, appSecretFile: "app-secret",
+          domain, ownerOpenId: result.user_info.open_id });
+      }
+      rmSync(marker, { force: true });
+      job.state = "binding";
+      delete job.url;
+      job.expiresAt = Date.now() + 600_000;
+      this.save(job);
+      // Personal tools keep stable definitions; personal consent happens on demand.
+      await this.configuration.edit(owner, job.agentId, (config) => {
+        config.connections.push({ id: "feishu", kind: "feishu", credentialsFile: file,
+          personalTools: options.personalTools ?? false, domain,
+          ownerAddresses: [], peerAddresses: [], groupIds: [] });
+      }, this.signal(job));
+    } finally {
+      if (reserved) this.feishuReservations.delete(reserved);
+    }
   }
   private async telegram(owner: string, job: Job, token: string) {
     if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token))
@@ -303,6 +360,7 @@ export class ConnectionSetup {
       const nonce = randomBytes(24).toString("hex");
       job.url = "https://t.me/" + me.username + "?start=" + nonce;
       job.state = "telegram_pairing";
+      this.save(job);
       let offset = 0;
       for (;;) {
         signal.throwIfAborted();
@@ -391,6 +449,7 @@ export class ConnectionSetup {
       qrcode = value.qrcode;
       job.url = value.qrcode_img_content;
       job.state = "waiting";
+      this.save(job);
       origin = base;
     };
     await refresh();
@@ -429,10 +488,12 @@ export class ConnectionSetup {
         case "need_verifycode":
           delete job.pairingCode;
           job.state = "pairing";
+          this.save(job);
           break;
         case "scaned":
           delete job.pairingCode;
           job.state = "waiting";
+          this.save(job);
           break;
         case "scaned_but_redirect":
           if (value.redirect_host)

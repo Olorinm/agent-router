@@ -9,14 +9,14 @@ import (
 )
 
 type options struct {
-	domain, botTokenFile, apiKeyFile, mailService, inboxID, ownerEmail, pairingCodeFile string
-	noWait, messagingOnly                                                               bool
-	profile, homeserver, passwordFile, registrationTokenFile, deviceName                string
-	connectorURL, endpointTokenFile, connectorRuntime                                   string
-	serviceURL, outputFile                                                              string
-	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile       string
-	tags, attachments                                                                   []string
-	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version        bool
+	feishuAppID, domain, botTokenFile, apiKeyFile, mailService, inboxID, ownerEmail, pairingCodeFile string
+	noWait, messagingOnly                                                                            bool
+	profile, homeserver, passwordFile, registrationTokenFile, deviceName                             string
+	connectorURL, endpointTokenFile, connectorRuntime                                                string
+	serviceURL, outputFile                                                                           string
+	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile                    string
+	tags, attachments                                                                                []string
+	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version                     bool
 }
 
 func parse(args []string, errOut io.Writer) (options, []string, error) {
@@ -53,6 +53,7 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.BoolVar(&o.all, "all", false, "Include completed work")
 	f.BoolVarP(&o.help, "help", "h", false, "Show help")
 	f.BoolVar(&o.version, "version", false, "Show version")
+	f.StringVar(&o.feishuAppID, "app-id", "", "Authorize an existing Feishu/Lark app instead of creating one")
 	f.StringVar(&o.domain, "domain", "feishu", "Feishu or Lark")
 	f.BoolVar(&o.messagingOnly, "messaging-only", false, "Connect Feishu messaging without personal tools")
 	f.StringVar(&o.botTokenFile, "bot-token-file", "", "Read Telegram BotFather token from a private file")
@@ -83,6 +84,7 @@ const help = `Agent Router — Go CLI
   connection-options | connection-check  List channel services / verify selected Agent
   channels                       Show connected platforms
   channel-connect PLATFORM       Connect feishu, weixin, telegram, grove-mail or matrix
+    --app-id cli_...              Recover an existing Feishu/Lark app through official consent
   channel-jobs | channel-job ID   List / resume a connection and show terminal QR
   channel-pair ID                 Enter Weixin pairing code (hidden prompt)
   channel-auth ID [status|begin|complete]  Inspect / renew personal authorization

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { privateFile } from "../services/feishu/cli.js";
+import { privateFile, loadFeishuCredentials } from "../services/feishu/cli.js";
 import {
   agentChannelConfigSchema,
   createChannelRuntime,
@@ -119,6 +119,21 @@ export class ConnectionConfiguration {
   }
   factory = async (agent: ManagedAgent, connector: MatrixConnector) =>
     this.runtime(agent, connector, this.configuration(agent));
+  assertFeishuAvailable(appId: string, agentId: string) {
+    for (const agent of this.service.agents()) {
+      if (agent.id === agentId) continue;
+      for (const connection of this.configuration(agent)?.connections ?? []) {
+        if (connection.kind !== "feishu") continue;
+        const existing = connection.credentialsFile
+          ? loadFeishuCredentials(connection.credentialsFile).credentials.appId : connection.appId;
+        if (existing === appId) throw new WorkError("feishu_app_already_connected", 409);
+      }
+      // Credentials may have landed before a previous binding failed.
+      const saved = join(this.agentDirectory(agent.id), "feishu", "credentials.json");
+      if (existsSync(saved) && loadFeishuCredentials(saved).credentials.appId === appId)
+        throw new WorkError("feishu_app_already_assigned", 409);
+    }
+  }
   assertTelegramAvailable(token: string) {
     for (const agent of this.service.agents())
       for (const connection of this.configuration(agent)?.connections ?? []) {

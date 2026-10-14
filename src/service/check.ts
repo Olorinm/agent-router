@@ -22,7 +22,9 @@ export async function checkChannels(configuration: ChannelConfiguration, node?: 
     } else checks.push({ agentId: agent.agentId, kind: "host", status: "not_verified", detail: "No direct Host configured; an external worker is required" });
     let live: any;
     if (node) try { live = await node.request(`/_agent-router/v1/agents/${encodeURIComponent(agent.agentId)}/communication`); } catch { /* Each channel will report unverified service state. */ }
+    if (!agent.connections.length) checks.push({ agentId: agent.agentId, kind: "connections", status: "not_verified", detail: "No messaging connection configured; Host health does not verify channel access" });
     for (const connection of agent.connections) {
+      const personalChecks: Check[] = [];
       const check: Check = { agentId: agent.agentId, connectionId: connection.id, kind: connection.kind, status: "not_verified", detail: "" };
       try {
         switch (connection.kind) {
@@ -33,11 +35,17 @@ export async function checkChannels(configuration: ChannelConfiguration, node?: 
               logger: { error() {}, warn() {}, info() {}, debug() {}, trace() {} } });
             const result = await client.request({ method: "GET", url: "/open-apis/bot/v3/info", timeout: 15_000 });
             if (result.code !== 0 || !result.bot?.open_id) throw new Error("feishu_bot_unavailable");
+            check.status = "verified"; check.detail = "Bot identity verified";
             if (connection.personalTools && loaded) {
-              const user = await new FeishuAccount(loaded.credentials, loaded.directory).status(true);
-              check.status = user.authorized && user.verified ? "verified" : "needs_action";
-              check.detail = user.authorized && user.verified ? "Bot and linked personal identity verified" : "Complete the linked owner's personal authorization";
-            } else { check.status = "verified"; check.detail = "Bot identity verified; personal tools are not configured"; }
+              const personal: Check = { agentId: agent.agentId, connectionId: connection.id,
+                kind: "feishu_personal", status: "needs_action", detail: "Personal authorization check failed; bot messaging is independent" };
+              try {
+                const user = await new FeishuAccount(loaded.credentials, loaded.directory).status(true);
+                personal.status = user.authorized && user.verified ? "verified" : "needs_action";
+                personal.detail = user.authorized && user.verified ? "Linked personal identity verified" : "Authorize personal tools when needed; see the separate bot check";
+              } catch { /* Personal tool credentials do not determine bot availability. */ }
+              personalChecks.push(personal);
+            }
             if (!(loaded?.credentials.ownerOpenId || connection.ownerAddresses.length)) { check.status = "needs_action"; check.detail = "Bind the owner's Feishu open_id"; }
             break;
           }
@@ -68,7 +76,7 @@ export async function checkChannels(configuration: ChannelConfiguration, node?: 
         if (node && (!running?.started || running?.error)) { check.status = "needs_action"; check.detail += "; Router connection is not running cleanly"; }
         else if (running && ["matrix", "weixin"].includes(connection.kind)) { check.status = "verified"; check.detail += "; Router reports successful startup (send/receive still needs a real message)"; }
       } catch { check.status = "needs_action"; check.detail = `${connection.kind} credential/access check failed`; }
-      checks.push(check);
+      checks.push(check, ...personalChecks);
     }
   }
   return checks;

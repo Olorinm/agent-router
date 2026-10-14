@@ -50,6 +50,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if err = validateArgs(command, args); err != nil {
 		return err
 	}
+	if o.feishuAppID != "" && (command != "channel-connect" || args[0] != "feishu") {
+		return errors.New("app_id_requires_feishu_channel_connect")
+	}
 	if command == "agent-guide" {
 		guide := guides.AgentConnect
 		if len(args) == 1 {

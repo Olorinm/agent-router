@@ -7,20 +7,31 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/term"
 )
 
+type connectionRecovery struct {
+	Action        string `json:"action"`
+	AppID         string `json:"appId,omitempty"`
+	Domain        string `json:"domain"`
+	PersonalTools bool   `json:"personalTools"`
+}
+
+var feishuAppID = regexp.MustCompile(`^cli_[a-zA-Z0-9_]{1,128}$`)
+
 type connectionJob struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	State     string `json:"state"`
-	ExpiresAt string `json:"expiresAt"`
-	URL       string `json:"url,omitempty"`
-	QR        string `json:"qr,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Recovery  *connectionRecovery `json:"recovery,omitempty"`
+	ID        string              `json:"id"`
+	Kind      string              `json:"kind"`
+	State     string              `json:"state"`
+	ExpiresAt string              `json:"expiresAt"`
+	URL       string              `json:"url,omitempty"`
+	QR        string              `json:"qr,omitempty"`
+	Error     string              `json:"error,omitempty"`
 }
 
 // Setup uses the saved owner account and the existing service authentication.
@@ -164,6 +175,12 @@ func (a *app) connectChannel(path, kind string) error {
 		if a.o.domain != "feishu" && a.o.domain != "lark" {
 			return errors.New("domain_must_be_feishu_or_lark")
 		}
+		if a.o.feishuAppID != "" {
+			if !feishuAppID.MatchString(a.o.feishuAppID) {
+				return errors.New("invalid_feishu_app_id")
+			}
+			body["appId"] = a.o.feishuAppID
+		}
 		body["domain"] = a.o.domain
 		body["personalTools"] = !a.o.messagingOnly
 	case "telegram":
@@ -248,6 +265,21 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 		case "ready":
 			return a.output(job)
 		case "failed":
+			if job.Recovery != nil {
+				command := "agent-router channel-connect feishu"
+				if feishuAppID.MatchString(job.Recovery.AppID) {
+					command += " --app-id " + job.Recovery.AppID
+				} else if job.Recovery.Action == "authorize_existing_app" {
+					command += " --app-id APP_ID"
+				}
+				if job.Recovery.Domain == "lark" {
+					command += " --domain lark"
+				}
+				if !job.Recovery.PersonalTools {
+					command += " --messaging-only"
+				}
+				fmt.Fprintln(a.errOut, "Recover the selected Agent with:", command)
+			}
 			if err := a.output(job); err != nil {
 				return err
 			}
@@ -268,7 +300,7 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 			if _, err = a.connectionRequest(path+"/connection-jobs/"+url.PathEscape(job.ID)+"/pairing", "POST", map[string]string{"code": code}); err != nil {
 				return err
 			}
-		case "starting", "waiting", "application", "authorization", "telegram_pairing":
+		case "starting", "waiting", "application", "authorization", "telegram_pairing", "binding":
 		default:
 			return errors.New("invalid_connection_job_state")
 		}
@@ -277,6 +309,10 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 		}
 		expiry, err := time.Parse(time.RFC3339, job.ExpiresAt)
 		if err != nil || !expiry.After(time.Now()) {
+			if err := a.output(job); err != nil {
+				return err
+			}
+			fmt.Fprintln(a.errOut, "Inspect channel-jobs for the final result and recovery instructions.")
 			return errors.New("connection_setup_expired")
 		}
 		timer := time.NewTimer(2 * time.Second)
