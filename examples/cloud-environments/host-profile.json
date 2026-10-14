@@ -1,5 +1,0 @@
-{
-  "stateDirectory": "/home/user/.agent-host-service/state",
-  "workspaceFiles": true,
-  "runtimes": [{"id": "personal", "kernel": "codex", "cwd": "/home/user/workspace"}]
-}

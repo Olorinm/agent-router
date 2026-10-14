@@ -8,7 +8,7 @@ handles messages, channel credentials and replies.
 
 ## Prepare the environment
 
-Follow [cloud onboarding](cloud-environments.md) to publish an environment
+Follow [cloud onboarding](https://github.com/Olorinm/mau/blob/main/docs/environments.md) to publish an environment
 profile. Install the required CLIs in its image and pin their versions. For
 Feishu, use the official `@larksuite/cli`; read its bundled instructions with
 `lark-cli skills read lark-shared`.
@@ -27,7 +27,7 @@ agent-environment exec --config /private/providers.json --provider cloud \
 
 Administrative commands must use the same config/data environment variables as
 the Host runtime. `agent-environment exec` does not inherit runtime configuration.
-It is an operator CLI; product users use `agent-router setup` and channel commands.
+It is an operator CLI; product users use `mau setup` and channel commands.
 
 ## Connect and verify Feishu
 

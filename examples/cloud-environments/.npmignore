@@ -1,5 +1,0 @@
-*
-!Dockerfile.router
-!environments.json
-!host-profile.json
-!.dockerignore

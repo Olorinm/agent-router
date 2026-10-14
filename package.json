@@ -1,6 +1,6 @@
 {
   "name": "@agent-router/server",
-  "version": "0.6.0",
+  "version": "0.7.0-alpha.1",
   "private": true,
   "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
   "repository": {
@@ -40,9 +40,7 @@
     "agent:service": "node dist/matrix/service.js",
     "weixin:login": "node dist/channels/weixin/login.js",
     "feishu:setup": "node dist/services/feishu/setup.js",
-    "channels:check": "node dist/service/check-cli.js",
-    "onboarding:init": "node dist/onboarding/init.js",
-    "verify:cloud": "npm run build && node scripts/verify-cloud-onboarding.mjs"
+    "channels:check": "node dist/service/check-cli.js"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
@@ -81,11 +79,17 @@
     "examples/echo-agent/tsconfig.json",
     "scripts/update-weixin-transport.py",
     "scripts/verify-agent-host.mjs",
-    "examples/personal-agent",
-    "THIRD_PARTY_NOTICES.md",
-    "examples/cloud-environments"
+    "THIRD_PARTY_NOTICES.md"
   ],
   "allowScripts": {
     "@larksuite/cli@1.0.97": true
+  },
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
   }
 }

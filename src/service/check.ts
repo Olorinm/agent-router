@@ -13,8 +13,8 @@ export async function checkChannels(configuration: ChannelConfiguration, node?: 
   for (const agent of configuration.agents) {
     if (agent.host) {
       try {
-        if (agent.host.environment && !suppliedHost) throw new Error("environment_coordinator_required");
-        const host = suppliedHost ?? new ServiceHttp(agent.host.url, file(agent.host.tokenFile));
+        if (agent.host.binding && !suppliedHost) throw new Error("host_binding_provider_required");
+        const host = suppliedHost ?? new ServiceHttp(agent.host.url!, file(agent.host.tokenFile!));
         const health = await host.request("/v1/health"), runtimes = await host.request("/v1/runtimes");
         if (health.protocolVersion !== 1 || !runtimes.runtimes?.some((item: { id: string }) => item.id === agent.host!.runtimeId)) throw new Error("host_runtime_not_found");
         checks.push({ agentId: agent.agentId, kind: "host", status: "verified", detail: "HTTP service and runtime exist; model execution has not been tested" });

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -14,7 +13,7 @@ import (
 	"golang.org/x/term"
 )
 
-type setupJob struct {
+type connectionJob struct {
 	ID        string `json:"id"`
 	Kind      string `json:"kind"`
 	State     string `json:"state"`
@@ -26,7 +25,7 @@ type setupJob struct {
 
 // Setup uses the saved owner account and the existing service authentication.
 // Runtime instance credentials cannot change the owner's channels or Host.
-func (a *app) setupSession(requireAgent bool) (*agentSelection, error) {
+func (a *app) connectionSession(requireAgent bool) (*agentSelection, error) {
 	s, err := newStore(a.o.profile)
 	if err != nil {
 		return nil, err
@@ -51,7 +50,7 @@ func (a *app) setupSession(requireAgent bool) (*agentSelection, error) {
 		return nil, err
 	}
 	if requireAgent && (selected == nil || selected.Agent.Owner != p.UserID || selected.ServiceURL != root) {
-		return nil, errors.New("select_an_owned_agent_first: run setup NAME or agent-use NAME")
+		return nil, errors.New("select_an_owned_agent_first: run agent-create NAME or agent-use NAME")
 	}
 	a.base = root
 	a.http, err = newHTTP(root, p.AccessToken)
@@ -65,18 +64,18 @@ func (a *app) setupSession(requireAgent bool) (*agentSelection, error) {
 	a.http.Transport = &managedOwnerTransport{app: a, store: s, selected: binding, next: a.http.Transport}
 	return selected, nil
 }
-func (a *app) setupRequest(path, method string, body any) (json.RawMessage, error) {
+func (a *app) connectionRequest(path, method string, body any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
 	defer cancel()
 	data, err := request(ctx, a.http, a.base, path, method, body)
 	var response *httpError
 	if errors.As(err, &response) && response.status == 404 && response.code == "not_found" {
-		return nil, errors.New("cli_setup_not_enabled: ask the operator to configure AGENT_ROUTER_ONBOARDING_FILE on a matching Router version")
+		return nil, errors.New("channel_connections_unavailable")
 	}
 	return data, err
 }
-func (a *app) setupAPI(path, method string, body any) error {
-	data, err := a.setupRequest(path, method, body)
+func (a *app) connectionAPI(path, method string, body any) error {
+	data, err := a.connectionRequest(path, method, body)
 	if err != nil {
 		return err
 	}
@@ -85,66 +84,35 @@ func (a *app) setupAPI(path, method string, body any) error {
 	}
 	return a.output(data)
 }
-func setupPath(selected *agentSelection) string {
-	return "/agents/" + url.PathEscape(selected.Agent.ID) + "/setup"
+func connectionPath(selected *agentSelection) string {
+	return "/agents/" + url.PathEscape(selected.Agent.ID)
 }
-func (a *app) setupCommand(command string, args []string) (bool, error) {
+func (a *app) connectionCommand(command string, args []string) (bool, error) {
 	switch command {
-	case "environment-create", "environment-status", "environment-resume", "environment-pause", "environment-destroy", "environment-reconcile", "setup", "setup-options", "setup-check", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
+	case "connection-options", "connection-check", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
 	default:
 		return false, nil
 	}
-	return true, a.runSetup(command, args)
+	return true, a.runConnections(command, args)
 }
-func (a *app) runSetup(command string, args []string) error {
-	if a.o.environmentProfile != "" && command != "setup" {
-		return errors.New("environment_option_requires_setup")
-	}
-	if a.o.environmentProfile != "" && a.o.noWait && a.o.channel != "" {
-		return errors.New("connect_channel_after_environment_ready_or_omit_no_wait")
-	}
-
-	if command == "setup" && len(args) == 1 {
-		// Creation is already idempotent and selects the existing Agent with this name.
-		previous := a.out
-		a.out = io.Discard
-		err := a.runAgentCommand("agent-create", args)
-		a.out = previous
-		if err != nil {
-			return err
-		}
-	}
-	selected, err := a.setupSession(command != "setup-options")
+func (a *app) runConnections(command string, args []string) error {
+	selected, err := a.connectionSession(command != "connection-options")
 	if err != nil {
 		return err
 	}
-	if command == "setup-options" {
-		return a.setupAPI("/setup", "GET", nil)
+	if command == "connection-options" {
+		return a.connectionAPI("/connection-options", "GET", nil)
 	}
-	path := setupPath(selected)
+	path := connectionPath(selected)
 	switch command {
-	case "environment-status":
-		return a.setupAPI(path+"/environment", "GET", nil)
-	case "environment-create", "environment-resume", "environment-pause", "environment-destroy", "environment-reconcile":
-		target, body := path+"/environment", any(map[string]any{})
-		if command == "environment-create" {
-			body = map[string]string{"profileId": args[0]}
-		} else {
-			target += "/" + strings.TrimPrefix(command, "environment-")
-		}
-		data, err := a.setupRequest(target, "POST", body)
-		if err != nil {
-			return err
-		}
-		return a.finishEnvironment(path, data)
 	case "channels":
-		return a.setupAPI(path, "GET", nil)
-	case "setup-check":
-		return a.setupAPI(path+"/check", "POST", map[string]any{})
+		return a.connectionAPI(path+"/configuration", "GET", nil)
+	case "connection-check":
+		return a.connectionAPI(path+"/check", "POST", map[string]any{})
 	case "channel-jobs":
-		return a.setupAPI(path+"/jobs", "GET", nil)
+		return a.connectionAPI(path+"/connection-jobs", "GET", nil)
 	case "channel-job":
-		data, err := a.setupRequest(path+"/jobs/"+url.PathEscape(args[0]), "GET", nil)
+		data, err := a.connectionRequest(path+"/connection-jobs/"+url.PathEscape(args[0]), "GET", nil)
 		if err != nil {
 			return err
 		}
@@ -154,7 +122,7 @@ func (a *app) runSetup(command string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return a.setupAPI(path+"/jobs/"+url.PathEscape(args[0])+"/pairing", "POST", map[string]string{"code": code})
+		return a.connectionAPI(path+"/connection-jobs/"+url.PathEscape(args[0])+"/pairing", "POST", map[string]string{"code": code})
 	case "channel-auth":
 		action := "status"
 		if len(args) == 2 {
@@ -170,7 +138,7 @@ func (a *app) runSetup(command string, args []string) error {
 			method = "POST"
 			body = map[string]any{}
 		}
-		data, err := a.setupRequest(auth, method, body)
+		data, err := a.connectionRequest(auth, method, body)
 		if err != nil {
 			return err
 		}
@@ -185,49 +153,9 @@ func (a *app) runSetup(command string, args []string) error {
 		return a.output(data)
 	case "channel-connect":
 		return a.connectChannel(path, args[0])
-	case "setup":
-		if a.o.environmentProfile != "" {
-			data, err := a.setupRequest(path+"/environment", "POST", map[string]string{"profileId": a.o.environmentProfile})
-			if err != nil {
-				return err
-			}
-			previous := a.out
-			if !a.o.noWait {
-				a.out = io.Discard
-			}
-			err = a.finishEnvironment(path, data)
-			a.out = previous
-			if err != nil {
-				return err
-			}
-			if a.o.noWait {
-				return nil
-			}
-		}
-		if a.o.channel != "" {
-			return a.connectChannel(path, a.o.channel)
-		}
-		summary, err := a.setupRequest(path, "GET", nil)
-		if err != nil {
-			return err
-		}
-		choices, err := a.setupRequest("/setup", "GET", nil)
-		if err != nil {
-			return err
-		}
-		checks, err := a.setupRequest(path+"/check", "POST", map[string]any{})
-		if err != nil {
-			return err
-		}
-		var checkList struct {
-			Checks json.RawMessage `json:"checks"`
-		}
-		if json.Unmarshal(checks, &checkList) != nil {
-			return errors.New("invalid_setup_checks")
-		}
-		return a.output(map[string]any{"configuration": summary, "options": choices, "checks": json.RawMessage(checkList.Checks)})
+
 	}
-	return errors.New("unknown_setup_command")
+	return errors.New("unknown_connection_command")
 }
 func (a *app) connectChannel(path, kind string) error {
 	body := map[string]any{"kind": kind}
@@ -260,7 +188,7 @@ func (a *app) connectChannel(path, kind string) error {
 	default:
 		return errors.New("channel_must_be_feishu_weixin_telegram_grove_mail_or_matrix")
 	}
-	data, err := a.setupRequest(path+"/connections", "POST", body)
+	data, err := a.connectionRequest(path+"/connections", "POST", body)
 	if err != nil {
 		return err
 	}
@@ -302,9 +230,9 @@ func (a *app) consent(raw, qr string) error {
 func (a *app) finishConnection(path string, data json.RawMessage) error {
 	shown, announced := "", false
 	for {
-		var job setupJob
+		var job connectionJob
 		if json.Unmarshal(data, &job) != nil || job.ID == "" {
-			return errors.New("invalid_setup_job")
+			return errors.New("invalid_connection_job")
 		}
 		if !announced {
 			fmt.Fprintln(a.errOut, "Connection job:", job.ID, "— resume with channel-job JOB_ID")
@@ -337,12 +265,12 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 			if err != nil {
 				return err
 			}
-			if _, err = a.setupRequest(path+"/jobs/"+url.PathEscape(job.ID)+"/pairing", "POST", map[string]string{"code": code}); err != nil {
+			if _, err = a.connectionRequest(path+"/connection-jobs/"+url.PathEscape(job.ID)+"/pairing", "POST", map[string]string{"code": code}); err != nil {
 				return err
 			}
 		case "starting", "waiting", "application", "authorization", "telegram_pairing":
 		default:
-			return errors.New("invalid_setup_job_state")
+			return errors.New("invalid_connection_job_state")
 		}
 		if a.o.noWait {
 			return a.output(job)
@@ -358,61 +286,7 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 			return a.ctx.Err()
 		case <-timer.C:
 		}
-		data, err = a.setupRequest(path+"/jobs/"+url.PathEscape(job.ID), "GET", nil)
-		if err != nil {
-			return err
-		}
-	}
-}
-
-// Provisioning is server-side and durable. Interrupting this poll does not cancel creation.
-func (a *app) finishEnvironment(path string, data json.RawMessage) error {
-	announced := false
-	deadline := time.Now().Add(15 * time.Minute)
-	for {
-		var status struct {
-			OperationID string `json:"operationId"`
-			State       string `json:"state"`
-			Busy        bool   `json:"busy"`
-			Error       string `json:"error"`
-		}
-		if json.Unmarshal(data, &status) != nil || status.OperationID == "" {
-			return errors.New("invalid_environment_status")
-		}
-		if !announced {
-			fmt.Fprintln(a.errOut, "Environment operation:", status.OperationID, "— inspect with environment-status; recover with environment-reconcile")
-			announced = true
-		}
-		if !status.Busy {
-			if err := a.output(data); err != nil {
-				return err
-			}
-			if status.Error != "" {
-				if safeCode.MatchString(status.Error) {
-					return errors.New(status.Error)
-				}
-				return errors.New("environment_needs_action")
-			}
-			if status.State == "ready" || status.State == "paused" || status.State == "deleted" {
-				return nil
-			}
-			return errors.New("environment_needs_action")
-		}
-		if a.o.noWait {
-			return a.output(data)
-		}
-		if time.Now().After(deadline) {
-			return errors.New("environment_still_pending_use_environment_status")
-		}
-		timer := time.NewTimer(time.Second)
-		select {
-		case <-a.ctx.Done():
-			timer.Stop()
-			return a.ctx.Err()
-		case <-timer.C:
-		}
-		var err error
-		data, err = a.setupRequest(path+"/environment", "GET", nil)
+		data, err = a.connectionRequest(path+"/connection-jobs/"+url.PathEscape(job.ID), "GET", nil)
 		if err != nil {
 			return err
 		}

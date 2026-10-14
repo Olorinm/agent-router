@@ -1,31 +1,19 @@
-# Set up an Agent with the CLI
+# Connect channels to an Agent
 
-[简体中文](onboarding.zh-CN.md)
+[简体中文](connections.zh-CN.md)
 
-Use an existing Router service, sign in with your account, create an Agent,
-choose its execution service, then connect whichever platforms you want.
-Everything runs through the existing Go CLI. Build the current source;
-the published v0.6.0 binary does not include these commands.
-
-## Your first Agent
-
-Your operator supplies the service domain and an account or registration invite.
-The Router and Host run on the server. You only need the CLI on your computer.
+Router owns accounts, Agent identities, connections and task delivery. Cloud Agent
+creation and environment lifecycle belong to [Mau](https://github.com/Olorinm/mau).
+Build current source; these connection commands are not in the old v0.6.0 release.
 
 ```sh
 agent-router login '@alice:agents.example'
-# If registration is enabled instead:
-# agent-router register agents.example alice --registration-token-file /private/invite
-
-agent-router setup-options
-agent-router setup helper --environment cloud-codex
+agent-router agent-create helper
+agent-router connection-options
 ```
 
-Login reads your password with a hidden prompt. `setup-options` lists the environment
-profiles assigned to your account. `setup helper --environment cloud-codex` creates
-or selects your Agent, allocates its environment and starts Host automatically.
-`setup` without a name inspects the selected Agent. Platforms are optional.
-See [cloud setup](cloud-environments.md) for lifecycle commands and operator configuration.
+An operator or embedding product connects a Host; an existing worker may also
+claim tasks using Router's normal instance API.
 
 ## Connect your chosen platforms
 
@@ -36,8 +24,7 @@ agent-router channel-connect telegram --bot-token-file /private/telegram-token
 agent-router channel-connect matrix
 ```
 
-Run only the commands for the platforms you want. A single command can also do
-initial setup: `agent-router setup helper --environment cloud-codex --channel feishu`.
+Run only the commands for the platforms you want.
 
 - **Feishu:** the terminal displays the official app setup QR/link, then the
   personal authorization QR/link. Both must finish before personal tools are
@@ -91,7 +78,7 @@ agent-router channel-auth feishu complete
 
 ```sh
 agent-router channels
-agent-router setup-check
+agent-router connection-check
 ```
 
 Checks verify configuration, access and connection startup. They do not consume
@@ -115,7 +102,7 @@ same conversation, and `get ADDRESS TASK_ID` to retrieve a pending result.
 Personal Feishu tools are restricted to linked owner channel conversations;
 A2A access alone does not confer access to the owner's personal account.
 
-To share your Agent, your friend logs in and runs `setup client` without a Host.
+To share your Agent, your friend logs in and runs `agent-create client` without a Host.
 You select your executing Agent and grant their public address:
 
 ```sh
@@ -128,37 +115,21 @@ They can use the Agent you authorized; they cannot manage your Host, connections
 or account. `requests`, `approve` and `reject` retain the existing per-request
 approval flow when automatic execution has not been granted.
 
-## Operator setup
+## Operator configuration
 
-Deploy the [Router node](managed-agents.md#部署节点) and configure a sandbox
-provider, template, Host image and owner-assigned environment profiles as described
-in [cloud setup](cloud-environments.md). Account registration remains on the account server.
+Deploy the [Router node](managed-agents.md#部署节点). Optional
+`AGENT_ROUTER_CONNECTIONS_FILE` points to a private JSON object containing
+`mailServices` (id, label, URL and attachmentOrigins); omit it for other channels.
+No cloud credentials or environment profiles are loaded by Router.
 
-```sh
-npm ci
-npm run build
-sh scripts/build-cli.sh
-npm run onboarding:init -- --out /private/router/onboarding.json \
-  --environments-file /private/router/environments.json
-```
+Persist the entire Router state, including `connections/agents/`. Channel edits
+are atomic and stop the previous consumer before replacement. Active or uncertain
+work blocks a change. Configuration views omit secrets; runtime credentials cannot
+manage owner connections. [Embedding products](../architecture/embedding.md) may
+provide a Host through the public package API.
 
-Set `AGENT_ROUTER_ONBOARDING_FILE` to that private file and restart `agent:service`.
-Mount the provider/profile files and sandbox key, and retain the writable service
-state volume. Native credentials must belong to the profile's assigned users.
-Users select a profile ID, never arbitrary server URLs or credential paths.
-Channel updates stop the old consumer and save atomically, with rollback on failure.
-Active or uncertain work blocks replacement. Existing execution history requires
-an explicit migration before changing Host/runtime or tool definitions.
-The former fixed-Host setup endpoint and Codex exec worker have been removed.
-
-Back up the Router databases and `state/agent-service/onboarding/` together.
-Per-Agent configuration and platform credentials are private files (0600) under
-private directories (0700). Host and channel secrets are not returned in CLI
-configuration views. Owner access uses the existing bearer token and ownership
-checks; worker instance credentials cannot configure channels.
-
-Local checks cover the Go CLI, protocol fixtures, account boundaries, private
-persistence, rollback and an A2A → Host → reply round trip. Actual provider
-accounts and model execution still need live integration testing.
-
-Authenticated configuration requests are also limited to 600 per minute per account, in addition to the service limit before authentication.
+HTTP routes are under `/_agent-router/v1`: `GET /connection-options`,
+`GET /agents/:id/configuration`, `POST /agents/:id/connections`,
+`GET /agents/:id/connection-jobs`, `GET /agents/:id/connection-jobs/:job`,
+`POST /agents/:id/connection-jobs/:job/pairing`, and `POST /agents/:id/check`.
+The former `/setup` and environment routes are removed.

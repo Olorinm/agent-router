@@ -16,7 +16,7 @@ import { loadWeixinCredentials } from "../service/channels.js";
 import { key } from "../matrix/protocol.js";
 import type { ManagedService } from "../matrix/managed.js";
 import { WorkError } from "../matrix/cli-work.js";
-import type { OnboardingConfiguration } from "./configuration.js";
+import type { ConnectionConfiguration } from "./configuration.js";
 
 interface Job {
   id: string;
@@ -86,7 +86,7 @@ export class ConnectionSetup {
   private telegramReservations = new Set<string>();
   constructor(
     readonly service: ManagedService,
-    readonly configuration: OnboardingConfiguration,
+    readonly configuration: ConnectionConfiguration,
   ) {}
   async close() {
     for (const job of this.jobs.values()) job.controller.abort();

@@ -50,7 +50,7 @@ agent-router --profile worker claim --worker codex --wait 30
 ```
 
 托管模式下 `connect` 检查远端连接后退出。Matrix 通信服务运行在节点服务器。
-通用原生 Agent 使用[环境与 Host 开通流程](cloud-environments.zh-CN.md)。
+通用原生 Agent 使用[环境与 Host 开通流程](https://github.com/Olorinm/mau/blob/main/docs/environments.zh-CN.md)。
 `claim` 协议保留给视频等专用任务消费者；不再提供独立 Codex exec worker。
 
 账号配置 `session.json` 与 Agent 选择／实例凭证 `agent.json` 分开保存，目录为

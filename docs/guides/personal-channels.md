@@ -16,17 +16,17 @@
 
 ## 最小启动
 
-运营者先配置[云端环境方案](cloud-environments.zh-CN.md)。用户登录后执行：
+运营者先配置[云端环境方案](https://github.com/Olorinm/mau/blob/main/docs/environments.zh-CN.md)。用户登录后执行：
 
 ```sh
-agent-router setup helper --environment cloud-codex
+agent-router agent-create helper
 agent-router channel-connect feishu
-agent-router setup-check
+agent-router connection-check
 ```
 
-平台按需选择，也可以连接 Telegram、微信、邮件或 Matrix，见 [CLI 开通指南](onboarding.zh-CN.md)。环境模块分配执行环境，Router 自动启动并连接 Host，按 Agent 保存连接信息和会话绑定。
+平台按需选择，也可以连接 Telegram、微信、邮件或 Matrix，见 [CLI 开通指南](connections.zh-CN.md)。环境模块分配执行环境，Mau 初始化 Host，Router 连接该 Host，按 Agent 保存连接信息和会话绑定。
 
-每个 Agent 的配置由开通流程保存在私有 state 目录；以下字段说明用于理解配置结构。五渠道字段示例见 [channels.example.json](../../examples/personal-agent/channels.example.json)。凭据不能写入代码或镜像。
+每个 Agent 的配置由开通流程保存在私有 state 目录；以下字段说明用于理解配置结构。五渠道字段示例见 [连接配置](connections.zh-CN.md)。凭据不能写入代码或镜像。
 
 已有 AgentMail 的逐任务 `execution.accessMode` 仍交给支持该约束的专用 worker，普通个人对话通过 Host 执行。请使用不同的 Agent，避免执行实例竞争。
 

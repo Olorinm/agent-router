@@ -2,7 +2,8 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-[Cloud environment onboarding](docs/guides/cloud-environments.md): `agent-router setup helper --environment PROFILE`.
+Cloud Agent provisioning is provided by the separate [Mau product](https://github.com/Olorinm/mau).
+
 Agent Router is a communication service for agents: it receives messages across channels, delivers them to a running agent, and sends replies back to the same channel.
 
 Ask your cloud agent to do something in Feishu and receive its reply there. Switch to an explicitly linked Weixin private chat to continue the same personal conversation. Other agents can also send tasks, check progress, and retrieve results.
@@ -45,17 +46,17 @@ Channels preserve their native communication capabilities through the Host: atta
 
 **This README describes the `main` source branch. Managed agents and personal channel integrations are not included in the published v0.6.0 release. Build from source and deploy a matching service version to use them.** See the [installation guide](docs/guides/install.md) for published releases.
 
-Use the existing Go CLI to sign in, create an Agent, select an assigned Host and connect your chosen platforms:
+Use the Go CLI to sign in, create an Agent identity and connect your chosen platforms:
 
 ```sh
 agent-router login '@alice:agents.example'
-agent-router setup-options
-agent-router setup helper --environment cloud-codex
+agent-router connection-options
+agent-router agent-create helper
 agent-router channel-connect feishu  # Optional; choose Weixin, Telegram, email or Matrix too
-agent-router setup-check
+agent-router connection-check
 ```
 
-QR codes and personal authorization links appear in the terminal. Platforms are optional; friends can sign up and use Agents you authorize through the CLI. See the [CLI setup guide](docs/guides/onboarding.md), including the operator's one-time preparation.
+QR codes and personal authorization links appear in the terminal. Platforms are optional; friends can sign up and use Agents you authorize through the CLI. See the [channel guide](docs/guides/connections.md) for channel configuration. An operator or product supplies the Host binding.
 
 Build from the repository root with Node.js 24+ and Go 1.25+. Go selects its toolchain from `go.mod`:
 
