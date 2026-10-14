@@ -84,7 +84,7 @@ export function loadWeixinCredentials(path: string) {
 }
 
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
-  directory: string, issue: (name: string) => { id: string; validate: () => void }, suppliedHost?: HostPort): Promise<ServiceExtension> {
+  directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   const accounts = new Map<string, FeishuAccount>(), personalTools = new Map<string, FeishuTools>();
@@ -149,7 +149,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
             await host.writeFile!(binding.sessionId, path, item.data); return path;
           });
           return tools.execute(call);
-        } }, core);
+        } }, core, instance.wake);
     core.control = (input) => worker!.handleInput(input);
   }
   const controller = new AbortController();

@@ -23,7 +23,8 @@ export class HostWorker {
   lastError = "";
   constructor(readonly agentId: string, readonly instanceId: string, readonly store: DurableStore, readonly work: CliWork,
     readonly host: HostPort, readonly runtimeId: string, readonly instructions = "", private readonly validate: () => void = () => {},
-    private readonly saveResult: (taskId: string, answer: string) => boolean = () => false, readonly tools?: HostTools, readonly communication?: CommunicationCore) {
+    private readonly saveResult: (taskId: string, answer: string) => boolean = () => false, readonly tools?: HostTools, readonly communication?: CommunicationCore,
+    private readonly wake?: () => void) {
     const scope = digest({ agentId, instanceId, runtimeId, instructions, host: host.identity ?? "embedded",
       ...(tools ? { tools: tools.definitions, toolInstructions: tools.instructions } : {}) });
     const prior = store.get<string>("communication_host", "scope");
@@ -37,7 +38,12 @@ export class HostWorker {
     if (this.busy) return;
     this.busy = true;
     try {
-      this.validate();
+      try { this.validate(); }
+      catch (error) {
+        // Only deliverable work may wake an unavailable Host; idle ticks never do.
+        if (this.wake && this.work.claimable(this.instanceId, true, true)) this.wake();
+        throw error;
+      }
       if (!this.connected) { await this.host.connect(); this.connected = true; }
       const claim = this.work.claim(this.instanceId, undefined, true, true);
       if (!claim?.claimId) return;

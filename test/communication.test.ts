@@ -294,6 +294,18 @@ describe("direct Agent Host execution bridge", () => {
     const revoked = new HostWorker("agent", "instance", h.store, h.work, h.host, "fixture", "instructions", () => { throw new Error("instance_revoked"); });
     await revoked.tick(); expect(revoked.lastError).toBe("instance_revoked"); expect(h.host.starts).toHaveLength(1);
   });
+  it("wakes an unavailable Host only for deliverable work and never submits while it sleeps", async () => {
+    const h = harness(); let ready = false, wakes = 0;
+    const worker = new HostWorker("agent", "instance", h.store, h.work, h.host, "fixture", "instructions",
+      () => { if (!ready) throw new WorkError("environment_sleeping", 409); }, (id, text) => h.core.saveResult(id, text),
+      undefined, h.core, () => { wakes++; });
+    await worker.tick(); expect(wakes).toBe(0);
+    h.core.receive("feishu", message("one")); await h.core.dispatch();
+    await worker.tick(); await worker.tick();
+    expect(wakes).toBe(2); expect(h.host.starts).toHaveLength(0); expect(worker.lastError).toBe("environment_sleeping");
+    ready = true; await worker.tick();
+    expect(h.host.starts).toHaveLength(1); expect(wakes).toBe(2);
+  });
   it("holds a lost POST response until the owner reconciles the observed run", async () => {
     const h = harness(); h.host.error = new Error("response_lost"); h.core.receive("feishu", message("one")); await h.core.dispatch();
     const worker = h.worker(); await worker.tick(); await worker.tick();
