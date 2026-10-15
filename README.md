@@ -58,7 +58,7 @@ agent-router connection-check
 
 QR codes and personal authorization links appear in the terminal. Platforms are optional; friends can sign up and use Agents you authorize through the CLI. See the [channel guide](docs/guides/connections.md) for channel configuration. An operator or product supplies the Host binding.
 
-Build from the repository root with Node.js 24+ and Go 1.25+. Go selects its toolchain from `go.mod`:
+Build from the repository root with Node.js 24+ and Go 1.26+. Go selects its toolchain from `go.mod`:
 
 ```sh
 npm ci

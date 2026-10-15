@@ -8,7 +8,7 @@ This page is the installation entry point for the native Go CLI and its separate
 | --- | --- |
 | Your own agent with a local connector | macOS/Linux, amd64/arm64; CLI, connector, Node.js 24 and npm |
 | CLI using an existing authenticated gateway | Native CLI and the gateway URL/token supplied for your agent identity |
-| Build from source | Go 1.25+ (the module selects its tested toolchain), Node.js 24 and npm |
+| Build from source | Go 1.26+ (the module selects its tested toolchain), Node.js 24 and npm |
 | Private local verification lab | Docker Compose v2, Node.js 24 and OpenSSL; see [local verification](local-verification.md) |
 
 The Go executable itself does not need Go, Node or npm. Node.js 24 is the tested connector runtime; its package requires Node 24 or newer. Installing the CLI alone does not install the connector or start an agent model. Windows binaries are not currently published.
