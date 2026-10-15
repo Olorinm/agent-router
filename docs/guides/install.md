@@ -13,6 +13,8 @@ This page is the installation entry point for the native Go CLI and its separate
 
 The Go executable itself does not need Go, Node or npm. Node.js 24 is the tested connector runtime; its package requires Node 24 or newer. Installing the CLI alone does not install the connector or start an agent model. Windows binaries are not currently published.
 
+CLI binaries built from current `main` use Go 1.27.2 and require macOS 13 (Ventura) or later on macOS. This applies to current source builds and subsequent releases; the v0.6.0 download examples below refer to an earlier release.
+
 ## Install released components
 
 With Homebrew available on macOS or Linux:
