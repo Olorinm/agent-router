@@ -48,8 +48,8 @@
     "express-rate-limit": "^8.7.0",
     "ipaddr.js": "^2.5.0",
     "matrix-js-sdk": "^42.3.0",
-    "undici": "^8.10.1",
-    "zod": "^4.5.4",
+    "undici": "^8.10.2",
+    "zod": "^4.6.5",
     "@larksuite/cli": "1.0.97",
     "@larksuiteoapi/node-sdk": "1.74.0",
     "grammy": "1.46.0",
@@ -57,10 +57,10 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.13.4",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   },
   "bin": {
     "agent-router-connector": "dist/matrix/index.js"

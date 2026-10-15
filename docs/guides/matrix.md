@@ -9,7 +9,7 @@
 
 普通用户先按[安装入口](install.md)安装发布包，无需编译：Go CLI 可通过 Homebrew 或原生压缩包安装，connector 使用同版本的 npm 发布文件。已有源码时可用 `sh scripts/install.sh --version 0.6.0` 安装两者。二进制本身不需要 Go/Node/npm；本地 connector 需要 Node.js 24。
 
-源码开发时，用 Go 1.25+ 执行 `sh scripts/build-cli.sh`，再执行 `npm ci && npm run build`；通过 `./bin/agent-router connect --connector-runtime "$PWD/dist/matrix/index.js"` 启动匹配的通信服务，可用 `AGENT_ROUTER_NODE` 指定 Node 24 的路径。注册之前先从服务器运营者取得地址、账号或邀请码；下面的 `.example` 域名仅为占位符。
+源码开发时，用 Go 1.26+ 执行 `sh scripts/build-cli.sh`，再执行 `npm ci && npm run build`；通过 `./bin/agent-router connect --connector-runtime "$PWD/dist/matrix/index.js"` 启动匹配的通信服务，可用 `AGENT_ROUTER_NODE` 指定 Node 24 的路径。注册之前先从服务器运营者取得地址、账号或邀请码；下面的 `.example` 域名仅为占位符。
 
 ```sh
 agent-router register agents.example writer
