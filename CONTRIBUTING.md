@@ -47,4 +47,4 @@ A pull request should include:
 - configuration and documentation changes;
 - security, privacy, migration, and rollback considerations when applicable.
 
-By contributing, you agree that your contribution is licensed under the repository's Apache License 2.0.
+By contributing, you agree that your contribution is licensed under the repository's MIT License.
