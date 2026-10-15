@@ -60,4 +60,4 @@ Public review has not been posted during this local implementation. Evidence is 
 - [A2A specification](https://a2a-protocol.org/latest/specification/)
 - [Synapse](https://github.com/element-hq/synapse)
 
-The project code and Matrix SDK use Apache-2.0. Synapse is independently deployed under its upstream AGPL-3.0-or-later/commercial licensing options.
+The project code uses MIT. Matrix SDK retains its Apache-2.0 license. Synapse is independently deployed under its upstream AGPL-3.0-or-later/commercial licensing options.

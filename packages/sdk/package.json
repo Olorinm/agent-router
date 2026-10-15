@@ -2,7 +2,7 @@
   "name": "@agent-router/sdk",
   "version": "0.1.4",
   "description": "Typed HTTP client for Agent Router accounts, agents and durable conversations",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Olorinm/agent-router.git",

@@ -93,4 +93,4 @@ npm run build
 
 Automated checks cover session isolation, deduplication, recovery, authorization, and the public Host interface. Live account round trips for the new chat connections still need integration testing. See the [verified scope](docs/guides/personal-channels.md#已验证范围) and [local verification guide](docs/guides/local-verification.md).
 
-License: [Apache-2.0](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for reused components and their licenses.
+License: [MIT](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for reused components and their licenses.
