@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { attachmentsSchema } from "../attachments.js";
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -26,7 +27,6 @@ function required(name: string): string { const value = process.env[name]; if (!
 export function createConnectorApp(connector: MatrixConnector, apiToken: string, publicBaseUrl: string) {
   const app = express();
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "64kb" }));
   app.use((_req, res, next) => {
     const abort = new AbortController();
     res.once("close", () => abort.abort());
@@ -47,6 +47,8 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
     lastSyncAt: connector.lastSyncAt, lastError: connector.lastError,
   }));
   app.use(auth);
+  app.use("/api/work/:id/update", express.json({ limit: 6_000_000 }));
+  app.use(express.json({ limit: "64kb" }));
   app.get("/api/status", (_req, res) => {
     const counts: Record<string, Record<string, number>> = {};
     for (const collection of ["incoming", "outgoing", "outbox"]) {
@@ -110,13 +112,13 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
     if (!res.destroyed) res.json(null);
   });
   app.post("/api/work/:id/update", async (req, res) => {
-    const body = z.object({ action: z.enum(["progress", "reply", "need-input", "fail", "cancelled"]),
-      text: z.string().max(32000).default(""), data: z.record(z.string(), z.unknown()).optional() }).strict().parse(req.body);
-    if (body.action !== "cancelled" && !body.text.trim() && !(body.action === "reply" && body.data)) {
+    const body = z.object({ action: z.enum(["progress", "defer", "reply", "need-input", "fail", "cancelled"]),
+      text: z.string().max(32000).default(""), data: z.record(z.string(), z.unknown()).optional(), attachments: attachmentsSchema.optional() }).strict().parse(req.body);
+    if (body.action !== "cancelled" && !body.text.trim() && !(body.action === "reply" && (body.data || body.attachments?.length))) {
       throw new WorkError("message_required", 400);
     }
     res.locals.validateWorker?.();
-    const result = work().update(req.params.id, body.action, body.text, body.data, res.locals.workerId);
+    const result = work().update(req.params.id, body.action, body.text, body.data, res.locals.workerId, body.attachments);
     await connector.work(); res.json(result);
   });
   app.get("/api/invites", (_req, res) => res.json({ data: connector.store.entries("invites").map((r) => r.value) }));
@@ -177,6 +179,7 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
   app.use("/agents/:address/a2a/jsonrpc", route("rpc"));
   app.use((_req, res) => res.status(404).json({ error: "not_found" }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if ((error as { type?: string })?.type === "entity.too.large") { res.status(413).json({ error: "request_too_large" }); return; }
     if (error instanceof WorkError) { res.status(error.status).json({ error: error.message }); return; }
     res.status(error instanceof z.ZodError ? 400 : 500).json({ error: error instanceof z.ZodError ? "invalid_request" : "operation_failed" });
   });
@@ -227,7 +230,7 @@ export async function runConnector(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   if (Number(process.versions.node.split(".")[0]) < 24) { process.stderr.write("The communication service requires Node.js 24 or newer.\n"); process.exitCode = 1; }
-  else if (process.argv.includes("--version")) process.stdout.write(JSON.stringify({ version: "0.6.0", component: "connector" }) + "\n");
+  else if (process.argv.includes("--version")) process.stdout.write(JSON.stringify({ version: "0.7.0-alpha.2", component: "connector" }) + "\n");
   else if (process.argv.includes("--help")) process.stdout.write("Agent Router communication service (Node 24). Start it with agent-router connect; use agent-router --help for agent commands.\n");
   else runConnector().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "startup_failed"}\n`); process.exitCode = 1; });
 }

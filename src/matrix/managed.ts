@@ -11,6 +11,7 @@ import { ApplicationInbox, ApplicationTransport } from "./application-service.js
 import { digest, mxid } from "./protocol.js";
 import { WorkError } from "./cli-work.js";
 import type { MatrixTransport } from "./transport.js";
+import { ChannelRouter } from "../channels/router.js";
 
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export interface ManagedAgent {
@@ -18,12 +19,20 @@ export interface ManagedAgent {
   createdAt: string; status: "provisioning" | "active";
 }
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
-export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; }
-interface Runtime { connector: MatrixConnector; app: ReturnType<typeof createConnectorApp>; token: string; }
+export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string; }
+export interface ServiceExtension {
+  start(): Promise<void>; stop(): Promise<void>; status(): unknown;
+  resolve(callId: string, result: unknown): Promise<void>;
+  reconcile(claimId: string, runId: string): Promise<void>;
+  closeUnknown(claimId: string): Promise<void>;
+  authorization?(connectionId: string, action: "status" | "begin" | "complete"): Promise<unknown>;
+}
+interface Runtime { connector: MatrixConnector; app: ReturnType<typeof createConnectorApp>; token: string; extension?: ServiceExtension | undefined; }
 export interface ServiceDependencies {
   authenticate?: (token: string) => Promise<string>;
   provision?: (agent: ManagedAgent) => Promise<void>;
   transport?: (agent: ManagedAgent, inbox: ApplicationInbox) => MatrixTransport;
+  configure?: (agent: ManagedAgent, connector: MatrixConnector) => Promise<ServiceExtension | undefined>;
 }
 const newToken = () => randomBytes(32).toString("base64url");
 function bearer(req: express.Request): string { return req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? ""; }
@@ -37,7 +46,9 @@ export class ManagedService {
   readonly store: ConnectorStore;
   readonly inbox: ApplicationInbox;
   readonly externalIdentity: ExternalIdentitySessions | undefined;
+  readonly channels: ChannelRouter;
   private runtimes = new Map<string, Promise<Runtime>>();
+  private configurations = new Map<string, Promise<void>>();
   constructor(readonly config: ServiceConfig, readonly dependencies: ServiceDependencies = {}) {
     if (!/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(config.serverName)) throw new Error("invalid_server_name");
     for (const raw of [config.homeserver, config.publicUrl]) {
@@ -48,6 +59,15 @@ export class ManagedService {
     this.store = new ConnectorStore(join(config.stateDir, "registry.sqlite"), config.serverName);
     this.inbox = new ApplicationInbox(this.store, (user) => this.store.get<string>("matrix_agents", user));
     this.externalIdentity=config.externalIdentity?new ExternalIdentitySessions(this,config.externalIdentity):undefined;
+    this.channels = new ChannelRouter(this.store, async (agentId) => {
+      const { connector } = await this.runtime(agentId);
+      const work = connector.cli!;
+      return {
+        send: (request, source) => work.send(request, source), get: (id) => work.get(id), cancel: (id) => work.cancel(id),
+        outputAttachments: (taskId) => work.outputAttachments(taskId),
+        acknowledge: (taskId) => { for (const event of work.events()) if (event.value.id === taskId) work.ack(event.id); },
+      };
+    });
   }
   agents(owner?: string): ManagedAgent[] {
     return this.store.entries<ManagedAgent>("agents").map((r) => r.value).filter((a) => !owner || a.owner === owner);
@@ -103,6 +123,36 @@ export class ManagedService {
     }
     return pending;
   }
+  /** Replace only the product extension. The Matrix identity, queue and connector stay intact. */
+  async configureRuntime(id: string, configure: NonNullable<ServiceDependencies["configure"]>,
+    rollback: NonNullable<ServiceDependencies["configure"]> = this.dependencies.configure ?? (async () => undefined),
+    commit: () => void = () => {}): Promise<void> {
+    const operation = (this.configurations.get(id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const runtime = await this.runtime(id);
+      if (runtime.connector.store.entries<{ phase: string }>("communication_runs")
+        .some(({ value }) => ["running", "submitting", "unknown"].includes(value.phase)))
+        throw new WorkError("agent_has_active_or_unknown_run", 409);
+      await runtime.extension?.stop();
+      runtime.extension = undefined;
+      let replacement: ServiceExtension | undefined;
+      try {
+        // A worker tick could have submitted work while stop was awaiting its loop.
+        if (runtime.connector.store.entries<{ phase: string }>("communication_runs")
+          .some(({ value }) => ["running", "submitting", "unknown"].includes(value.phase)))
+          throw new WorkError("agent_has_active_or_unknown_run", 409);
+        replacement = await configure(this.agent(id), runtime.connector);
+        commit(); await replacement?.start(); runtime.extension = replacement;
+      }
+      catch (error) {
+        await replacement?.stop();
+        const restored = await rollback(this.agent(id), runtime.connector);
+        await restored?.start(); runtime.extension = restored;
+        throw error;
+      }
+    });
+    this.configurations.set(id, operation);
+    try { await operation; } finally { if (this.configurations.get(id) === operation) this.configurations.delete(id); }
+  }
   private async open(agent: ManagedAgent): Promise<Runtime> {
     if (this.dependencies.provision) await this.dependencies.provision(agent);
     else {
@@ -120,17 +170,20 @@ export class ManagedService {
     const transport = this.dependencies.transport?.(agent, this.inbox) ?? new ApplicationTransport(
       this.config.homeserver, this.config.asToken, agent.matrixId, agent.id, this.inbox);
     const connector = new MatrixConnector(agent.matrixId, store, transport, undefined, 250);
+    let extension: ServiceExtension | undefined;
     try {
       if (!store.get("meta", "managed_initialized")) {
         await connector.updateContact({ address: agent.owner, note: "Owner", receive: "allow", execution: "allow" });
         await transport.data?.displayName(agent.name);
         store.set("meta", "managed_initialized", true);
       }
+      extension = await this.dependencies.configure?.(agent, connector);
       await connector.start();
-    } catch (error) { await connector.stop(); store.close(); throw error; }
+      await extension?.start();
+    } catch (error) { await extension?.stop(); await connector.stop(); store.close(); throw error; }
     this.store.set("agents", agent.id, { ...agent, status: "active" });
     const token = newToken();
-    return { connector, token, app: createConnectorApp(connector, token, `${this.config.publicUrl}/agents/${agent.id}/gateway`) };
+    return { connector, token, extension, app: createConnectorApp(connector, token, `${this.config.publicUrl}/agents/${agent.id}/gateway`) };
   }
   instances(agentId: string) { return this.store.entries<Instance>("instances").map((r) => r.value).filter((i) => i.agentId === agentId).map(publicInstance); }
   issue(agentId: string, name: string): { instance: ReturnType<typeof publicInstance>; token: string; gatewayUrl: string } {
@@ -160,17 +213,24 @@ export class ManagedService {
   }
   async start(): Promise<void> { for (const agent of this.agents()) await this.runtime(agent.id); }
   async close(): Promise<void> {
+    await Promise.allSettled(this.configurations.values());
+    await this.channels.close();
     for (const pending of this.runtimes.values()) {
-      try { const { connector } = await pending; await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
+      try { const { connector, extension } = await pending; await extension?.stop(); await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
     }
     this.runtimes.clear(); this.store.close();
   }
 }
 
-export function createManagedApp(service: ManagedService) {
+export function createManagedApp(service: ManagedService, setup?: express.Router) {
   const app = express(); app.disable("x-powered-by");
   app.set("trust proxy", service.config.trustedProxies ?? false);
-  app.use(express.json({ limit: "2mb" }));
+  const jsonBody = express.json({ limit: "2mb" });
+  // The authenticated runtime parses attachment-bearing updates with a separate bound.
+  app.use((req, res, next) => {
+    if (req.method === "POST" && /^\/_agent-router\/v1\/agents\/[^/]+\/gateway\/api\/work\/[^/]+\/update$/.test(req.path)) next();
+    else jsonBody(req, res, next);
+  });
   app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service" }));
   app.use("/_matrix/app/v1", (req, res, next) => {
     if (!equal(bearer(req), service.config.hsToken) ||
@@ -234,6 +294,54 @@ export function createManagedApp(service: ManagedService) {
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
   app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  if (setup) app.use(setup);
+  const extension = async (id: string) => {
+    const runtime = await service.runtime(id);
+    if (!runtime.extension) throw new WorkError("channels_not_configured", 404);
+    return runtime.extension;
+  };
+  app.get(`${root}/agents/:agentId/communication`, async (req, res) => res.json((await extension(req.params.agentId)).status()));
+  const authorization = async (id: string, connectionId: string, action: "status" | "begin" | "complete") => {
+    const runtime = await extension(id);
+    if (!runtime.authorization) throw new WorkError("personal_authorization_not_configured", 404);
+    return runtime.authorization(connectionId, action);
+  };
+  app.get(`${root}/agents/:agentId/communication/connections/:connectionId/authorization`, async (req, res) =>
+    res.json(await authorization(req.params.agentId, req.params.connectionId, "status")));
+  app.post(`${root}/agents/:agentId/communication/connections/:connectionId/authorization/:action`, async (req, res) => {
+    const action = z.enum(["begin", "complete"]).parse(req.params.action); z.object({}).strict().parse(req.body);
+    res.json(await authorization(req.params.agentId, req.params.connectionId, action));
+  });
+  app.post(`${root}/agents/:agentId/communication/calls/:callId/result`, async (req, res) => {
+    const body = z.object({ result: z.json() }).strict().parse(req.body);
+    await (await extension(req.params.agentId)).resolve(req.params.callId, body.result); res.json({ status: "accepted" });
+  });
+  app.post(`${root}/agents/:agentId/communication/runs/:claimId/reconcile`, async (req, res) => {
+    const body = z.object({ runId: z.string().min(1).max(160) }).strict().parse(req.body);
+    await (await extension(req.params.agentId)).reconcile(req.params.claimId, body.runId); res.json({ status: "accepted" });
+  });
+  app.post(`${root}/agents/:agentId/communication/runs/:claimId/close`, async (req, res) => {
+    z.object({}).strict().parse(req.body);
+    await (await extension(req.params.agentId)).closeUnknown(req.params.claimId); res.json({ status: "closed" });
+  });
+  app.get(`${root}/agents/:agentId/channels`, (req, res) => res.json({ data: service.channels.entries(req.params.agentId) }));
+  const channelRoot = `${root}/agents/:agentId/channels/:entryId`;
+  app.use(channelRoot, (req, _res, next) => { service.channels.ownedEntry(String(req.params.entryId), String(req.params.agentId)); next(); });
+  app.get(`${channelRoot}/visitors`, (req, res) => res.json({ data: service.channels.visitors(req.params.entryId) }));
+  app.get(`${channelRoot}/events`, (req, res) => {
+    const limit = z.coerce.number().int().min(1).max(200).default(100).parse(req.query.limit);
+    const state = z.enum(["pending", "queued", "submitted", "delivering", "replied", "rejected", "delivery-failed"]).optional().parse(req.query.state);
+    res.json({ data: service.channels.events(req.params.entryId).filter(e => !state || e.state === state).slice(-limit) });
+  });
+  app.post(`${channelRoot}/events/:eventId/decision`, (req, res) => {
+    const { decision } = z.object({ decision: z.enum(["allow", "deny"]) }).strict().parse(req.body);
+    service.channels.decide(req.params.entryId, req.params.eventId, decision); res.status(204).end();
+  });
+  app.post(`${channelRoot}/visitors/:visitorId/decision`, (req, res) => {
+    const { decision } = z.object({ decision: z.enum(["inherit", "allow", "ask", "deny"]) }).strict().parse(req.body);
+    service.channels.decideVisitor(req.params.entryId, req.params.visitorId, decision); res.status(204).end();
+  });
+  app.post(`${channelRoot}/resume`, (req, res) => { service.channels.resume(req.params.entryId); res.status(204).end(); });
   app.get(`${root}/agents/:agentId/instances`, (req, res) => res.json({ data: service.instances(req.params.agentId) }));
   app.post(`${root}/agents/:agentId/instances`, (req, res) => {
     const { name } = z.object({ name: agentName }).strict().parse(req.body);

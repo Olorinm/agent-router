@@ -9,12 +9,14 @@ import (
 )
 
 type options struct {
-	profile, homeserver, passwordFile, registrationTokenFile, deviceName          string
-	connectorURL, endpointTokenFile, connectorRuntime                             string
-	serviceURL, outputFile                                                        string
-	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile string
-	tags                                                                          []string
-	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version  bool
+	feishuAppID, domain, botTokenFile, apiKeyFile, mailService, inboxID, ownerEmail, pairingCodeFile string
+	noWait, messagingOnly                                                                            bool
+	profile, homeserver, passwordFile, registrationTokenFile, deviceName                             string
+	connectorURL, endpointTokenFile, connectorRuntime                                                string
+	serviceURL, outputFile                                                                           string
+	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile                    string
+	tags, attachments                                                                                []string
+	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version                     bool
 }
 
 func parse(args []string, errOut io.Writer) (options, []string, error) {
@@ -46,10 +48,21 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.StringVar(&o.room, "room", "", "Filter event room")
 	f.StringVar(&o.worker, "worker", "", "Stable worker name")
 	f.StringVar(&o.wait, "wait", "0", "Wait for work or results, in seconds")
+	f.StringArrayVar(&o.attachments, "attachment", nil, "Attach a local file to a channel reply (repeatable; 4 MB total)")
 	f.StringVar(&o.dataFile, "data-file", "", "JSON result object")
 	f.BoolVar(&o.all, "all", false, "Include completed work")
 	f.BoolVarP(&o.help, "help", "h", false, "Show help")
 	f.BoolVar(&o.version, "version", false, "Show version")
+	f.StringVar(&o.feishuAppID, "app-id", "", "Authorize an existing Feishu/Lark app instead of creating one")
+	f.StringVar(&o.domain, "domain", "feishu", "Feishu or Lark")
+	f.BoolVar(&o.messagingOnly, "messaging-only", false, "Connect Feishu messaging without personal tools")
+	f.StringVar(&o.botTokenFile, "bot-token-file", "", "Read Telegram BotFather token from a private file")
+	f.StringVar(&o.apiKeyFile, "api-key-file", "", "Read mail API key from a private file")
+	f.StringVar(&o.mailService, "mail-service", "", "Operator-configured mail service ID")
+	f.StringVar(&o.inboxID, "inbox", "", "Mail inbox address")
+	f.StringVar(&o.ownerEmail, "owner-email", "", "Owner's mail sender address")
+	f.StringVar(&o.pairingCodeFile, "pairing-code-file", "", "Read Weixin pairing code from a private file")
+	f.BoolVar(&o.noWait, "no-wait", false, "Return the connection job for later polling")
 	if err := f.Parse(args); err != nil {
 		return o, nil, err
 	}
@@ -68,6 +81,13 @@ const help = `Agent Router — Go CLI
   register SERVER USERNAME       Register your owner account
   login @name:server             Log in (hidden password prompt)
   whoami | logout                Verify identity / revoke this device
+  connection-options | connection-check  List channel services / verify selected Agent
+  channels                       Show connected platforms
+  channel-connect PLATFORM       Connect feishu, weixin, telegram, grove-mail or matrix
+    --app-id cli_...              Recover an existing Feishu/Lark app through official consent
+  channel-jobs | channel-job ID   List / resume a connection and show terminal QR
+  channel-pair ID                 Enter Weixin pairing code (hidden prompt)
+  channel-auth ID [status|begin|complete]  Inspect / renew personal authorization
   agents                         List Agents owned by this account
   agent-create NAME              Create and select an Agent (no new password)
   agent-use NAME | agent-current  Select an owned Agent / show current selection
@@ -90,8 +110,8 @@ const help = `Agent Router — Go CLI
   inbox [--all]
   claim [WORK_ID] --worker NAME [--wait SECONDS]
   work WORK_OR_CLAIM_ID
-  progress CLAIM_ID TEXT | reply CLAIM_ID TEXT [--data-file FILE]
-  need-input CLAIM_ID TEXT | fail CLAIM_ID TEXT | cancelled CLAIM_ID
+  progress CLAIM_ID TEXT | reply CLAIM_ID TEXT [--data-file FILE] [--attachment FILE]
+  defer CLAIM_ID TEXT | need-input CLAIM_ID TEXT | fail CLAIM_ID TEXT | cancelled CLAIM_ID
   conversation-open ADDRESS
   history ROOM_ID [--from TOKEN] | read ROOM_ID [EVENT_ID] | leave ROOM_ID
   watch [--since CURSOR] [--room ROOM_ID]
@@ -107,6 +127,10 @@ Use --profile NAME for separate local identities (default: default).
 One account owns multiple Agents. Managed instances need only this Go CLI;
 Matrix credentials stay on the server. New instance credentials use --out FILE.
 Automation: --password-stdin or --password-file FILE; --registration-token-file FILE.
+Setup uses the saved owner account. Platforms are optional. QR flows wait by default;
+use --no-wait for scripts. Telegram uses --bot-token-file; mail uses --api-key-file,
+--mail-service, --inbox and --owner-email. Feishu includes personal authorization;
+--messaging-only connects messaging alone. Weixin supports --pairing-code-file.
 Secrets are never accepted as argument values. bind accepts --endpoint-token-file FILE.
 The Go CLI needs no Node runtime. The separate local connector service needs Node 24.
 connect finds agent-router-connector on PATH, or accepts --connector-runtime FILE.

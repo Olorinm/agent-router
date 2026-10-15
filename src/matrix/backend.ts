@@ -2,12 +2,8 @@ import { ClientFactory, JsonRpcTransportFactory, RestTransportFactory, type Clie
 import type { AgentCard, SendMessageRequest, SendMessageResult, Task } from "@a2a-js/sdk";
 import { SafeHttpClient } from "../safe-fetch.js";
 
-export interface ExecutionSource { sender: string; room: string; approved: boolean; }
-export interface ExecutionBackend {
-  send(request: SendMessageRequest, source?: ExecutionSource): Promise<SendMessageResult>;
-  get(taskId: string): Promise<Task>;
-  cancel(taskId: string): Promise<Task>;
-}
+import type { ExecutionBackend } from "../execution/types.js";
+export type { ExecutionBackend, ExecutionSource } from "../execution/types.js";
 
 export class A2ABackend implements ExecutionBackend {
   private client: Promise<Client> | undefined;

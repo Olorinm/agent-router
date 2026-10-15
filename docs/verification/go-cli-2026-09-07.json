@@ -3,7 +3,7 @@
   "codeCommit": "7fbbd31983b85f32379c29080e4832c7d8ee4244",
   "pr": "https://github.com/Olorinm/agent-router/pull/17",
   "syntheticDataOnly": true,
-  "region": "Johor",
+  "region": "redacted",
   "local": {
     "goTestsAndRace": "passed",
     "goVet": "passed",
@@ -183,5 +183,6 @@
         "at": "2026-09-07T12:11:44.864Z"
       }
     ]
-  }
+  },
+  "deployment_identifiers_redacted": true
 }

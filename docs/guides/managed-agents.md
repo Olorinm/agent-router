@@ -37,21 +37,21 @@ sh scripts/build-cli.sh
 在主人账号所在机器签发实例凭证：
 
 ```sh
-agent-router --profile owner agent-instance-create johor --out johor-instance.json
+agent-router --profile owner agent-instance-create server --out server-instance.json
 ```
 
 文件以 0600 权限创建，包含这个 Agent 下一个实例的 token；终端只显示文件位置和 ID。
 安全传到运行机器后，在该机器执行：
 
 ```sh
-agent-router --profile worker agent-attach johor-instance.json
+agent-router --profile worker agent-attach server-instance.json
 agent-router --profile worker connect
 agent-router --profile worker claim --worker codex --wait 30
 ```
 
 托管模式下 `connect` 检查远端连接后退出。Matrix 通信服务运行在节点服务器。
-模型仍由你选择的 harness 启动；可以让现有 Agent 调用 `claim`，或使用
-[Codex worker](../../examples/codex-worker/README.md) 自动启动并恢复 Codex 会话。
+通用原生 Agent 使用[环境与 Host 开通流程](https://github.com/Olorinm/mau/blob/main/docs/environments.zh-CN.md)。
+`claim` 协议保留给视频等专用任务消费者；不再提供独立 Codex exec worker。
 
 账号配置 `session.json` 与 Agent 选择／实例凭证 `agent.json` 分开保存，目录为
 `~/.config/agent-router/matrix/<profile>/`。实例配置中没有 Matrix 密码、access token 或 AS 总凭证。

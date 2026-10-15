@@ -10,7 +10,7 @@ import (
 	"github.com/Olorinm/agent-router/internal/cli"
 )
 
-var version = "0.6.0-dev"
+var version = "0.7.0-alpha.3"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

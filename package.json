@@ -1,13 +1,25 @@
 {
   "name": "@agent-router/server",
-  "version": "0.6.0",
+  "version": "0.7.0-alpha.3",
   "private": true,
   "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
-  "repository": { "type": "git", "url": "git+https://github.com/Olorinm/agent-router.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Olorinm/agent-router.git"
+  },
   "homepage": "https://github.com/Olorinm/agent-router#readme",
-  "bugs": { "url": "https://github.com/Olorinm/agent-router/issues" },
-  "keywords": ["agent-communication", "agent-to-agent", "matrix", "a2a", "cli", "federation"],
-  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/Olorinm/agent-router/issues"
+  },
+  "keywords": [
+    "agent-communication",
+    "agent-to-agent",
+    "matrix",
+    "a2a",
+    "cli",
+    "federation"
+  ],
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -16,7 +28,6 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:codex-worker": "node --test examples/codex-worker/worker-harness.mjs",
     "dev": "tsx watch src/matrix/index.ts",
     "start": "node dist/matrix/index.js",
     "matrix:connect": "node dist/matrix/index.js",
@@ -25,7 +36,11 @@
     "matrix:lab:check": "node scripts/matrix/lab-check.mjs",
     "cli": "./bin/agent-router",
     "build:cli": "sh scripts/build-cli.sh",
-    "build:sdk": "npm run build --prefix packages/sdk"
+    "build:sdk": "npm run build --prefix packages/sdk",
+    "agent:service": "node dist/matrix/service.js",
+    "weixin:login": "node dist/channels/weixin/login.js",
+    "feishu:setup": "node dist/services/feishu/setup.js",
+    "channels:check": "node dist/service/check-cli.js"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
@@ -34,7 +49,11 @@
     "ipaddr.js": "^2.5.0",
     "matrix-js-sdk": "^42.3.0",
     "undici": "^8.10.1",
-    "zod": "^4.5.4"
+    "zod": "^4.5.4",
+    "@larksuite/cli": "1.0.97",
+    "@larksuiteoapi/node-sdk": "1.74.0",
+    "grammy": "1.46.0",
+    "qrcode-terminal": "0.12.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
@@ -49,6 +68,7 @@
   "files": [
     "dist",
     "docs/guides/*.md",
+    "docs/architecture/communication-layer.md",
     "scripts/install.sh",
     "scripts/matrix",
     "README.md",
@@ -56,6 +76,20 @@
     "src",
     "examples/echo-agent/src",
     "examples/echo-agent/package.json",
-    "examples/echo-agent/tsconfig.json"
-  ]
+    "examples/echo-agent/tsconfig.json",
+    "scripts/update-weixin-transport.py",
+    "scripts/verify-agent-host.mjs",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "allowScripts": {
+    "@larksuite/cli@1.0.97": true
+  },
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  }
 }

@@ -108,4 +108,4 @@ Stop the connector with Ctrl-C or SIGTERM, and restart with the same profile. To
 
 For an existing gateway, set `CONNECTOR_URL` and a private `CONNECTOR_API_TOKEN_FILE` supplied by its operator. Do not select a local `--profile` or `MATRIX_PROFILE` in this mode. Use HTTPS across machines and the gateway for your intended agent identity. Messaging commands then use that gateway; registration/login still manage a local account profile. See the [CLI contract](cli-contract.md#configuration).
 
-Next: [send a request and receive its result](../../README.md#start-from-zero-alice-sends-bob-receives), [English Agent guide](agent-connect.en.md), [中文指南](agent-connect.md).
+Next: [send a request and receive its result](agent-connect.en.md#send-and-read-a-result), [English Agent guide](agent-connect.en.md), [中文指南](agent-connect.md).

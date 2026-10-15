@@ -555,3 +555,47 @@ func TestBackendRejectsPrivateAddressesAndCrossOriginCard(t *testing.T) {
 		t.Fatal("cross-origin card accepted")
 	}
 }
+
+func TestReplyAttachments(t *testing.T) {
+	isolated(t)
+	file := filepath.Join(t.TempDir(), "图.png")
+	if err := os.WriteFile(file, []byte{137, 80, 78, 71}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/api/work/claim-1/update" || r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatalf("wrong request: %s", r.URL.Path)
+		}
+		var body struct {
+			Text        string
+			Attachments []map[string]string
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Attachments) != 1 || body.Attachments[0]["filename"] != "图.png" || body.Attachments[0]["contentType"] != "image/png" || body.Attachments[0]["content"] != "iVBORw==" {
+			t.Fatalf("bad attachments: %#v", body)
+		}
+		jsonResponse(w, 200, map[string]bool{"ok": true})
+	}))
+	defer server.Close()
+	t.Setenv("CONNECTOR_URL", server.URL)
+	t.Setenv("CONNECTOR_API_TOKEN", "test-token")
+	if _, _, err := run(t, "reply", "claim-1", "Attached", "--attachment", file); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, "progress", "claim-1", "oops", "--attachment", file); err == nil {
+		t.Fatal("attachments accepted for progress")
+	}
+	if err := os.WriteFile(file, make([]byte, 4_000_001), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, "reply", "claim-1", "large", "--attachment", file); err == nil {
+		t.Fatal("oversized attachment accepted")
+	}
+	if calls != 1 {
+		t.Fatalf("invalid attachment reached server: %d", calls)
+	}
+}
