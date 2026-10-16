@@ -420,6 +420,10 @@ describe("public run observation", () => {
     expect(h.host.resolved).toEqual([{ id: "run-1", callId: "approval", result: { decision: "accept" } }]);
     await expect(observation().resolve(claim, "foreign-call", {})).rejects.toThrow("interaction_not_found");
     await observation().cancel(task.id); expect(h.work.inspect(task.id).cancelRequested).toBe(true);
+    await h.core.dispatch(); await h.core.flush();
+    const cancellation = h.matrix.sent.find((item) => item.text.includes("Cancellation requested"))!;
+    expect(cancellation).toBeDefined();
+    expect(observation().tasks().data[0]!.replyMessageIds).toContain(`accepted-${cancellation.key}`);
     await h.worker().tick(); expect((await observation().run(claim)).run.status).toBe("cancelled");
   });
   it("rejects mismatched Host scope and paginates tasks without exposing another target", async () => {

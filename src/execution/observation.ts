@@ -63,7 +63,7 @@ export class RunObservation {
         runs: bindings.filter((binding) => binding.taskId === input.taskId).map((binding) => this.reference(binding)),
         replyMessageIds: [...new Set([
           ...(this.store.get<string[]>("communication_progress_messages", input.taskId!) ?? []),
-          ...outbox.filter((item) => item.taskId === input.taskId && item.final && item.externalId).flatMap((item) => item.externalId!.split(",")),
+          ...outbox.filter((item) => item.taskId === input.taskId && !item.activity && item.externalId).flatMap((item) => item.externalId!.split(",")),
         ])],
         interactionMessageIds: outbox.filter((item) => item.externalId && questions.some((q) => q.taskId === input.taskId && q.noticeId === item.id))
           .flatMap((item) => item.externalId!.split(",")) };
