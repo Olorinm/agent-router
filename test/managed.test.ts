@@ -211,3 +211,17 @@ it("replays unacknowledged AS batches after a store restart and excludes unrelat
   expect(store.entries("as_queue:a")).toHaveLength(1);
   expect(inbox.next("a", batch.next_batch)).toBeUndefined(); store.close();
 });
+
+it("protects run observation and interaction routes with Agent ownership before accessing Host state", async () => {
+  const { service, api } = await setup(); const agent = await service.create(owner, "observed");
+  const instance = service.issue(agent.id, "worker");
+  const root = `/_agent-router/v1/agents/${agent.id}/communication`;
+  for (const [path, method, body] of [["/tasks", "GET", undefined], ["/runs/claim", "GET", undefined],
+    ["/runs/claim/events?after=0", "GET", undefined], ["/runs/claim/calls/call/result", "POST", { result: {} }],
+    ["/tasks/task/cancel", "POST", {}]] as const) {
+    expect((await api(root + path, "bob", method, body)).status).toBe(404);
+    expect((await api(root + path, instance.token, method, body)).status).toBe(401);
+  }
+  expect((await api(root + "/runs/claim/events?after=-1")).status).toBe(400);
+  expect((await api(root + "/tasks?limit=100000")).status).toBe(400);
+});

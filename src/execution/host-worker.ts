@@ -12,7 +12,7 @@ interface ToolReceipt { hash: string; phase: "executing" | "completed" | "uncert
 
 export interface ExecutionSession { sessionId: string; runtimeId: string; tools?: false; }
 
-interface RunBinding {
+export interface RunBinding {
   claimId: string; taskId: string; contextId: string; sessionId: string; input: string;
   phase: "submitting" | "running" | "finished" | "unknown"; runId?: string; error?: string;
 }
