@@ -313,6 +313,29 @@ describe("direct Agent Host execution bridge", () => {
     await worker.reconcile(claim, "run-1"); await worker.tick(); await h.core.dispatch();
     expect(h.host.starts).toHaveLength(1); expect((await h.work.get(worker.status().runs[0]!.taskId)).status!.state).toBe(TaskState.TASK_STATE_COMPLETED);
   });
+  it("keeps an uncertain conversation blocked while other conversations can reply and reconciliation remains possible", async () => {
+    const h = harness(); await h.core.start();
+    h.host.error = new Error("response_lost");
+    h.core.receive("feishu", message("uncertain", "owner-feishu", { scope: "group", groupId: "group" })); await h.core.dispatch();
+    await h.worker().tick();
+    const worker = h.worker(); // The same isolation must survive worker restart.
+    const original = worker.status().runs[0]!;
+    h.host.error = undefined;
+    h.core.receive("feishu", message("same-conversation", "owner-feishu", { scope: "group", groupId: "group" }));
+    h.core.receive("matrix", message("web-chat", "owner-matrix", { threadId: "web-room" }));
+    await h.core.dispatch(); await worker.tick(); await h.core.dispatch(); await h.core.flush();
+    expect(h.host.starts).toHaveLength(2);
+    expect(h.host.starts[1]!.input).toContain("input-web-chat");
+    expect(h.matrix.sent.some(item => item.text === h.host.answer)).toBe(true);
+    expect(worker.status().runs.find(run => run.claimId === original.claimId)?.phase).toBe("unknown");
+    await worker.tick(); expect(h.host.starts).toHaveLength(2);
+    await worker.reconcile(original.claimId, "run-1");
+    await worker.tick(); await h.core.dispatch(); await worker.tick(); await h.core.dispatch();
+    expect(h.host.starts).toHaveLength(3);
+    expect(h.host.starts[2]!.input).toContain("input-same-conversation");
+    expect(h.host.starts[2]!.sessionId).toBe(h.host.starts[0]!.sessionId);
+    expect(h.host.starts.filter(input => input.input.includes("input-uncertain"))).toHaveLength(1);
+  });
   it("never replays a submission interrupted before its run ID was persisted", async () => {
     const h = harness(); h.core.receive("feishu", message("one")); await h.core.dispatch(); const claim = h.work.claim("instance", undefined, true)!;
     h.store.set("communication_runs", claim.claimId!, { claimId: claim.claimId, taskId: claim.id, contextId: claim.contextId,
