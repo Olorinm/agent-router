@@ -44,3 +44,5 @@ export { ServiceHttp } from "./channels/http.js";
 export { checkChannels } from "./service/check.js";
 export { externalIdentityConfigSchema } from "./matrix/external-identity.js";
 export { loadServiceConfig } from "./service/config.js";
+
+export { RunObservation, type CommunicationTask, type RunReference, type TaskFilter } from "./execution/observation.js";

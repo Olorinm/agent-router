@@ -307,7 +307,8 @@ export class CommunicationCore {
     const input = this.input(taskId); if (!input || !text) return;
     const connection = this.connection(input.connectionId);
     if (!connection.connected || !connection.adapter.progress || !this.capabilities(taskId)?.stream) return;
-    await connection.adapter.progress(input.replyRoute, text, taskId, false);
+    const receipt = await connection.adapter.progress(input.replyRoute, text, taskId, false);
+    this.store.set("communication_progress_messages", taskId, receipt.externalId.split(","));
     this.store.set("communication_streams", taskId, true);
   }
   capabilities(taskId: string) { const input = this.input(taskId); if (!input) return undefined;

@@ -21,6 +21,7 @@ export interface ManagedAgent {
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
 export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string; }
 export interface ServiceExtension {
+  observation?: import("../execution/observation.js").RunObservation;
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
   resolve(callId: string, result: unknown): Promise<void>;
   reconcile(claimId: string, runId: string): Promise<void>;
@@ -301,6 +302,34 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     return runtime.extension;
   };
   app.get(`${root}/agents/:agentId/communication`, async (req, res) => res.json((await extension(req.params.agentId)).status()));
+  const observation = async (agentId: string) => {
+    const value = (await extension(agentId)).observation;
+    if (!value) throw new WorkError("host_observation_unavailable", 409);
+    return value;
+  };
+  const communication = `${root}/agents/:agentId/communication`;
+  app.get(`${communication}/tasks`, async (req, res) => {
+    const filter = z.object({ connectionId: z.string().min(1).max(64).optional(), target: z.string().min(1).max(1024).optional(),
+      conversationId: z.string().min(1).max(160).optional(), before: z.string().min(1).max(160).optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(50) }).strict().parse(req.query);
+    res.json((await observation(req.params.agentId)).tasks(filter));
+  });
+  app.get(`${communication}/runs/:claimId`, async (req, res) => res.json(await (await observation(req.params.agentId)).run(req.params.claimId)));
+  app.get(`${communication}/runs/:claimId/events`, async (req, res) => {
+    const { after, limit } = z.object({ after: z.coerce.number().int().min(0).default(0),
+      limit: z.coerce.number().int().min(1).max(1000).default(200) }).strict().parse(req.query);
+    res.json(await (await observation(req.params.agentId)).events(req.params.claimId, after, limit));
+  });
+  app.post(`${communication}/runs/:claimId/calls/:callId/result`, async (req, res) => {
+    const body = z.object({ result: z.json() }).strict().parse(req.body);
+    await (await observation(req.params.agentId)).resolve(req.params.claimId, req.params.callId, body.result);
+    res.json({ status: "accepted" });
+  });
+  app.post(`${communication}/tasks/:taskId/cancel`, async (req, res) => {
+    z.object({}).strict().parse(req.body);
+    await (await observation(req.params.agentId)).cancel(req.params.taskId);
+    res.json({ status: "accepted" });
+  });
   const authorization = async (id: string, connectionId: string, action: "status" | "begin" | "complete") => {
     const runtime = await extension(id);
     if (!runtime.authorization) throw new WorkError("personal_authorization_not_configured", 404);

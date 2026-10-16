@@ -395,3 +395,45 @@ describe("direct Agent Host execution bridge", () => {
     expect(h.host.starts).toHaveLength(1);
   });
 });
+
+describe("public run observation", () => {
+  it("preserves native events, cursor gaps, calls and routing identity across observer recreation", async () => {
+    const { RunObservation } = await import("../src/execution/observation.js");
+    const h = harness(); await h.core.start(); h.host.defaultStatus = "running";
+    h.core.receive("matrix", message("matrix-message", "owner-matrix", { reply: { target: "room", messageId: "matrix-message", data: { privateToken: "not-public" } } }));
+    await h.core.dispatch(); await h.worker().tick();
+    const observation = () => new RunObservation(h.store, h.work, h.host);
+    const task = observation().tasks({ connectionId: "matrix", target: "room" }).data[0]!;
+    expect(task.source).toEqual({ connectionId: "matrix", target: "room", messageId: "matrix-message", sender: "owner-matrix", scope: "direct" });
+    expect(JSON.stringify(task)).not.toContain("not-public");
+    expect(observation().tasks({ target: "another-room" }).data).toEqual([]);
+    const claim = task.runs[0]!.claimId;
+    const native = { type: "native.tool", runId: "run-1", phase: "finished", callId: "command-1", native: { command: "pwd", aggregatedOutput: "/workspace", exitCode: 0 } };
+    (h.host as HostPort).events = async (_id, after, limit) => {
+      expect(after).toBe(4); expect(limit).toBe(1);
+      return { events: [{ sequence: 10, event: native }], cursor: 10, hasMore: true, historyTruncated: true };
+    };
+    expect(await observation().events(claim, 4, 1)).toEqual({ events: [{ sequence: 10, event: native }], cursor: 10, hasMore: true, historyTruncated: true });
+    h.host.pending = [{ id: "approval", runId: "run-1", kind: "interaction", name: "item/commandExecution/requestApproval", input: { command: "pwd" }, status: "pending", deadlineAt: new Date(Date.now() + 60000).toISOString() }];
+    expect((await observation().run(claim)).calls).toEqual(h.host.pending);
+    await observation().resolve(claim, "approval", { decision: "accept" });
+    expect(h.host.resolved).toEqual([{ id: "run-1", callId: "approval", result: { decision: "accept" } }]);
+    await expect(observation().resolve(claim, "foreign-call", {})).rejects.toThrow("interaction_not_found");
+    await observation().cancel(task.id); expect(h.work.inspect(task.id).cancelRequested).toBe(true);
+    await h.worker().tick(); expect((await observation().run(claim)).run.status).toBe("cancelled");
+  });
+  it("rejects mismatched Host scope and paginates tasks without exposing another target", async () => {
+    const { RunObservation } = await import("../src/execution/observation.js");
+    const h = harness(); await h.core.start();
+    h.core.receive("matrix", message("one", "owner-matrix")); await complete(h);
+    h.core.receive("matrix", message("two", "owner-matrix")); await complete(h);
+    const observation = new RunObservation(h.store, h.work, h.host);
+    const first = observation.tasks({ limit: 1 }); expect(first.next).toBe(first.data[0]!.id);
+    const second = observation.tasks({ limit: 1, before: first.next! });
+    expect(second.data[0]!.source.messageId).toBe("one"); expect(second.next).toBeNull();
+    const claim = first.data[0]!.runs[0]!.claimId;
+    h.host.runs.get("run-2")!.sessionId = "other-session";
+    await expect(observation.run(claim)).rejects.toThrow("host_run_scope_mismatch");
+    await expect(observation.events("foreign-claim")).rejects.toThrow("run_not_found");
+  });
+});

@@ -158,3 +158,36 @@ in total. Files and completion receipts commit atomically. Task views contain fi
 metadata; the delivery ledger retains the bytes and idempotency key for retries.
 Attachment updates accept up to 6 MB of JSON after authentication. Other request
 limits remain unchanged. Files are retained with task and delivery records.
+
+## Observe execution from another client
+
+The authenticated Agent owner can observe tasks without becoming another channel
+consumer or receiving a Host credential. All paths below start with
+`/_agent-router/v1/agents/:agentId/communication`:
+
+| Method and path | Contract |
+| --- | --- |
+| `GET /tasks` | Task state, cancellation request, channel/message origin, run bindings and delivered reply IDs. Filter by `connectionId`, `target` or `conversationId`; use `limit` (1–100) and the returned `next` as `before` for older tasks. |
+| `GET /runs/:claimId` | Bound Host run and its calls, including original inputs, results, status and deadline. |
+| `GET /runs/:claimId/events?after=0&limit=200` | Host events with unchanged sequence numbers and payloads. Pass the returned `cursor` on the next request. Drain `hasMore`; explicitly surface `historyTruncated`. |
+| `POST /runs/:claimId/calls/:callId/result` | `{ "result": <native response> }`. Resolve an interaction in that exact run; the Host decides expiry, repeated results and conflicts. |
+| `POST /tasks/:taskId/cancel` | `{}`. Request cancellation through the durable work queue; observe the run for acknowledgment. |
+
+`claimId` identifies a particular execution attempt, `taskId` the routed task,
+`conversationId` the Router conversation, and `runId`/`sessionId` the Host objects.
+Owner private conversations can span channels, so use the immutable source
+`connectionId`/`target`/`messageId` when attaching a run to a channel timeline.
+`replyMessageIds` identifies generated answer updates; `interactionMessageIds`
+identifies textual interaction fallbacks. Other Agent messages remain independent.
+
+These routes require the Agent owner's account token. Worker credentials and other
+accounts cannot observe or answer them. They validate the run/session binding and
+do not expose provider reply-route credentials. They neither wake a sleeping
+execution environment nor replay a run. Unavailable environments return an error;
+Host remains the authority for retained event history and native decisions.
+
+The same primitives are available to trusted embedders through the exported
+`RunObservation`, `CommunicationTask`, `RunReference` and `TaskFilter` types. A product
+supplies its own authorization boundary when using embedded objects. A client can
+reuse `@olorinm/agent-host/interactions` to describe and answer a native request and
+`@olorinm/agent-ui/agent-host` to display it; Router does not prescribe a UI.
