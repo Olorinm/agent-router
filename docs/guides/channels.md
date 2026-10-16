@@ -177,7 +177,7 @@ consumer or receiving a Host credential. All paths below start with
 `conversationId` the Router conversation, and `runId`/`sessionId` the Host objects.
 Owner private conversations can span channels, so use the immutable source
 `connectionId`/`target`/`messageId` when attaching a run to a channel timeline.
-`replyMessageIds` identifies generated answer updates; `interactionMessageIds`
+`replyMessageIds` identifies delivered task messages, including answer updates and status notices; `interactionMessageIds`
 identifies textual interaction fallbacks. Other Agent messages remain independent.
 
 These routes require the Agent owner's account token. Worker credentials and other
