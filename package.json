@@ -1,6 +1,6 @@
 {
   "name": "@agent-router/server",
-  "version": "0.7.0-alpha.5",
+  "version": "0.7.0-alpha.6",
   "private": true,
   "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
   "repository": {
