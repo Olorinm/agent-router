@@ -143,11 +143,16 @@ export class ConnectionConfiguration {
           throw new WorkError("telegram_bot_already_connected", 409);
       }
   }
+  /** Explicitly start fresh execution sessions while preserving channel identities and history. */
+  replaceHost(owner: string, agentId: string, host: NonNullable<AgentChannelConfig["host"]>) {
+    return this.edit(owner, agentId, config => { config.host = host; }, undefined, true);
+  }
   async edit(
     owner: string,
     agentId: string,
     update: (config: AgentChannelConfig) => void,
     signal?: AbortSignal,
+    resetExecution = false,
   ) {
     const operation = this.queue
       .catch(() => {})
@@ -166,6 +171,8 @@ export class ConnectionConfiguration {
           structuredClone(prior ?? { agentId, connections: [] }),
         );
         update(config);
+        if (resetExecution && JSON.stringify(prior?.host) === JSON.stringify(config.host))
+          throw new WorkError("host_replacement_requires_new_binding", 409);
         agentChannelConfigSchema.parse(config);
         // Validate all accounts together before replacing a connection. Never start two consumers for one account.
         const all = this.service
@@ -188,7 +195,17 @@ export class ConnectionConfiguration {
           );
         let hasRuns =
           runtime.connector.store.entries("communication_runs").length > 0;
+        const executionCollections = ["communication_host", "execution_sessions", "communication_runs",
+          "communication_run_events", "communication_questions", "communication_actions",
+          "communication_control_receipts", "communication_tools"];
+        let savedExecution: Array<{ collection: string; rows: Array<{ id: string; value: unknown }> }> | undefined;
         const restore = () => {
+          if (savedExecution) runtime.connector.store.transaction(() => {
+            for (const { collection, rows } of savedExecution!) {
+              for (const { id } of runtime.connector.store.entries(collection)) runtime.connector.store.delete(collection, id);
+              for (const { id, value } of rows) runtime.connector.store.set(collection, id, value);
+            }
+          });
           if (!hasRuns) {
             if (priorScope)
               runtime.connector.store.set(
@@ -213,8 +230,11 @@ export class ConnectionConfiguration {
               signal?.throwIfAborted();
               hasRuns =
                 connector.store.entries("communication_runs").length > 0;
-              if (!hasRuns)
-                connector.store.delete("communication_host", "scope");
+              if (resetExecution) connector.store.transaction(() => {
+                savedExecution = executionCollections.map(collection => ({ collection, rows: connector.store.entries(collection) }));
+                for (const { collection, rows } of savedExecution) for (const { id } of rows) connector.store.delete(collection, id);
+              });
+              else if (!hasRuns) connector.store.delete("communication_host", "scope");
               this.pending.set(agentId, config);
               return this.runtime(agent, connector, config);
             },

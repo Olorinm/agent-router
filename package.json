@@ -1,6 +1,6 @@
 {
   "name": "@agent-router/server",
-  "version": "0.7.0-alpha.3",
+  "version": "0.7.0-alpha.6",
   "private": true,
   "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
   "repository": {
@@ -40,7 +40,8 @@
     "agent:service": "node dist/matrix/service.js",
     "weixin:login": "node dist/channels/weixin/login.js",
     "feishu:setup": "node dist/services/feishu/setup.js",
-    "channels:check": "node dist/service/check-cli.js"
+    "channels:check": "node dist/service/check-cli.js",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",

@@ -12,7 +12,7 @@ interface ToolReceipt { hash: string; phase: "executing" | "completed" | "uncert
 
 export interface ExecutionSession { sessionId: string; runtimeId: string; tools?: false; }
 
-interface RunBinding {
+export interface RunBinding {
   claimId: string; taskId: string; contextId: string; sessionId: string; input: string;
   phase: "submitting" | "running" | "finished" | "unknown"; runId?: string; error?: string;
 }
@@ -38,15 +38,22 @@ export class HostWorker {
     if (this.busy) return;
     this.busy = true;
     try {
+      // Preserve uncertain claims for owner reconciliation without blocking unrelated conversations.
+      const uncertain = this.store.entries<RunBinding>("communication_runs").map(({ value }) => value)
+        .filter((binding) => binding.phase === "unknown");
+      const blockedContexts = new Set(uncertain.map((binding) => binding.contextId));
       try { this.validate(); }
       catch (error) {
         // Only deliverable work may wake an unavailable Host; idle ticks never do.
-        if (this.wake && this.work.claimable(this.instanceId, true, true)) this.wake();
+        if (this.wake && this.work.claimable(this.instanceId, true, true, blockedContexts)) this.wake();
         throw error;
       }
       if (!this.connected) { await this.host.connect(); this.connected = true; }
-      const claim = this.work.claim(this.instanceId, undefined, true, true);
-      if (!claim?.claimId) return;
+      const claim = this.work.claim(this.instanceId, undefined, true, true, blockedContexts);
+      if (!claim?.claimId) {
+        if (uncertain.length) this.lastError = uncertain[0]!.error ?? "host_submission_unknown";
+        return;
+      }
       let binding = this.store.get<RunBinding>("communication_runs", claim.claimId);
       if (!binding) {
         if (claim.cancelRequested) { this.work.update(claim.claimId, "cancelled", "已取消。", undefined, this.instanceId); return; }

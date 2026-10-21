@@ -313,6 +313,29 @@ describe("direct Agent Host execution bridge", () => {
     await worker.reconcile(claim, "run-1"); await worker.tick(); await h.core.dispatch();
     expect(h.host.starts).toHaveLength(1); expect((await h.work.get(worker.status().runs[0]!.taskId)).status!.state).toBe(TaskState.TASK_STATE_COMPLETED);
   });
+  it("keeps an uncertain conversation blocked while other conversations can reply and reconciliation remains possible", async () => {
+    const h = harness(); await h.core.start();
+    h.host.error = new Error("response_lost");
+    h.core.receive("feishu", message("uncertain", "owner-feishu", { scope: "group", groupId: "group" })); await h.core.dispatch();
+    await h.worker().tick();
+    const worker = h.worker(); // The same isolation must survive worker restart.
+    const original = worker.status().runs[0]!;
+    h.host.error = undefined;
+    h.core.receive("feishu", message("same-conversation", "owner-feishu", { scope: "group", groupId: "group" }));
+    h.core.receive("matrix", message("web-chat", "owner-matrix", { threadId: "web-room" }));
+    await h.core.dispatch(); await worker.tick(); await h.core.dispatch(); await h.core.flush();
+    expect(h.host.starts).toHaveLength(2);
+    expect(h.host.starts[1]!.input).toContain("input-web-chat");
+    expect(h.matrix.sent.some(item => item.text === h.host.answer)).toBe(true);
+    expect(worker.status().runs.find(run => run.claimId === original.claimId)?.phase).toBe("unknown");
+    await worker.tick(); expect(h.host.starts).toHaveLength(2);
+    await worker.reconcile(original.claimId, "run-1");
+    await worker.tick(); await h.core.dispatch(); await worker.tick(); await h.core.dispatch();
+    expect(h.host.starts).toHaveLength(3);
+    expect(h.host.starts[2]!.input).toContain("input-same-conversation");
+    expect(h.host.starts[2]!.sessionId).toBe(h.host.starts[0]!.sessionId);
+    expect(h.host.starts.filter(input => input.input.includes("input-uncertain"))).toHaveLength(1);
+  });
   it("never replays a submission interrupted before its run ID was persisted", async () => {
     const h = harness(); h.core.receive("feishu", message("one")); await h.core.dispatch(); const claim = h.work.claim("instance", undefined, true)!;
     h.store.set("communication_runs", claim.claimId!, { claimId: claim.claimId, taskId: claim.id, contextId: claim.contextId,
@@ -370,5 +393,51 @@ describe("direct Agent Host execution bridge", () => {
     await worker.tick(); const run = worker.status().runs[0]!; await h.work.cancel(run.taskId); revoked = true; await worker.tick();
     expect(h.host.runs.get("run-1")!.status).toBe("cancelled"); expect((await h.work.get(run.taskId)).status!.state).toBe(TaskState.TASK_STATE_CANCELED);
     expect(h.host.starts).toHaveLength(1);
+  });
+});
+
+describe("public run observation", () => {
+  it("preserves native events, cursor gaps, calls and routing identity across observer recreation", async () => {
+    const { RunObservation } = await import("../src/execution/observation.js");
+    const h = harness(); await h.core.start(); h.host.defaultStatus = "running";
+    h.core.receive("matrix", message("matrix-message", "owner-matrix", { reply: { target: "room", messageId: "matrix-message", data: { privateToken: "not-public" } } }));
+    await h.core.dispatch(); await h.worker().tick();
+    const observation = () => new RunObservation(h.store, h.work, h.host);
+    const task = observation().tasks({ connectionId: "matrix", target: "room" }).data[0]!;
+    expect(task.source).toEqual({ connectionId: "matrix", target: "room", messageId: "matrix-message", sender: "owner-matrix", scope: "direct" });
+    expect(JSON.stringify(task)).not.toContain("not-public");
+    expect(observation().tasks({ target: "another-room" }).data).toEqual([]);
+    const claim = task.runs[0]!.claimId;
+    const native = { type: "native.tool", runId: "run-1", phase: "finished", callId: "command-1", native: { command: "pwd", aggregatedOutput: "/workspace", exitCode: 0 } };
+    (h.host as HostPort).events = async (_id, after, limit) => {
+      expect(after).toBe(4); expect(limit).toBe(1);
+      return { events: [{ sequence: 10, event: native }], cursor: 10, hasMore: true, historyTruncated: true };
+    };
+    expect(await observation().events(claim, 4, 1)).toEqual({ events: [{ sequence: 10, event: native }], cursor: 10, hasMore: true, historyTruncated: true });
+    h.host.pending = [{ id: "approval", runId: "run-1", kind: "interaction", name: "item/commandExecution/requestApproval", input: { command: "pwd" }, status: "pending", deadlineAt: new Date(Date.now() + 60000).toISOString() }];
+    expect((await observation().run(claim)).calls).toEqual(h.host.pending);
+    await observation().resolve(claim, "approval", { decision: "accept" });
+    expect(h.host.resolved).toEqual([{ id: "run-1", callId: "approval", result: { decision: "accept" } }]);
+    await expect(observation().resolve(claim, "foreign-call", {})).rejects.toThrow("interaction_not_found");
+    await observation().cancel(task.id); expect(h.work.inspect(task.id).cancelRequested).toBe(true);
+    await h.core.dispatch(); await h.core.flush();
+    const cancellation = h.matrix.sent.find((item) => item.text.includes("Cancellation requested"))!;
+    expect(cancellation).toBeDefined();
+    expect(observation().tasks().data[0]!.replyMessageIds).toContain(`accepted-${cancellation.key}`);
+    await h.worker().tick(); expect((await observation().run(claim)).run.status).toBe("cancelled");
+  });
+  it("rejects mismatched Host scope and paginates tasks without exposing another target", async () => {
+    const { RunObservation } = await import("../src/execution/observation.js");
+    const h = harness(); await h.core.start();
+    h.core.receive("matrix", message("one", "owner-matrix")); await complete(h);
+    h.core.receive("matrix", message("two", "owner-matrix")); await complete(h);
+    const observation = new RunObservation(h.store, h.work, h.host);
+    const first = observation.tasks({ limit: 1 }); expect(first.next).toBe(first.data[0]!.id);
+    const second = observation.tasks({ limit: 1, before: first.next! });
+    expect(second.data[0]!.source.messageId).toBe("one"); expect(second.next).toBeNull();
+    const claim = first.data[0]!.runs[0]!.claimId;
+    h.host.runs.get("run-2")!.sessionId = "other-session";
+    await expect(observation.run(claim)).rejects.toThrow("host_run_scope_mismatch");
+    await expect(observation.events("foreign-claim")).rejects.toThrow("run_not_found");
   });
 });

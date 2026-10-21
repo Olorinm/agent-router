@@ -332,3 +332,44 @@ it.skipIf(!existsSync(cliBinary))("runs the standalone Go CLI against Router set
   expect(next.contextId).toBe(task.contextId);
   expect([...f.hostRuns.values()][1].sessionId).toBe([...f.hostRuns.values()][0].sessionId);
 }, 25000);
+
+it("explicit Host replacement resets native execution only and refuses another owner or an unresolved run", async () => {
+  const f = await fixture(), agent = await f.service.create(alice, "replace-test");
+  await f.host(agent);
+  await f.client("alice").api(`/agents/${agent.id}/connections`, { kind: "matrix" });
+  const old = structuredClone(f.settings.configuration(agent)!);
+  const store = (await f.service.runtime(agent.id)).connector.store;
+  const next = { ...old.host!, runtimeId: "other", instructions: "fresh environment" };
+  store.set("execution_sessions", "context", { sessionId: "old-native-session", runtimeId: "personal" });
+  store.set("communication_runs", "old", { phase: "unknown" });
+  store.set("communication_messages", "message", { text: "keep channels" });
+  await expect(f.settings.replaceHost(bob, agent.id, next)).rejects.toThrow();
+  await expect(f.settings.replaceHost(alice, agent.id, next)).rejects.toThrow("agent_has_active_or_unknown_run");
+  expect(store.get("execution_sessions", "context")).toBeDefined();
+  store.set("communication_runs", "old", { phase: "finished" });
+  await f.settings.replaceHost(alice, agent.id, next);
+  expect(store.entries("execution_sessions")).toEqual([]);
+  expect(store.entries("communication_runs")).toEqual([]);
+  expect(store.get("communication_messages", "message")).toEqual({ text: "keep channels" });
+  expect(f.settings.configuration(agent)!.connections).toEqual(old.connections);
+  expect(f.settings.configuration(agent)!.host).toEqual(next);
+  await expect(f.settings.replaceHost(alice, agent.id, next)).rejects.toThrow("host_replacement_requires_new_binding");
+});
+
+it("failed replacement restores execution sessions and the original channel configuration", async () => {
+  const f = await fixture(), agent = await f.service.create(alice, "replace-failure");
+  await f.host(agent);
+  const prior = structuredClone(f.settings.configuration(agent)!);
+  const store = (await f.service.runtime(agent.id)).connector.store;
+  store.set("execution_sessions", "context", { sessionId: "keep-native", runtimeId: "personal" });
+  store.set("communication_runs", "finished", { phase: "finished" });
+  const original = (f.settings as any).runtime.bind(f.settings);
+  vi.spyOn(f.settings as any, "runtime").mockImplementation((...args: any[]) => {
+    if (args[2]?.host?.runtimeId === "other") throw new Error("fixture_replacement_failed");
+    return original(...args);
+  });
+  await expect(f.settings.replaceHost(alice, agent.id, { ...prior.host!, runtimeId: "other" })).rejects.toThrow("fixture_replacement_failed");
+  expect(f.settings.configuration(agent)).toEqual(prior);
+  expect(store.get("execution_sessions", "context")).toEqual({ sessionId: "keep-native", runtimeId: "personal" });
+  expect(store.get("communication_runs", "finished")).toEqual({ phase: "finished" });
+});
