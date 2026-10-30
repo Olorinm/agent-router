@@ -36,13 +36,15 @@ export function createRouter(config: ServiceConfig, options: {
     },
   };
 }
-export { ManagedService, type ManagedAgent, type ServiceConfig, type ServiceDependencies } from "./matrix/managed.js";
+export { ManagedService, type ManagedAgent, type ServiceConfig, type ServiceDependencies, type ServiceExtension } from "./matrix/managed.js";
 export { ConnectionConfiguration, type HostBindingProvider } from "./connections/configuration.js";
 export { WorkError as RouterError } from "./matrix/cli-work.js";
-export { HttpAgentHost, type HostPort } from "./execution/host.js";
-export { ServiceHttp } from "./channels/http.js";
+export { HttpAgentHost, type HostPort, type HostStartInput, type HostAdmission, type NativeSessionInput, type HostRun, type HostCall } from "./execution/host.js";
+export { ServiceHttp, ChannelHttpError } from "./channels/http.js";
+export type { HostTool, HostToolResult, HostTools } from "./execution/tools.js";
 export { checkChannels } from "./service/check.js";
 export { externalIdentityConfigSchema } from "./matrix/external-identity.js";
 export { loadServiceConfig } from "./service/config.js";
 
 export { RunObservation, type CommunicationTask, type RunReference, type TaskFilter } from "./execution/observation.js";
+export { WorkSessions, type WorkSessionSubmission, type WorkEventResult, type WorkSessionWaitOptions, type WorkDependencyWait } from "./execution/sessions.js";

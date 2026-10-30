@@ -11,7 +11,7 @@ interface Receipt { workId: string; revision: number; worker: string; actions: R
 type Policy = "allow" | "ask" | "deny";
 export type WorkAction = "progress" | "defer" | "reply" | "need-input" | "fail" | "cancelled";
 export class WorkError extends Error {
-  constructor(message: string, readonly status = 409) { super(message); }
+  constructor(message: string, readonly status = 409, readonly nativeError?: unknown) { super(message); }
 }
 
 /** The default execution adapter is a durable CLI inbox, with no additional HTTP agent service. */
@@ -27,6 +27,10 @@ export class CliWork implements ExecutionBackend {
     return policy !== "deny" && (work.source.approved || policy === "allow");
   }
   async send(request: SendMessageRequest, source?: ExecutionSource): Promise<Task> {
+    return this.submit(request, source);
+  }
+  /** Synchronous embedding hook: attach trusted task context in the same transaction as admission. */
+  submit(request: SendMessageRequest, source?: ExecutionSource, admitted?: (task: Task) => void): Task {
     if (!source || !request.message) throw new WorkError("work_source_required");
     const message = structuredClone(request.message);
     return this.store.transaction(() => {
@@ -34,7 +38,9 @@ export class CliWork implements ExecutionBackend {
       const hash = digest({ request, source });
       if (prior) {
         if (prior.hash !== hash) throw new WorkError("work_message_id_reused");
-        return this.load(prior.id).task;
+        const task = this.load(prior.id).task;
+        admitted?.(task);
+        return task;
       }
       let work: Work;
       if (message.taskId) {
@@ -52,6 +58,7 @@ export class CliWork implements ExecutionBackend {
       this.fit(work.task);
       this.store.set("cli_work", work.task.id, work);
       this.store.set("cli_message_ids", message.messageId, { id: work.task.id, hash });
+      admitted?.(work.task);
       return work.task;
     });
   }

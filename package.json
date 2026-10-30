@@ -80,6 +80,8 @@
     "examples/echo-agent/tsconfig.json",
     "scripts/update-weixin-transport.py",
     "scripts/verify-agent-host.mjs",
+    "scripts/verify-native-sessions.mjs",
+    "scripts/fixtures/native-sessions-server.mjs",
     "THIRD_PARTY_NOTICES.md"
   ],
   "allowScripts": {

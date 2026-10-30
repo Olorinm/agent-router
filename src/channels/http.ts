@@ -1,5 +1,5 @@
 export class ChannelHttpError extends Error {
-  constructor(readonly status: number, readonly code: string) { super(code); }
+  constructor(readonly status: number, readonly code: string, readonly nativeError?: unknown) { super(code); }
 }
 
 /** Configured service endpoints only; credentials are never followed across redirects. */
@@ -21,7 +21,7 @@ export class ServiceHttp {
       const nested = value?.error && typeof value.error === "object" ? value.error as Record<string, unknown> : undefined;
       const code = typeof value?.error === "string" ? value.error : typeof value?.code === "string" ? value.code :
         typeof nested?.code === "string" ? nested.code : `http_${response.status}`;
-      throw new ChannelHttpError(response.status, code);
+      throw new ChannelHttpError(response.status, code, value?.nativeError);
     }
     if (!value) throw new Error("invalid_service_response");
     return value;

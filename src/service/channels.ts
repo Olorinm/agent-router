@@ -14,6 +14,7 @@ import { WeixinChannel } from "../channels/weixin/index.js";
 import { HttpAgentHost, type HostPort } from "../execution/host.js";
 import { RunObservation } from "../execution/observation.js";
 import { HostWorker } from "../execution/host-worker.js";
+import { WorkSessions } from "../execution/sessions.js";
 import type { ChannelAdapter } from "../communication/types.js";
 import { digest, key } from "../execution/protocol.js";
 import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js";
@@ -150,10 +151,15 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
             await host.writeFile!(binding.sessionId, path, item.data); return path;
           });
           return tools.execute(call);
-        } }, core, instance.wake);
+        } }, core, instance.wake, {
+          admission: (contextId, taskId) => core.isOwnerTask(contextId, taskId)
+            ? { kind: "owner", owner: agent.owner, agentId: agent.id, reference: taskId } : undefined,
+        });
     core.control = (input) => worker!.handleInput(input);
   }
   const observation = worker ? new RunObservation(connector.store, connector.cli, worker.host) : undefined;
+  const sessions = worker ? new WorkSessions(agent.id, agent.owner, config.host!.runtimeId, worker.instanceId,
+    connector.store, connector.cli, worker.host, core, () => connector.assertLease(), input => worker!.dependencyWait(input)) : undefined;
   const controller = new AbortController();
   let loops: Promise<void>[] = [];
   const loop = async (operation: () => Promise<void>, interval: number) => {
@@ -169,6 +175,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },
     status: () => ({ ...core.status(), host: worker?.status() ?? null }),
     ...(observation ? { observation } : {}),
+    ...(sessions ? { sessions } : {}),
     resolve: async (callId, result) => { if (!worker) throw new Error("host_not_configured"); await worker.resolve(callId, result); },
     reconcile: async (claimId, runId) => { if (!worker) throw new Error("host_not_configured"); await worker.reconcile(claimId, runId); },
     closeUnknown: async (claimId) => { if (!worker) throw new Error("host_not_configured"); await worker.closeUnknown(claimId); },

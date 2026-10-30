@@ -22,6 +22,7 @@ interface Instance { id: string; agentId: string; name: string; tokenHash: strin
 export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string; }
 export interface ServiceExtension {
   observation?: import("../execution/observation.js").RunObservation;
+  sessions?: import("../execution/sessions.js").WorkSessions;
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
   resolve(callId: string, result: unknown): Promise<void>;
   reconcile(claimId: string, runId: string): Promise<void>;
@@ -308,6 +309,43 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     return value;
   };
   const communication = `${root}/agents/:agentId/communication`;
+  const sessions = async (agentId: string) => {
+    const value = (await extension(agentId)).sessions;
+    if (!value) throw new WorkError("host_sessions_unavailable", 409);
+    return value;
+  };
+  app.get(`${communication}/sessions`, async (req, res) => res.json({ data: (await sessions(req.params.agentId)).list() }));
+  app.get(`${communication}/sessions/:sessionId`, async (req, res) => res.json((await sessions(req.params.agentId)).getSession(req.params.sessionId)));
+  app.post(`${communication}/sessions/:sessionId/native`, async (req, res) => {
+    const body = z.object({ action: z.enum(["read", "history", "items", "rename", "archive", "unarchive", "delete"]),
+      name: z.string().min(1).max(1000).optional(), limit: z.number().int().min(1).max(1000).optional(),
+      cursor: z.string().max(10000).optional(), turnId: z.string().max(160).optional(),
+      itemsView: z.enum(["notLoaded", "summary", "full"]).optional(), sortDirection: z.enum(["asc", "desc"]).optional(),
+    }).strict().parse(req.body);
+    res.json(await (await sessions(req.params.agentId)).native(req.params.sessionId, body));
+  });
+  app.post(`${communication}/sessions/:sessionId/fork`, async (req, res) => {
+    const body = z.object({ targetSessionId: z.string().min(1).max(160), entryId: z.string().max(160).optional(), beforeEntryId: z.string().max(160).optional() }).strict().parse(req.body);
+    const { targetSessionId, ...options } = body;
+    res.json(await (await sessions(req.params.agentId)).fork(req.params.sessionId, targetSessionId, options));
+  });
+  app.post(`${communication}/sessions/:sessionId/steer`, async (req, res) => {
+    const body = z.object({ input: z.string().min(1).max(24_000) }).strict().parse(req.body);
+    await (await sessions(req.params.agentId)).steer(req.params.sessionId, body.input); res.json({ status: "accepted" });
+  });
+  app.post(`${communication}/work-events`, async (req, res) => {
+    const body = z.object({ eventId: z.string().min(1).max(160), sessionId: z.string().min(1).max(160).optional(), input: z.string().max(24_000),
+      context: z.json().optional(), inputItems: z.array(z.record(z.string(), z.json())).max(100).optional(),
+      settings: z.record(z.string(), z.json()).optional(), mode: z.enum(["turn", "compact"]).optional(),
+    }).strict().parse(req.body);
+    res.status(202).json(await (await sessions(req.params.agentId)).submit({ ...body,
+      admission: { kind: "owner", owner: res.locals.owner, agentId: req.params.agentId, reference: body.eventId } }));
+  });
+  app.get(`${communication}/work-events/:eventId`, async (req, res) => res.json((await sessions(req.params.agentId)).get(req.params.eventId)));
+  app.post(`${communication}/work-events/:eventId/cancel`, async (req, res) => {
+    z.object({}).strict().parse(req.body);
+    res.json(await (await sessions(req.params.agentId)).cancel(req.params.eventId));
+  });
   app.get(`${communication}/tasks`, async (req, res) => {
     const filter = z.object({ connectionId: z.string().min(1).max(64).optional(), target: z.string().min(1).max(1024).optional(),
       conversationId: z.string().min(1).max(160).optional(), before: z.string().min(1).max(160).optional(),
@@ -382,7 +420,8 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
   app.use((_req, res) => res.status(404).json({ error: "not_found" }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof WorkError ? error.status : error instanceof z.ZodError ? 400 : 500)
-      .json({ error: error instanceof WorkError ? error.message : error instanceof z.ZodError ? "invalid_request" : "operation_failed" });
+      .json({ error: error instanceof WorkError ? error.message : error instanceof z.ZodError ? "invalid_request" : "operation_failed",
+        ...(error instanceof WorkError && error.nativeError !== undefined ? { nativeError: error.nativeError } : {}) });
   });
   return app;
 }
