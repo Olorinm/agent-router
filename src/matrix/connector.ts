@@ -150,7 +150,9 @@ export class MatrixConnector {
       for (const event of batch.account_data?.events ?? []) this.social?.account(event);
       for (const [room, invite] of Object.entries(batch.rooms?.invite ?? {})) {
         const event = invite.invite_state.events.find((e) => e.type === "m.room.member" && e.state_key === this.userId);
-        if (event && !this.social?.ignored(event.sender)) this.store.set("invites", room, { room, sender: event.sender });
+        if (event && !this.social?.ignored(event.sender)) this.store.set("invites", room, { room, sender: event.sender,
+          // Group invitations must not be recorded as the inviter's direct chat.
+          direct: event.content.is_direct === true });
       }
       for (const room of Object.keys(batch.rooms?.leave ?? {})) {
         this.store.delete("invites", room);
@@ -159,7 +161,9 @@ export class MatrixConnector {
       for (const item of prepared) {
         const members = [...new Set(item.state.filter((event) => event.type === "m.room.member" &&
           ["join", "invite"].includes(String(event.content.membership))).map((event) => event.state_key).filter(Boolean))];
-        this.store.set("rooms", item.room, { encrypted: item.encrypted, members });
+        // Rooms created as groups stay groups even with only the owner and one agent.
+        const group = item.state.some((event) => event.type === "ai.mau.room" && event.content.kind === "group");
+        this.store.set("rooms", item.room, { encrypted: item.encrypted, members, ...(group ? { group } : {}) });
         this.store.delete("invites", item.room);
         this.social?.room(item.room, item.state, item.events, batch.rooms?.join?.[item.room]);
         for (const event of item.events) this.ingest(item.room, event, item.encrypted, restoring);

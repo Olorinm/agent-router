@@ -86,7 +86,8 @@ export function loadWeixinCredentials(path: string) {
 }
 
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
-  directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort): Promise<ServiceExtension> {
+  directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort,
+  options: { ownedAgent?(matrixId: string): boolean } = {}): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   const accounts = new Map<string, FeishuAccount>(), personalTools = new Map<string, FeishuTools>();
@@ -94,7 +95,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     let adapter: ChannelAdapter;
     let ownerAddresses = definition.ownerAddresses;
     switch (definition.kind) {
-      case "matrix": adapter = new MatrixChannel(connector); if (!ownerAddresses.length) ownerAddresses = [agent.owner]; break;
+      case "matrix": adapter = new MatrixChannel(connector, { trusted: member => member === agent.owner || Boolean(options.ownedAgent?.(member)) });
+        if (!ownerAddresses.length) ownerAddresses = [agent.owner]; break;
       case "feishu": {
         if (definition.credentialsFile) {
           const loaded = loadFeishuCredentials(resolve(directory, definition.credentialsFile));
@@ -152,7 +154,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
           });
           return tools.execute(call);
         } }, core, instance.wake, {
-          admission: (contextId, taskId) => core.isOwnerTask(contextId, taskId)
+          // Private groups (owner plus the owner's agents) get the owner's grants; mixed groups do not.
+          admission: (contextId, taskId) => core.isOwnerTask(contextId, taskId) || core.isPrivateGroupOwnerTask(contextId, taskId)
             ? { kind: "owner", owner: agent.owner, agentId: agent.id, reference: taskId } : undefined,
         });
     core.control = (input) => worker!.handleInput(input);

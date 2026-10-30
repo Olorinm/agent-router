@@ -6,13 +6,17 @@ import { bindAccount, ChannelSendError, splitText, type ChannelAdapter, type Cha
 import { digest } from "../execution/protocol.js";
 import { mediaContent } from "../communication/media.js";
 
+// Room-wide mention words, as in OpenGrove rooms.
+const everyone = /(^|\s)@(all|everyone|所有人|全部)(?=\s|$|[,，。.!！?？:：])/i;
+
 export class MatrixChannel implements ChannelAdapter {
   readonly kind = "matrix";
   readonly retrySafe = true;
   readonly capabilities = { receive: ["text", "image", "file", "audio", "video", "location", "quote", "reaction", "edit", "redaction"], send: ["text", "image", "file", "audio", "video", "html"], stream: true, buttons: false, native: ["reaction", "edit", "redact", "typing"],
     nativeArguments: { reaction: "emoji, optional messageId", edit: "text, optional messageId", redact: "optional messageId", typing: "no args" } };
   private context!: ChannelContext;
-  constructor(readonly connector: MatrixConnector) {}
+  /** `trusted` identifies the owner and the owner's own agents, so a group of only them is private. */
+  constructor(readonly connector: MatrixConnector, private readonly options: { trusted?(userId: string): boolean } = {}) {}
   async start(context: ChannelContext): Promise<void> {
     this.context = context; bindAccount(context, this.connector.userId);
     if (!context.checkpoint("activation")) context.checkpoint("activation", Date.now());
@@ -23,17 +27,29 @@ export class MatrixChannel implements ChannelAdapter {
   private receive(room: string, event: RoomEvent): void {
     const timestamp = Number((event as RoomEvent & { origin_server_ts?: number }).origin_server_ts);
     if (!timestamp || timestamp < this.context.checkpoint<number>("activation")!) return;
-    const members = this.connector.store.get<{ members: string[] }>("rooms", room)?.members ?? [];
-    const direct = members.length === 2 && members.includes(event.sender) && members.includes(this.connector.userId);
+    const stored = this.connector.store.get<{ members: string[]; group?: boolean }>("rooms", room);
+    const members = stored?.members ?? [];
+    const direct = !stored?.group && members.length === 2 && members.includes(event.sender) && members.includes(this.connector.userId);
     const relation = event.content["m.relates_to"] as { rel_type?: string; event_id?: string; "m.in_reply_to"?: { event_id: string } } | undefined;
     const thread = relation?.rel_type === "m.thread" ? relation.event_id ?? "" : "";
+    const group = direct ? {} : { groupId: room, mentions: this.mentions(event), privateGroup: Boolean(this.options.trusted) &&
+      members.length > 0 && members.every(member => member === this.connector.userId || this.options.trusted!(member)) };
     this.context.receive({ externalId: event.event_id, sender: event.sender, threadId: thread ? `${room}:${thread}` : room, scope: direct ? "direct" : "group",
-      ...(direct ? {} : { groupId: room }),
+      ...group,
       attachments: typeof event.content.url === "string" ? [{ id: event.content.url, name: String(event.content.body ?? "attachment"), mediaType: String((event.content.info as any)?.mimetype ?? "application/octet-stream"), kind: event.content.msgtype === "m.image" ? "image" : event.content.msgtype === "m.audio" ? "audio" : event.content.msgtype === "m.video" ? "video" : "file" }] : [],
       ...(relation?.["m.in_reply_to"] ? { quoted: { messageId: relation["m.in_reply_to"].event_id } } : {}),
       ...(relation?.rel_type === "m.replace" ? { event: { type: "message-edit", data: event.content } } :
         event.type !== "m.room.message" ? { event: { type: event.type === "m.reaction" ? "reaction" : "message-redaction", data: { ...event.content, ...(event.redacts ? { redacts: event.redacts } : {}) } } } : {}),
       native: { content: event.content }, text: String(event.content.body ?? ""), reply: { target: room, messageId: event.event_id, data: { sender: event.sender, thread } } });
+  }
+  /** Matrix intentional mentions (`m.mentions`), with pill links and @all text as fallbacks. */
+  private mentions(event: RoomEvent) {
+    const content = event.content, declared = content["m.mentions"] as { user_ids?: unknown; room?: unknown } | undefined;
+    const self = this.connector.userId;
+    const ids = Array.isArray(declared?.user_ids) ? declared!.user_ids.filter((id): id is string => typeof id === "string") : [];
+    const html = typeof content.formatted_body === "string" ? content.formatted_body : "";
+    const pill = html.includes(`matrix.to/#/${self}`) || html.includes(`matrix.to/#/${encodeURIComponent(self)}`);
+    return { self: ids.includes(self) || pill, all: declared?.room === true || everyone.test(String(content.body ?? "")) };
   }
   async readAttachment(_message: ChannelMessage, attachment: AttachmentReference) {
     if (!this.connector.transport.media) throw new Error("matrix_media_transport_unavailable");

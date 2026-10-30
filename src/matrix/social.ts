@@ -146,11 +146,12 @@ export class MatrixSocial {
     });
   }
   async accept(room: string): Promise<void> {
-    const invite = this.host.store.get<{ sender: string }>("invites", room);
+    const invite = this.host.store.get<{ sender: string; direct?: boolean }>("invites", room);
     if (!invite) throw new Error("invite_not_found");
     if (this.ignored(invite.sender)) throw new Error("sender_blocked");
     await this.host.transport.join(room);
-    await this.direct(invite.sender, room);
+    // Invites recorded before the direct flag existed keep the previous behavior.
+    if (invite.direct !== false) await this.direct(invite.sender, room);
     this.host.store.delete("invites", room);
   }
   async leave(room: string): Promise<void> {
