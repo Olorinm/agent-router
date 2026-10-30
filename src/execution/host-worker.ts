@@ -1,4 +1,5 @@
 import { interaction } from "../communication/interaction.js";
+import { archiveRun } from "./run-archive.js";
 import type { CommunicationCore, InboxRecord } from "../communication/core.js";
 import { Message } from "@a2a-js/sdk";
 import { ChannelHttpError } from "../channels/http.js";
@@ -263,6 +264,7 @@ export class HostWorker {
       } else this.work.update(claim.claimId, "fail", result.outcome?.outcomeUnknown ? "执行中断，结果尚未确认。" : "本轮执行未完成，请查看运行状态。", undefined, this.instanceId);
       this.store.set("communication_runs", claim.claimId, { ...binding, phase: result.outcome?.outcomeUnknown ? "unknown" : "finished" });
       // Keep a compact copy while the Host is awake; history reads must not need to wake it.
+      if (!result.outcome?.outcomeUnknown) void archiveRun(this.store, this.host, claim.claimId, binding.runId).catch(() => {});
       this.lastError = "";
     } catch (error) { await this.recordFailure(error); }
   }
