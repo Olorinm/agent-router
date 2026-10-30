@@ -56,6 +56,6 @@ jobs:
       - name: Verify Linux release archive
         run: |
           mkdir -p "$RUNNER_TEMP/agent-router-cli"
-          tar -xzf state/release/agent-router_0.7.0-alpha.6_linux_amd64.tar.gz -C "$RUNNER_TEMP/agent-router-cli"
+          tar -xzf state/release/agent-router_0.7.0-alpha.7_linux_amd64.tar.gz -C "$RUNNER_TEMP/agent-router-cli"
           PATH=/nonexistent "$RUNNER_TEMP/agent-router-cli/agent-router" --version
           (cd state/release && shasum -a 256 -c SHA256SUMS)
