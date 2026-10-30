@@ -4,6 +4,7 @@ import type { DurableStore } from "../communication/store.js";
 import type { HostPort, HostRun } from "./host.js";
 import type { ExecutionSession, RunBinding } from "./host-worker.js";
 import { CliWork, WorkError } from "./work.js";
+import { archiveRun, archivedEvents, runArchive } from "./run-archive.js";
 
 export interface TaskFilter {
   connectionId?: string | undefined;
@@ -34,7 +35,8 @@ export interface CommunicationTask {
 }
 
 /** Owner-scoped observation of Router bindings through the Host's public protocol.
- * Host owns event history, sequence numbers and interaction decisions; no second event log.
+ * Host owns live event history, sequence numbers and interaction decisions. Finished runs
+ * are served from Router's compact archive so history stays readable while the Host sleeps.
  */
 export class RunObservation {
   constructor(readonly store: DurableStore, readonly work: CliWork, readonly host: HostPort) {}
@@ -95,14 +97,27 @@ export class RunObservation {
       throw new WorkError("host_run_scope_mismatch", 409);
     return run;
   }
+  /** A finished run's archive; created from the Host once, after the usual scope checks. */
+  private async archived(binding: RunBinding) {
+    if (binding.phase !== "finished" || !binding.runId) return undefined;
+    const saved = runArchive(this.store, binding.claimId);
+    if (saved?.runId === binding.runId) return saved;
+    try {
+      await this.scopedRun(binding);
+      return await archiveRun(this.store, this.host, binding.claimId, binding.runId);
+    } catch { return undefined; }
+  }
   async run(claimId: string) {
-    const binding = this.binding(claimId), run = await this.scopedRun(binding);
+    const binding = this.binding(claimId), archive = await this.archived(binding);
+    if (archive) return { ...this.reference(binding), run: archive.run, calls: archive.calls };
+    const run = await this.scopedRun(binding);
     const calls = await this.request(() => this.host.calls(run.id));
     if (calls.some((call) => call.runId !== run.id)) throw new WorkError("host_call_scope_mismatch", 409);
     return { ...this.reference(binding), run, calls };
   }
   async events(claimId: string, after = 0, limit = 200) {
-    const binding = this.binding(claimId);
+    const binding = this.binding(claimId), archive = await this.archived(binding);
+    if (archive) return archivedEvents(archive, after, limit);
     await this.scopedRun(binding);
     if (!this.host.events) throw new WorkError("host_events_unsupported", 409);
     const page = await this.request(() => this.host.events!(binding.runId!, after, limit));

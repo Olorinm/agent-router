@@ -15,6 +15,8 @@ const messageSchema = z.object({
   action: z.object({ token: z.string().max(128) }).strict().optional(),
   event: z.object({ type: z.string().max(100), data: z.record(z.string(), z.unknown()) }).strict().optional(),
   native: z.record(z.string(), z.unknown()).optional(),
+  mentions: z.object({ self: z.boolean(), all: z.boolean() }).strict().optional(),
+  privateGroup: z.boolean().optional(),
 }).strict();
 export interface ConnectionDefinition {
   id: string;
@@ -111,8 +113,10 @@ export class CommunicationCore {
       return existing;
     }
     const owner = definition.ownerAddresses.includes(source.sender);
+    // An owner addressing this agent (or everyone) in a group starts work without a group allowlist.
+    const addressed = source.scope === "group" && owner && Boolean(source.mentions?.self || source.mentions?.all);
     const allowed = source.scope === "direct" ? owner || Boolean(definition.peerAddresses?.includes(source.sender)) :
-      adapter.groupPolicy?.(source) === "open" ||
+      addressed || adapter.groupPolicy?.(source) === "open" ||
         Boolean(definition.groupIds?.includes(source.groupId ?? source.threadId)) && (owner || Boolean(definition.peerAddresses?.includes(source.sender)));
     const oversized = Buffer.byteLength(source.text) > 24_000;
     const conversationId = `c-${digest(key(this.agentId, source.scope === "direct" && owner ? "owner-main" :
@@ -232,6 +236,12 @@ export class CommunicationCore {
   isOwnerTask(conversationId: string, taskId: string): boolean {
     const input = this.store.entries<InboxRecord>("communication_inbox").find(({ value }) => value.taskId === taskId)?.value;
     return Boolean(input && input.conversationId === conversationId && input.source.scope === "direct" &&
+      this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
+  }
+  /** The owner's turn in a group of only the owner and the owner's agents, as reported at receipt. */
+  isPrivateGroupOwnerTask(conversationId: string, taskId: string): boolean {
+    const input = this.store.entries<InboxRecord>("communication_inbox").find(({ value }) => value.taskId === taskId)?.value;
+    return Boolean(input && input.conversationId === conversationId && input.source.scope === "group" && input.source.privateGroup === true &&
       this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
   }
   async flush(now = Date.now()): Promise<void> {

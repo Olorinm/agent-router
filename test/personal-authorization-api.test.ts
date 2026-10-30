@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ManagedService, createManagedApp, type ManagedAgent, type ServiceExtension } from "../src/matrix/managed.js";
 import { ApplicationInbox } from "../src/matrix/application-service.js";
 import type { MatrixTransport } from "../src/matrix/transport.js";
+import type { WorkSessions, WorkSessionSubmission } from "../src/execution/sessions.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -55,4 +56,28 @@ it("keeps personal authorization under the owner API and outside worker credenti
   expect((await api(path + "/complete", "alice", "POST", {})).status).toBe(200);
   expect((await api(path + "/invalid", "alice", "POST", {})).status).toBe(400);
   expect(calls).toEqual(["feishu:status", "feishu:begin", "feishu:complete"]);
+});
+
+it("keeps work submission and native sessions owner-scoped and authors user admission on the server", async () => {
+  const submissions: WorkSessionSubmission[] = [], native: unknown[] = [];
+  const extension: ServiceExtension = { start: async () => {}, stop: async () => {}, status: () => ({}),
+    resolve: async () => {}, reconcile: async () => {}, closeUnknown: async () => {},
+    sessions: { list: () => [], submit: async (input: WorkSessionSubmission) => { submissions.push(input); return { eventId: input.eventId }; },
+      native: async (sessionId: string, input: unknown) => { native.push({ sessionId, input }); return {}; } } as unknown as WorkSessions };
+  const { service, api } = await setup(extension), agent = await service.create(owner, "native"), worker = service.issue(agent.id, "worker");
+  const path = `${root}/agents/${agent.id}/communication`, input = { eventId: "one", input: "work" };
+  expect((await api(path + "/sessions", "bob")).status).toBe(404);
+  expect((await api(path + "/sessions", worker.token)).status).toBe(401);
+  expect((await api(path + "/work-events", "bob", "POST", input)).status).toBe(404);
+  expect((await api(path + "/work-events", worker.token, "POST", input)).status).toBe(401);
+  expect((await api(path + "/work-events", "alice", "POST", { ...input, admission: { kind: "schedule" } })).status).toBe(400);
+  expect(submissions).toHaveLength(0);
+  expect((await api(path + "/work-events", "alice", "POST", input)).status).toBe(202);
+  expect(submissions[0]?.admission).toEqual({ kind: "owner", owner, agentId: agent.id, reference: "one" });
+  expect((await api(path + "/sessions/one/native", "alice", "POST", { action: "list" })).status).toBe(400);
+  expect((await api(path + "/sessions/one/native", "alice", "POST", { action: "read", nativeSessionId: "another-owner" })).status).toBe(400);
+  expect(native).toHaveLength(0);
+  expect((await api(path + "/sessions/one/native", "alice", "POST", { action: "history", itemsView: "none" })).status).toBe(400);
+  expect((await api(path + "/sessions/one/native", "alice", "POST", { action: "history", itemsView: "notLoaded" })).status).toBe(200);
+  expect(native).toEqual([{ sessionId: "one", input: { action: "history", itemsView: "notLoaded" } }]);
 });

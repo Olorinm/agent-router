@@ -14,6 +14,7 @@ import { WeixinChannel } from "../channels/weixin/index.js";
 import { HttpAgentHost, type HostPort } from "../execution/host.js";
 import { RunObservation } from "../execution/observation.js";
 import { HostWorker } from "../execution/host-worker.js";
+import { WorkSessions } from "../execution/sessions.js";
 import type { ChannelAdapter } from "../communication/types.js";
 import { digest, key } from "../execution/protocol.js";
 import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js";
@@ -85,7 +86,8 @@ export function loadWeixinCredentials(path: string) {
 }
 
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
-  directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort): Promise<ServiceExtension> {
+  directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort,
+  options: { ownedAgent?(matrixId: string): boolean } = {}): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   const accounts = new Map<string, FeishuAccount>(), personalTools = new Map<string, FeishuTools>();
@@ -93,7 +95,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     let adapter: ChannelAdapter;
     let ownerAddresses = definition.ownerAddresses;
     switch (definition.kind) {
-      case "matrix": adapter = new MatrixChannel(connector); if (!ownerAddresses.length) ownerAddresses = [agent.owner]; break;
+      case "matrix": adapter = new MatrixChannel(connector, { trusted: member => member === agent.owner || Boolean(options.ownedAgent?.(member)) });
+        if (!ownerAddresses.length) ownerAddresses = [agent.owner]; break;
       case "feishu": {
         if (definition.credentialsFile) {
           const loaded = loadFeishuCredentials(resolve(directory, definition.credentialsFile));
@@ -150,10 +153,16 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
             await host.writeFile!(binding.sessionId, path, item.data); return path;
           });
           return tools.execute(call);
-        } }, core, instance.wake);
+        } }, core, instance.wake, {
+          // Private groups (owner plus the owner's agents) get the owner's grants; mixed groups do not.
+          admission: (contextId, taskId) => core.isOwnerTask(contextId, taskId) || core.isPrivateGroupOwnerTask(contextId, taskId)
+            ? { kind: "owner", owner: agent.owner, agentId: agent.id, reference: taskId } : undefined,
+        });
     core.control = (input) => worker!.handleInput(input);
   }
   const observation = worker ? new RunObservation(connector.store, connector.cli, worker.host) : undefined;
+  const sessions = worker ? new WorkSessions(agent.id, agent.owner, config.host!.runtimeId, worker.instanceId,
+    connector.store, connector.cli, worker.host, core, () => connector.assertLease(), input => worker!.dependencyWait(input)) : undefined;
   const controller = new AbortController();
   let loops: Promise<void>[] = [];
   const loop = async (operation: () => Promise<void>, interval: number) => {
@@ -169,6 +178,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },
     status: () => ({ ...core.status(), host: worker?.status() ?? null }),
     ...(observation ? { observation } : {}),
+    ...(sessions ? { sessions } : {}),
     resolve: async (callId, result) => { if (!worker) throw new Error("host_not_configured"); await worker.resolve(callId, result); },
     reconcile: async (claimId, runId) => { if (!worker) throw new Error("host_not_configured"); await worker.reconcile(claimId, runId); },
     closeUnknown: async (claimId) => { if (!worker) throw new Error("host_not_configured"); await worker.closeUnknown(claimId); },

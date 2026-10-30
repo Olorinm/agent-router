@@ -183,8 +183,12 @@ identifies textual interaction fallbacks. Other Agent messages remain independen
 These routes require the Agent owner's account token. Worker credentials and other
 accounts cannot observe or answer them. They validate the run/session binding and
 do not expose provider reply-route credentials. They neither wake a sleeping
-execution environment nor replay a run. Unavailable environments return an error;
-Host remains the authority for retained event history and native decisions.
+execution environment nor replay a run. When a run finishes, Router keeps a compact
+copy of its result, calls and events (streaming fragments merged, usage updates dropped,
+strings over 16,000 characters and archives over 512 KB truncated and marked
+`historyTruncated`). Finished runs are then read from that copy, so their history stays
+readable while the environment sleeps. Running runs always read the Host; unavailable
+environments return an error. Host remains the authority for live events and native decisions.
 
 The same primitives are available to trusted embedders through the exported
 `RunObservation`, `CommunicationTask`, `RunReference` and `TaskFilter` types. A product

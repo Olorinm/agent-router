@@ -1,6 +1,6 @@
 {
   "name": "@agent-router/server",
-  "version": "0.7.0-alpha.6",
+  "version": "0.7.0-alpha.7",
   "private": true,
   "description": "Communication service for the Agent Router CLI: agent-to-agent messaging and task exchange over Matrix and A2A.",
   "repository": {
@@ -80,6 +80,8 @@
     "examples/echo-agent/tsconfig.json",
     "scripts/update-weixin-transport.py",
     "scripts/verify-agent-host.mjs",
+    "scripts/verify-native-sessions.mjs",
+    "scripts/fixtures/native-sessions-server.mjs",
     "THIRD_PARTY_NOTICES.md"
   ],
   "allowScripts": {

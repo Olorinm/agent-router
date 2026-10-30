@@ -27,6 +27,10 @@ export interface ChannelMessage {
   action?: { token: string } | undefined;
   event?: { type: string; data: Record<string, unknown> } | undefined;
   native?: Record<string, unknown> | undefined;
+  /** Group addressing reported by channels that know it: this agent or everyone was @-mentioned. */
+  mentions?: { self: boolean; all: boolean } | undefined;
+  /** Group whose members are only the owner and the owner's own agents. */
+  privateGroup?: boolean | undefined;
 }
 export interface ChannelContext {
   /** Returns only after durable receipt; a failed receipt must not advance a provider cursor. */

@@ -57,7 +57,7 @@ async function fixture() {
         );
         requests.push({ url, body });
         if (url.endsWith("/health"))
-          return Response.json({ protocolVersion: 1 });
+          return Response.json({ protocolVersion: 1, capabilities: { runIdempotency: true } });
         if (url.endsWith("/runtimes/inspect"))
           return Response.json({ id: body.runtimeId, available: true });
         if (url.endsWith("/runtimes"))
@@ -65,6 +65,12 @@ async function fixture() {
             runtimes: [{ id: "personal" }, { id: "other" }],
           });
         if (url.endsWith("/runs") && init?.method === "POST") {
+          const previous = body.requestKey && [...hostRuns.values()].find(run => run.runtimeId === body.runtimeId && run.requestKey === body.requestKey);
+          if (previous) {
+            const { id: _id, status: _status, answer: _answer, ...original } = previous;
+            return JSON.stringify(original) === JSON.stringify(body) ? Response.json(previous)
+              : Response.json({ error: "request_key_conflict" }, { status: 409 });
+          }
           const run = {
             ...body,
             id: randomUUID(),
@@ -73,6 +79,10 @@ async function fixture() {
           };
           hostRuns.set(run.id, run);
           return Response.json(run, { status: 202 });
+        }
+        if (new URL(url).pathname.endsWith("/runs/by-request")) {
+          const query = new URL(url).searchParams;
+          return Response.json({ run: [...hostRuns.values()].find(run => run.runtimeId === query.get("runtimeId") && run.requestKey === query.get("requestKey")) ?? null });
         }
         if (url.includes("/events?"))
           return Response.json({
