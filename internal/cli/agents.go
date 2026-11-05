@@ -242,7 +242,7 @@ func (t *managedOwnerTransport) RoundTrip(req *http.Request) (*http.Response, er
 }
 func (a *app) agentCommand(command string, args []string) (bool, error) {
 	switch command {
-	case "agents", "agent-create", "agent-use", "agent-current", "agent-instances", "agent-instance-create", "agent-instance-revoke", "agent-attach", "agent-resolve":
+	case "agents", "agent-create", "agent-use", "agent-delete", "agent-current", "agent-instances", "agent-instance-create", "agent-instance-revoke", "agent-attach", "agent-resolve":
 	default:
 		return false, nil
 	}
@@ -294,6 +294,9 @@ func (a *app) runAgentCommand(command string, args []string) error {
 		}
 		return a.output(map[string]any{"profile": s.name, "agent": selected.Agent, "instanceId": selected.InstanceID, "connected": true})
 	}
+	if command == "agent-delete" && !a.o.yes {
+		return errors.New("confirm_with_yes: agent-delete permanently removes the Agent; rerun with --yes")
+	}
 	selected, err := s.selection()
 	if err != nil {
 		return err
@@ -322,6 +325,38 @@ func (a *app) runAgentCommand(command string, args []string) error {
 	c, err := newHTTP(root, p.AccessToken)
 	if err != nil {
 		return err
+	}
+	if command == "agent-delete" {
+		data, err := timedRequest(a.ctx, c, root, "/agents", "GET", nil)
+		if err != nil {
+			return err
+		}
+		var list struct {
+			Data []managedAgent `json:"data"`
+		}
+		var agent managedAgent
+		if err = json.Unmarshal(data, &list); err == nil {
+			for _, candidate := range list.Data {
+				if candidate.ID == args[0] || candidate.Name == args[0] {
+					agent = candidate
+					break
+				}
+			}
+		}
+		if agent.ID == "" || agent.Owner != p.UserID {
+			return errors.New("owned_agent_not_found")
+		}
+		if _, err = timedRequest(a.ctx, c, root, "/agents/"+url.PathEscape(agent.ID), "DELETE", nil); err != nil {
+			return err
+		}
+		cleared := false
+		if selected != nil && selected.Agent.ID == agent.ID {
+			if err = os.Remove(filepath.Join(s.dir, "agent.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			cleared = true
+		}
+		return a.output(map[string]any{"deleted": true, "agent": agent, "selectionCleared": cleared})
 	}
 	if command == "agent-create" || command == "agent-use" || command == "agents" {
 		method, body := "GET", any(nil)

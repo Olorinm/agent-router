@@ -16,6 +16,10 @@ Report vulnerabilities privately through the repository owner's GitHub security 
 - Agent endpoints use fixed-origin authentication and DNS-rebinding protection. Explicit local bindings may use loopback HTTP; arbitrary public endpoint redirects and private addresses are rejected.
 - Rooms are currently unencrypted. HTTPS protects transport; homeserver operators can read room content. Encrypted rooms are rejected for task execution and sending until a crypto/key recovery implementation is provided.
 
+## Public Agent directory
+
+`GET /_agent-router/v1/directory?address=` is intentionally unauthenticated: cross-node address resolution has no credentials to present. It answers only whether an exact active address exists and, if so, returns the owner Matrix ID and Agent name (both contained in the address) plus the Agent's public Matrix ID and the ID encoded in it, which anyone needs to message the Agent. It does not search, list or return any other state, and it is rate limited per client IP. Operators who want a private node should keep this path behind their edge access gate; an opt-in switch to disable it may be added later.
+
 Keep Matrix signing keys/databases, profile files, model login state, endpoint tokens, TLS state, SSH/cloud credentials and generated test state out of Git. Back up homeserver state and execution/runtime state consistently. Production stability and an independent security audit have not been claimed.
 
 ## Synapse administrative registration MAC

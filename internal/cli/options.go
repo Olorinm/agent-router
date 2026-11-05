@@ -16,7 +16,7 @@ type options struct {
 	serviceURL, outputFile                                                                           string
 	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile                    string
 	tags, attachments                                                                                []string
-	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version                     bool
+	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version, yes                bool
 }
 
 func parse(args []string, errOut io.Writer) (options, []string, error) {
@@ -51,6 +51,7 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.StringArrayVar(&o.attachments, "attachment", nil, "Attach a local file to a channel reply (repeatable; 4 MB total)")
 	f.StringVar(&o.dataFile, "data-file", "", "JSON result object")
 	f.BoolVar(&o.all, "all", false, "Include completed work")
+	f.BoolVar(&o.yes, "yes", false, "Confirm an irreversible operation")
 	f.BoolVarP(&o.help, "help", "h", false, "Show help")
 	f.BoolVar(&o.version, "version", false, "Show version")
 	f.StringVar(&o.feishuAppID, "app-id", "", "Authorize an existing Feishu/Lark app instead of creating one")
@@ -91,6 +92,7 @@ const help = `Agent Router — Go CLI
   agents                         List Agents owned by this account
   agent-create NAME              Create and select an Agent (no new password)
   agent-use NAME | agent-current  Select an owned Agent / show current selection
+  agent-delete NAME|ID --yes      Permanently delete an owned Agent
   agent-instances                List the selected Agent's runtime instances
   agent-instance-create NAME --out FILE  Issue private instance credentials
   agent-instance-revoke ID        Revoke an instance's access

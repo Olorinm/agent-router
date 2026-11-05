@@ -174,3 +174,59 @@ func TestManagedGatewayRefreshesAnOwnerTokenThatExpiresDuringUse(t *testing.T) {
 		t.Fatal("refreshed token was not persisted")
 	}
 }
+
+func TestAgentDeleteRequiresYesResolvesNameAndClearsSelection(t *testing.T) {
+	isolated(t)
+	agent := managedAgent{ID: "agent-one", Owner: "@alice:example.test", Name: "coder", Address: "alice/coder@example.test", MatrixID: "@_ar_one:example.test"}
+	other := managedAgent{ID: "agent-two", Owner: "@alice:example.test", Name: "helper", Address: "alice/helper@example.test", MatrixID: "@_ar_two:example.test"}
+	var deletes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/_matrix/client/v3/account/whoami":
+			jsonResponse(w, 200, map[string]string{"user_id": agent.Owner})
+		case r.URL.Path == "/_agent-router/v1/agents" && r.Method == "GET":
+			jsonResponse(w, 200, map[string]any{"data": []managedAgent{agent, other}})
+		case r.URL.Path == "/_agent-router/v1/agents/agent-one" && r.Method == "DELETE":
+			deletes.Add(1)
+			w.WriteHeader(204)
+		case r.URL.Path == "/_agent-router/v1/agents/agent-two" && r.Method == "DELETE":
+			jsonResponse(w, 409, map[string]string{"error": "agent_has_active_or_unknown_run"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	s, _ := newStore("owner")
+	p := testProfile()
+	p.Homeserver = server.URL
+	p.UserID = agent.Owner
+	if err := s.save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.selectAgent(&agentSelection{Version: 1, ServiceURL: server.URL + "/_agent-router/v1", Agent: agent}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, "--profile", "owner", "--allow-http", "agent-delete", "coder"); err == nil || !strings.Contains(err.Error(), "confirm_with_yes") {
+		t.Fatalf("deleted without --yes: %v", err)
+	}
+	if deletes.Load() != 0 {
+		t.Fatal("request sent without confirmation")
+	}
+	if _, _, err := run(t, "--profile", "owner", "--allow-http", "agent-delete", "helper", "--yes"); err == nil || !strings.Contains(err.Error(), "agent_has_active_or_unknown_run") {
+		t.Fatalf("409 not passed through: %v", err)
+	}
+	if _, _, err := run(t, "--profile", "owner", "--allow-http", "agent-delete", "missing", "--yes"); err == nil || !strings.Contains(err.Error(), "owned_agent_not_found") {
+		t.Fatalf("unknown Agent: %v", err)
+	}
+	if selected, _ := s.selection(); selected == nil {
+		t.Fatal("failed delete cleared selection")
+	}
+	out, _, err := run(t, "--profile", "owner", "--allow-http", "agent-delete", "coder", "--yes")
+	if err != nil || !strings.Contains(out, `"selectionCleared": true`) || deletes.Load() != 1 {
+		t.Fatalf("%s %v", out, err)
+	}
+	if selected, err := s.selection(); err != nil || selected != nil {
+		t.Fatalf("selection not cleared: %v %v", selected, err)
+	}
+}
