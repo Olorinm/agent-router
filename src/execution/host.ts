@@ -48,7 +48,8 @@ export interface HostPort {
   cancel(id: string): Promise<void>;
   calls(id: string): Promise<HostCall[]>;
   resolve(id: string, callId: string, result: unknown): Promise<void>;
-  events?(id: string, after: number, limit?: number): Promise<{ events: Array<{ sequence: number; event: Record<string, unknown> }>; cursor: number; hasMore: boolean; historyTruncated: boolean }>;
+  /** `historyTruncated`: events were lost. `liveGap`: superseded streaming fragments are gone. */
+  events?(id: string, after: number, limit?: number): Promise<{ events: Array<{ sequence: number; event: Record<string, unknown> }>; cursor: number; hasMore: boolean; historyTruncated: boolean; liveGap?: boolean; contentTruncated?: boolean }>;
   steer?(id: string, input: string): Promise<void>;
   readFile?(sessionId: string, path: string): Promise<{ content: string; encoding: string }>;
   writeFile?(sessionId: string, path: string, content: string): Promise<void>;
@@ -105,7 +106,7 @@ export class HttpAgentHost implements HostPort {
   async events(id: string, after: number, limit = 200) {
     const page = z.object({ events: z.array(z.object({ sequence: z.number().int().nonnegative(),
       event: z.record(z.string(), z.unknown()) }).passthrough()), cursor: z.number().int().nonnegative(),
-      hasMore: z.boolean(), historyTruncated: z.boolean() }).passthrough().parse(
+      hasMore: z.boolean(), historyTruncated: z.boolean(), liveGap: z.boolean().default(false) }).passthrough().parse(
         await this.http.request(`/v1/runs/${encodeURIComponent(id)}/events?after=${after}&limit=${limit}`));
     let previous = after;
     for (const item of page.events) {

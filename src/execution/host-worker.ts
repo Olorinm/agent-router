@@ -324,9 +324,11 @@ export class HostWorker {
       let pages = 0;
       for (;;) {
         const page = await this.host.events(binding.runId, cursor);
-        if (page.historyTruncated) text = fallback;
+        // Missing fragments cannot be re-streamed; use the delivered text until the final answer.
+        const gap = page.historyTruncated || !!page.liveGap;
+        if (gap) text = fallback;
         for (const { event } of page.events) {
-          if (event.type === "assistant.delta" && !page.historyTruncated) text += String(event.text ?? "");
+          if (event.type === "assistant.delta" && !gap) text += String(event.text ?? "");
           if (event.type === "model.response") text = String(event.text ?? "");
         }
         cursor = page.cursor;

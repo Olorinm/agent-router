@@ -101,6 +101,14 @@ describe("native communication round trips", () => {
     expect(h.streamed).toEqual([{ text: "你", final: false }, { text: "你好", final: false }, { text: "你好", final: true }]);
     expect(h.sent).toHaveLength(0);
   });
+  it("does not stitch streamed text across fragments the Host no longer has", async () => {
+    const h = fixture(); await h.core.start(); h.receive("one", "开始");
+    h.events([{ events: [{ sequence: 1, event: { type: "assistant.delta", text: "你" } }], cursor: 1, hasMore: false, historyTruncated: false }]); await h.tick();
+    h.events([{ events: [{ sequence: 9, event: { type: "assistant.delta", text: "吗" } }], cursor: 9, hasMore: false, historyTruncated: false, liveGap: true }]); await h.tick();
+    h.runs[0]!.status = "completed"; h.runs[0]!.answer = "你好吗"; await h.tick();
+    expect(h.streamed.map((item) => item.text)).not.toContain("你吗");
+    expect(h.streamed.at(-1)).toEqual({ text: "你好吗", final: true });
+  });
   it("keeps task notices separate from the final stream update", async () => {
     const h = fixture(); await h.core.start(); h.receive("one", "开始");
     h.events([{ events: [{ sequence: 1, event: { type: "assistant.delta", text: "正在处理" } }], cursor: 1, hasMore: false, historyTruncated: false }]); await h.tick();
