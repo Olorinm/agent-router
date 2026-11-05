@@ -517,7 +517,7 @@ share the session.
   - history page: `limit ≤ 200` and 1 MiB per response
   - attachments: 25 MiB per file, 10 per message, 30 MiB per message
   - sockets: 10 per person
-  - rate: the existing 1200 requests/min/IP
+  - rate: the existing 1200 requests/min/IP for all Router routes, plus 600 requests/min/IP on `/web`
 
 ### 8.2 Shared types
 

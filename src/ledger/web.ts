@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
 import express from "express";
+import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
 import { digest } from "../execution/protocol.js";
@@ -67,6 +68,9 @@ class Tickets {
 export function createWebLedger(dependencies: WebLedgerDependencies) {
   const { hubs, persons, authenticator } = dependencies, tickets = new Tickets(), epoch = `ep_${randomBytes(8).toString("hex")}`;
   const router = express.Router();
+  // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
+  router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? "unknown"), message: { error: "rate_limit_exceeded" } }));
   router.use(async (req, res, next) => {
     try { res.locals.principal = await authenticator.authenticate(bearer(req)); next(); } catch (error) { next(error); }
   });
