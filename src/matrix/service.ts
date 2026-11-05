@@ -4,6 +4,7 @@ import { createRouter, loadServiceConfig } from "../server.js";
 const router = createRouter(loadServiceConfig(), { connections: process.env.AGENT_ROUTER_CONNECTIONS_FILE ?? {} });
 const service = router.service;
 const server = router.app.listen(Number(process.env.PORT ?? "8790"), process.env.HOST ?? "127.0.0.1");
+server.on("upgrade", (req, socket, head) => { if (!router.upgrade(req, socket, head)) socket.destroy(); });
 let stopping = false;
 const stop = async () => { if (stopping) return; stopping = true; server.close(); server.closeAllConnections(); await router.close(); };
 process.once("SIGTERM", () => { void stop(); }); process.once("SIGINT", () => { void stop(); });
