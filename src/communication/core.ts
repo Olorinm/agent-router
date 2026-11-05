@@ -4,6 +4,8 @@ import { digest, key, terminal } from "../execution/protocol.js";
 import { CliWork } from "../execution/work.js";
 import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent } from "./types.js";
 import { DurableStore } from "./store.js";
+import { AgentLedger } from "../ledger/ledger.js";
+import { shadowControl, shadowDelivery, shadowOutbox, shadowReceive, shadowStart, type ShadowContext } from "../ledger/shadow.js";
 
 const messageSchema = z.object({
   externalId: z.string().min(1).max(512), sender: z.string().min(1).max(512), threadId: z.string().min(1).max(1024),
@@ -50,7 +52,23 @@ export class CommunicationCore {
   private flushing = false;
   private lastError = "";
   control?: (input: InboxRecord) => Promise<boolean>;
-  constructor(readonly agentId: string, readonly store: DurableStore, readonly work: CliWork, private readonly validate: () => void = () => {}) {}
+  /** Shadow ledger (ADR 0005 phase 1). Present when the store's ledger was opened; never changes legacy behavior. */
+  ledger: AgentLedger | undefined;
+  ownerPersonId: string | undefined;
+  persons: ((connectionId: string, sender: string) => string | undefined) | undefined;
+  constructor(readonly agentId: string, readonly store: DurableStore, readonly work: CliWork, private readonly validate: () => void = () => {}) {
+    this.ledger = AgentLedger.attached(store);
+  }
+  get shadowContext(): ShadowContext {
+    return { agentId: this.agentId, ownerPersonId: this.ownerPersonId, channel: (id) => this.connection(id).adapter.kind,
+      account: (id) => this.store.get<string>("communication_checkpoints", key(id, "account")) ?? id,
+      ...(this.persons ? { person: this.persons } : {}) };
+  }
+  private shadow(work: (ledger: AgentLedger) => void): void { const ledger = this.ledger; if (ledger) ledger.shadow(() => work(ledger)); }
+  private setOutbox(id: string, value: OutboxRecord, suppressed = false): void {
+    this.store.set("communication_outbox", id, value);
+    this.shadow((ledger) => shadowDelivery(ledger, value, suppressed));
+  }
 
   register(definition: ConnectionDefinition, adapter: ChannelAdapter, reload?: () => ChannelAdapter): void {
     if (this.connections.has(definition.id)) throw new Error("duplicate_connection_id");
@@ -61,7 +79,7 @@ export class CommunicationCore {
     this.connections.set(definition.id, { definition, adapter, ...(reload ? { reload } : {}), lastError: "", connected: false, failures: 0, nextStart: 0 });
     for (const { id, value } of this.store.entries<OutboxRecord>("communication_outbox")) {
       if (value.route.connectionId === definition.id && value.state === "submitting") {
-        this.store.set("communication_outbox", id, { ...value, state: value.activity || adapter.retrySafe ? "queued" : "uncertain", error: "send_interrupted" });
+        this.setOutbox(id, { ...value, state: value.activity || adapter.retrySafe ? "queued" : "uncertain", error: "send_interrupted" });
       }
     }
   }
@@ -127,11 +145,12 @@ export class CommunicationCore {
     const commit = () => {
       this.store.set("communication_inbox", id, record);
       this.store.set("communication_threads", key(connectionId, source.scope, source.threadId, source.sender), conversationId);
-      if (allowed && oversized) {
-        const noticeId = digest(key(id, "input-too-large"));
+      const noticeId = allowed && oversized ? digest(key(id, "input-too-large")) : undefined;
+      if (noticeId) {
         this.store.insert("communication_outbox", noticeId, { id: noticeId, taskId: null, route: record.replyRoute,
           text: "这条消息超过当前 24 KB 的文字输入上限，请缩短内容后再发送。", state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
       }
+      this.shadow((ledger) => shadowReceive(ledger, this.shadowContext, record, { owner, allowed, oversized, noticeId }));
     };
     // Matrix invokes receipt inside its existing transaction; other channels create their own.
     if (this.store.db.isTransaction) commit(); else this.store.transaction(commit);
@@ -152,9 +171,10 @@ export class CommunicationCore {
           continue;
         }
         if (this.control && await this.control(value)) {
-          this.store.set("communication_inbox", id, { ...value, state: "done" }); continue;
+          this.store.set("communication_inbox", id, { ...value, state: "done" }); this.shadow((ledger) => shadowControl(ledger, value, "control")); continue;
         }
-        if (value.source.action) { this.notice(value, "这个按钮已失效，请根据当前提问重新操作。", "stale-action"); this.store.set("communication_inbox", id, { ...value, state: "done" }); continue; }
+        if (value.source.action) { this.notice(value, "这个按钮已失效，请根据当前提问重新操作。", "stale-action"); this.store.set("communication_inbox", id, { ...value, state: "done" });
+          this.shadow((ledger) => shadowControl(ledger, value, "stale_action")); continue; }
         const prior = this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).reverse().find((item) =>
           item.taskId && item.conversationId === value.conversationId &&
           (item.connectionId === value.connectionId && item.source.sender === value.source.sender || this.isOwnerInput(item) && this.isOwnerInput(value)));
@@ -182,6 +202,7 @@ export class CommunicationCore {
         const task = await this.work.send(request, { sender: resume ? this.work.inspect(previous!.id).from : key("channel", value.connectionId, value.source.sender),
           room: value.conversationId, approved: true });
         this.store.set("communication_inbox", id, { ...value, state: "submitted", taskId: task.id });
+        this.shadow((ledger) => shadowStart(ledger, this.shadowContext, value, task.id, this.isOwnerInput(value)));
       }
       this.publishResults();
       this.lastError = "";
@@ -198,8 +219,9 @@ export class CommunicationCore {
         if (adapter.activity && capabilities?.native.includes("reaction")) {
           const active = task.status?.state === TaskState.TASK_STATE_WORKING;
           const id = digest(key(input.id, "activity", String(active)));
-          this.store.insert("communication_outbox", id, { id, taskId: task.id, route: input.replyRoute, text: "",
-            activity: { key: input.id, active }, state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+          const activity: OutboxRecord = { id, taskId: task.id, route: input.replyRoute, text: "",
+            activity: { key: input.id, active }, state: "queued", attempts: 0, nextAt: 0 };
+          if (this.store.insert("communication_outbox", id, activity)) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, activity, "activity", null));
         }
         if (terminal(task) && input.state !== "done") {
           const parts = task.artifacts.flatMap((artifact) => artifact.parts);
@@ -210,7 +232,12 @@ export class CommunicationCore {
               task.status?.message?.parts.filter((part) => part.content?.$case === "text").map((part) => part.content!.value).join("\n") || "本轮执行失败，请查看运行状态。";
           const outbox: OutboxRecord = { id: digest(key(task.id, "final")), taskId: task.id, route: input.replyRoute,
             text: answer || fallback, final: true, state: "queued", attempts: 0, nextAt: 0 };
-          this.store.insert("communication_outbox", outbox.id, outbox);
+          if (this.store.insert("communication_outbox", outbox.id, outbox)) this.shadow((ledger) => {
+            const finalEventId = shadowOutbox(ledger, this.shadowContext, input, outbox, "reply", { kind: "message", turnId: task.id,
+              idempotencyKey: `turn:${task.id}:final`, body: { text: outbox.text, final: true } });
+            const state = task.status?.state === TaskState.TASK_STATE_COMPLETED ? "completed" : task.status?.state === TaskState.TASK_STATE_CANCELED ? "canceled" : "failed";
+            ledger.turnState(task.id, state, { agentId: this.agentId, ...(finalEventId ? { finalEventId } : {}), ...(state === "failed" ? { error: (answer || fallback).slice(0, 500) } : {}) });
+          });
           for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) if (value.taskId === task.id)
             this.store.set("communication_inbox", id, { ...value, state: "done" });
         }
@@ -218,8 +245,9 @@ export class CommunicationCore {
           const text = task.status.message.parts.filter((part) => part.content?.$case === "text").map((part) => part.content!.value).join("\n");
           if (text) {
             const id = digest(key(task.id, "notice", text));
-            this.store.insert("communication_outbox", id, { id, taskId: task.id, route: input.replyRoute, text,
-              state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+            const notice: OutboxRecord = { id, taskId: task.id, route: input.replyRoute, text, state: "queued", attempts: 0, nextAt: 0 };
+            if (this.store.insert("communication_outbox", id, notice)) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
+              { kind: "notice", idempotencyKey: `notice:${id}`, body: { text, level: "info" } }));
           }
         }
         this.work.ack(eventId);
@@ -252,13 +280,13 @@ export class CommunicationCore {
         if (value.state !== "queued" || value.nextAt > now) continue;
         this.validate();
         const connection = this.connections.get(value.route.connectionId);
-        if (!connection) { this.store.set("communication_outbox", id, { ...value, state: "failed", error: "connection_removed" }); continue; }
+        if (!connection) { this.setOutbox(id, { ...value, state: "failed", error: "connection_removed" }); continue; }
         if (!connection.connected) continue;
         if (value.activity?.active && ((await this.work.get(value.taskId!)).status?.state !== TaskState.TASK_STATE_WORKING || this.input(value.taskId!)?.id !== value.activity.key)) {
-          this.store.set("communication_outbox", id, { ...value, state: "accepted" }); continue;
+          this.setOutbox(id, { ...value, state: "accepted" }, true); continue;
         }
         const attempt = { ...value, state: "submitting" as const, attempts: value.attempts + 1 };
-        this.store.set("communication_outbox", id, attempt);
+        this.setOutbox(id, attempt);
         try {
           const streamed = value.taskId && (value.final || id === digest(key(value.taskId, "final"))) && this.store.get("communication_streams", value.taskId);
           const receipt = value.activity && connection.adapter.activity
@@ -268,13 +296,12 @@ export class CommunicationCore {
             : value.content && connection.adapter.sendContent ? await connection.adapter.sendContent(value.route, value.content, id)
             : await connection.adapter.send(value.route, value.text, id);
           const { error: _error, ...accepted } = attempt;
-          this.store.set("communication_outbox", id, { ...accepted, state: "accepted", externalId: receipt.externalId });
+          this.setOutbox(id, { ...accepted, state: "accepted", externalId: receipt.externalId });
         } catch (error) {
           const disposition = value.activity ? (attempt.attempts < 5 ? "retry" : "failed") :
             error instanceof ChannelSendError ? error.disposition : connection.adapter.retrySafe ? "retry" : "uncertain";
           const nextAt = now + Math.max(error instanceof ChannelSendError ? error.retryAfterMs : 0, Math.min(60_000, 1000 * 2 ** Math.min(attempt.attempts, 6)));
-          this.store.set("communication_outbox", id, { ...attempt, state: disposition === "retry" ? "queued" : disposition,
-            error: code(error), nextAt });
+          this.setOutbox(id, { ...attempt, state: disposition === "retry" ? "queued" : disposition, error: code(error), nextAt });
         }
       }
     } catch (error) { this.lastError = code(error); throw error; }
@@ -294,8 +321,10 @@ export class CommunicationCore {
   }
   notice(input: InboxRecord, text: string, suffix: string, content?: ChannelContent): string {
     const id = digest(key(input.id, suffix));
-    this.store.insert("communication_outbox", id, { id, taskId: null, route: input.replyRoute, text,
-      ...(content ? { content } : {}), state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+    const notice: OutboxRecord = { id, taskId: null, route: input.replyRoute, text, ...(content ? { content } : {}), state: "queued", attempts: 0, nextAt: 0 };
+    // Question notices are recorded as `card` events by the Host worker, which owns the call.
+    if (this.store.insert("communication_outbox", id, notice) && !suffix.startsWith("question:")) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
+      { kind: "notice", role: "system", senderType: "system", senderId: "router", idempotencyKey: `notice:${id}`, body: { text, level: "info" } }));
     return id;
   }
   async attachments(taskId: string): Promise<MediaContent[]> {
@@ -324,7 +353,7 @@ export class CommunicationCore {
   capabilities(taskId: string) { const input = this.input(taskId); if (!input) return undefined;
     const adapter = this.connection(input.connectionId).adapter; return adapter.capabilitiesFor?.(input.replyRoute) ?? adapter.capabilities; }
   isOwnerInput(input: InboxRecord) { return input.source.scope === "direct" && this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender); }
-  queueContent(taskId: string, content: ChannelContent, sendKey: string): string {
+  queueContent(taskId: string, content: ChannelContent, sendKey: string, options: { notice?: string } = {}): string {
     const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
     const adapter = this.connection(input.connectionId).adapter;
     if ((content.html || content.media?.length || content.card || content.buttons?.length) && !adapter.sendContent) throw new Error("channel_content_unsupported");
@@ -334,8 +363,12 @@ export class CommunicationCore {
     if (!content.text && !content.html && !content.media?.length && !content.card && !content.buttons?.length) throw new Error("channel_content_empty");
     if (content.card && !capabilities?.send.includes("card")) throw new Error("channel_card_unsupported");
     const id = digest(key(taskId, "content", sendKey));
-    this.store.insert("communication_outbox", id, { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
-      content, state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+    const outbox: OutboxRecord = { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
+      content, state: "queued", attempts: 0, nextAt: 0 };
+    if (this.store.insert("communication_outbox", id, outbox)) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
+      options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
+        : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
+          ...(content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } }));
     return id;
   }
   delivery(taskId: string, id: string) {

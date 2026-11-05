@@ -9,6 +9,8 @@ import { runtimeWorkingDirectory } from "./host.js";
 import type { ExecutionSession, RunBinding } from "./host-worker.js";
 import { digest, key } from "./protocol.js";
 import { CliWork, WorkError } from "./work.js";
+import { AgentLedger } from "../ledger/ledger.js";
+import { personId } from "../ledger/registry.js";
 
 const identifier = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/);
 const admissionSchema = z.object({ kind: z.enum(["owner", "delegation", "schedule"]), owner: z.string().min(1), agentId: z.string().min(1), reference: z.string().min(1),
@@ -129,8 +131,25 @@ export class WorkSessions {
         ...(input.settings ? { settings: input.settings } : {}), ...(input.mode ? { mode: input.mode } : {}),
       } satisfies HostStartInput);
       this.store.set("work_session_events", input.eventId, { eventId: input.eventId, sessionId, taskId: task.id, hash } satisfies WorkEvent);
+      this.shadowSubmit(input, sessionId, task.id);
     });
     return this.get(input.eventId);
+  }
+  /** Shadow ledger (ADR 0005 6.7): the submitted input and its turn, in the target or a fresh work session. */
+  private shadowSubmit(input: WorkSessionSubmission, sessionId: string, taskId: string) {
+    const ledger = AgentLedger.attached(this.store); if (!ledger) return;
+    ledger.shadow(() => {
+      const kind = input.admission.kind === "owner" ? "work" : input.admission.kind;
+      ledger.ensureSession(sessionId, kind, `${kind}:${sessionId}`);
+      const owner = input.admission.kind === "owner";
+      const event = ledger.append(sessionId, { kind: "message", role: "user", senderType: owner ? "person" : "system",
+        senderId: owner ? personId(this.owner) : input.admission.kind, idempotencyKey: `work:${input.eventId}`, turnId: taskId,
+        body: { text: input.input, origin: owner ? "work" : input.admission.kind, reference: input.admission.reference } }).event;
+      ledger.queueInput(`work:${input.eventId}`, sessionId, event.eventId);
+      ledger.updateInput(`work:${input.eventId}`, "started", { turnId: taskId });
+      ledger.ensureTurn({ turnId: taskId, sessionKey: sessionId, admission: kind, originEventId: event.eventId, replyRoute: null });
+      ledger.turnState(taskId, "queued", { agentId: this.agentId });
+    });
   }
   lookup(eventId: string): WorkEventResult | null {
     this.validate();
@@ -251,7 +270,7 @@ export class WorkSessions {
     if (prior && prior.hash !== hash) throw new WorkError("delivery_event_id_reused", 409);
     if (!prior) this.store.transaction(() => {
       const taskId = this.ownerInput(input.targetSessionId)!.taskId!;
-      const deliveryId = this.communication.queueContent(taskId, { text: input.text }, `work-event:${input.eventId}`);
+      const deliveryId = this.communication.queueContent(taskId, { text: input.text }, `work-event:${input.eventId}`, { notice: `schedule:${input.eventId}` });
       this.store.set("work_session_deliveries", input.eventId, { hash, taskId, deliveryId });
     });
     return this.lookupDelivery(input.eventId)!;

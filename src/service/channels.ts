@@ -20,6 +20,7 @@ import { digest, key } from "../execution/protocol.js";
 import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js";
 import { ChannelTools } from "../communication/tools.js";
 import { FeishuTools } from "../services/feishu/tools.js";
+import { personId, type IdentityProvider, type PersonRegistry } from "../ledger/registry.js";
 
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 const file = z.string().min(1);
@@ -87,13 +88,20 @@ export function loadWeixinCredentials(path: string) {
 
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
   directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort,
-  options: { ownedAgent?(matrixId: string): boolean } = {}): Promise<ServiceExtension> {
+  options: { ownedAgent?(matrixId: string): boolean; persons?: PersonRegistry | undefined } = {}): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   const accounts = new Map<string, FeishuAccount>(), personalTools = new Map<string, FeishuTools>();
+  // Ledger identity (ADR 0005 section 9): who is speaking, scoped by provider and namespace. Routing is unchanged.
+  const owner = personId(agent.owner), namespaces = new Map<string, { provider: IdentityProvider; namespace: string }>();
+  core.ownerPersonId = owner;
+  if (options.persons) core.persons = (connectionId, sender) => {
+    const scope = namespaces.get(connectionId); return scope ? options.persons!.resolve(scope.provider, scope.namespace, sender) : undefined;
+  };
   for (const definition of config.connections) {
     let adapter: ChannelAdapter;
     let ownerAddresses = definition.ownerAddresses;
+    let namespace = definition.kind === "matrix" ? agent.owner.slice(agent.owner.indexOf(":") + 1) : definition.kind === "feishu" ? definition.appId ?? "" : "";
     switch (definition.kind) {
       case "matrix": adapter = new MatrixChannel(connector, { trusted: member => member === agent.owner || Boolean(options.ownedAgent?.(member)) });
         if (!ownerAddresses.length) ownerAddresses = [agent.owner]; break;
@@ -102,7 +110,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
           const loaded = loadFeishuCredentials(resolve(directory, definition.credentialsFile));
           const { credentials } = loaded;
           if (ownerAddresses.length && (ownerAddresses.length !== 1 || ownerAddresses[0] !== credentials.ownerOpenId)) throw new Error("feishu_owner_binding_mismatch");
-          ownerAddresses = [credentials.ownerOpenId];
+          ownerAddresses = [credentials.ownerOpenId]; namespace = credentials.appId;
           adapter = new FeishuChannel({ appId: credentials.appId, appSecret: loaded.appSecret, domain: credentials.domain });
           const account = new FeishuAccount(credentials, loaded.directory); accounts.set(definition.id, account);
           if (definition.personalTools) { const tools = new FeishuTools(definition.id, account); personalTools.set(tools.definition.name, tools); }
@@ -118,6 +126,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
         adapter = new WeixinChannel(credentials); if (!ownerAddresses.length) ownerAddresses = [credentials.userId]; break;
       }
     }
+    namespaces.set(definition.id, { provider: definition.kind, namespace });
+    for (const address of ownerAddresses) options.persons?.link(owner, definition.kind, namespace, address, "config");
     core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds }, adapter, () => {
       if (definition.kind === "matrix") return adapter;
       if (definition.kind === "telegram") return new TelegramChannel(secret(directory, definition.botTokenFile));
