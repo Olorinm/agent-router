@@ -713,8 +713,9 @@ WebSocket, so the client gets a ticket from `POST /socket-tickets` first.
 { "type": "req", "id": "2", "method": "unsubscribe", "params": { "chatIds": ["dm:4f…"] } }
 
 // server → client
-{ "type": "res", "id": "1", "ok": true, "result": { "chats": [ { "chatId": "dm:4f…", "mode": "delta", "lastSeq": 815 } ] } }
-{ "type": "res", "id": "2", "ok": false, "error": { "code": "chat_not_found" } }
+{ "type": "res", "id": "1", "ok": true, "result": { "chats": [ { "chatId": "dm:4f…", "mode": "delta", "lastSeq": 815, "generation": 1 } ],
+  "errors": [ { "chatId": "obs:…", "code": "chat_not_found" } ] } }
+{ "type": "res", "id": "2", "ok": false, "error": { "code": "invalid_request" } }
 { "type": "event", "event": "chat.event", "data": ChatEvent }
 { "type": "event", "event": "chat.stream", "data": { "chatId": "dm:4f…", "turnId": "t…", "agentId": "…",
   "state": "delta", "text": "<accumulated text so far>", "afterSeq": 815 } }
@@ -725,6 +726,12 @@ WebSocket, so the client gets a ticket from `POST /socket-tickets` first.
 
 Semantics:
 
+- **Subscribe result.** Each requested chat is either in `result.chats` with `mode` `live` (no `afterSeq`
+  given), `delta` (replay follows) or `reset` (a `snapshot_required` frame follows), or in `result.errors`
+  with a code such as `chat_not_found`; only the chats in `result.chats` are subscribed. The result mode is
+  informational: clients reload on the `snapshot_required` frame, not on `mode`. `ok:false` is used only for
+  request-level errors (`invalid_request`, `too_many_subscriptions`, `operation_failed`); then nothing in the
+  request was subscribed.
 - **Subscribe replay.** For each chat the server replays `seq > afterSeq` as `chat.event` frames, then
   goes live. If the gap is over 500 events or 1 MiB, or the generation differs, it sends
   `snapshot_required`. The client then calls `GET …/events` (latest page). The server's ring buffer is
@@ -901,6 +908,7 @@ deviate from it where the code required:
    (`/me`, `/socket-tickets`, `/chats`, `/chats/:chatId`, `/chats/:chatId/events`, `/chats/:chatId/read`,
    `/chats/:chatId/turns/:turnId`, `/debug/ledger`) and the event socket. Deferred: `POST /chats/dm`, send, reset,
    card answers, attachments, groups, pairing (phases 3–6). `GET /me` reports them in `limits.features` as `false`.
+   `POST /chats/dm` is served from phase 2: a DM chat exists for every owned active agent, so it only resolves it.
    Hub rooms are created only by backfill and are not served yet.
 2. **Flag.** The web API and socket are mounted only with `ServiceConfig.ledgerRead` (`AGENT_LEDGER_READ=1`).
    Shadow writes are always on for agents opened by `ManagedService`; a core built on a store without
@@ -940,8 +948,10 @@ deviate from it where the code required:
     `after` together are a 400. A latest page that exceeds 1 MiB keeps the newest events. `inflight` is read from
     `communication_runs` + `communication_run_events` (a document scan, bounded by run count).
 15. **Socket.** `ws` is a new runtime dependency. `createRouter().upgrade(req, socket, head)` must be attached to
-    the HTTP server's `upgrade` event (done in `agent:service`; embedders must do the same). A subscribe request
-    with any unknown chat fails as a whole with `chat_not_found`. Without `afterSeq` the result mode is `live`.
+    the HTTP server's `upgrade` event (done in `agent:service`; embedders must do the same, and must not reject
+    upgrades for paths they do not own before Router has seen them). Unknown chats in a subscribe request are
+    reported per chat in `result.errors` (see 8.4). Without `afterSeq` the result mode is `live`. Subscribing opens
+    the agent runtime when needed, as HTTP routes do.
     Replay over 500 events or 1 MiB gives `snapshot_required` with `gap_too_large`; `afterSeq > lastSeq` gives
     `not_found`.
 16. **Backfill.** `npm run ledger:backfill -- (--agent <id> | --all) [--dry-run] [--synapse] [--state <dir>]`
@@ -951,3 +961,34 @@ deviate from it where the code required:
     If a session already had events and receives older history, it is re-sequenced by time, its `generation`
     is bumped and `published_seq` reset, so clients get `reset`. Only Matrix inbox/outbox records are linked;
     legacy records of other channels from before the cutover are not backfilled.
+
+## Client contract (phase 2, settled with the Mau console)
+
+These answers are normative for clients; the Router and the Mau console (`web/src/api/ledger.ts`) both test them.
+
+1. **Features.** `GET /me` → `limits.features` is a map `{ history, send, cards, attachments, reset, groups }` of
+   booleans. A missing or non-`true` entry means off. Clients use the ledger console only when `history` is on.
+2. **Subscribe.** See 8.4 "Subscribe result": per-chat `errors`, `mode` `live | delta | reset`, reload only on
+   `snapshot_required`, `ok:false` only for request-level errors.
+3. **Latest page.** A request without `before`/`after` returns the newest events, ending at the chat's last event,
+   with `newerCursor: null`. If the 1 MiB budget is hit, the oldest events of the page are dropped. A client that
+   sees `lastSeq` greater than the last returned `seq` (or a non-null `newerCursor`) catches up with
+   `after=<last seq>&generation=<g>` until `newerCursor` is null.
+4. **Older pages.** `olderCursor` is the `seq` of the first returned event and is passed unchanged as `before=`,
+   which is exclusive (`seq < before`). It is `null` when the page starts at `seq` 1 or is empty. `after=` is also
+   exclusive.
+5. **Turn placement (console rule).** A turn is rendered once, as a run surface placed right after its first
+   loaded input event (`inputEventIds` order). Assistant `message` and `card` events carrying that `turnId` render
+   inside the surface instead of as separate bubbles. If no input event is loaded (older page), the surface sits
+   at the first such event; an active turn with neither sits at the end of the list.
+6. **Turn detail.** `TurnDetail.state` uses the `turn` event vocabulary (`queued`, `running`, `waiting`,
+   `completed`, `failed`, `canceled`, `unknown`); the console passes it to the run surface as the task status.
+7. **Sending before phase 3.** With `send: false`, the console opens DMs with `POST /chats/dm` and sends into the
+   agent's Matrix DM room through Mau's conversations API (a Matrix transaction id per user intent, reused on
+   retry). The message returns through Matrix ingress → ledger → `chat.event`. Group chats are read-only.
+8. **Uploads (phase 4).** `POST /attachments` requires `Content-Length`; a chunked body is rejected with 411.
+   Browsers set the header for `Blob`/`ArrayBuffer` bodies, so clients must not upload a `ReadableStream`.
+9. **Credentials.** Browser clients call these routes same-origin with `credentials: "same-origin"`, so an edge
+   access gate (for example Cloudflare Access) sees its cookie, and authenticate with the bearer header. The
+   socket URL is same-origin `ws(s)://<host>/_agent-router/v1/web/socket?ticket=…`; the browser sends the
+   edge cookie on the upgrade.
