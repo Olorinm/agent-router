@@ -115,6 +115,20 @@ describe("owner history API", () => {
     const debug = (await t.api(`${root}/web/debug/ledger`)).data.data[0];
     expect(debug).toMatchObject({ agentId: t.agent.id, ledger: { sessions: 2, events: 1102 }, inbox: 2, timeline: 0 });
   });
+  it("opens a DM chat idempotently for owned agents only", async () => {
+    const t = await setup(), chatId = `dm:${t.agent.id}`;
+    const first = await t.api(`${root}/web/chats/dm`, "alice", "POST", { agentId: t.agent.id });
+    expect(first.data).toMatchObject({ chatId, kind: "dm", title: "helper", agentIds: [t.agent.id], lastSeq: 0, readOnly: false });
+    expect((await t.api(`${root}/web/chats/dm`, "alice", "POST", { agentId: t.agent.id })).data).toEqual(first.data);
+    expect((await t.api(`${root}/web/chats/dm`, "bob", "POST", { agentId: t.agent.id }))).toEqual({ status: 404, data: { error: "chat_not_found" } });
+    expect((await t.api(`${root}/web/chats/dm`, "", "POST", { agentId: t.agent.id })).status).toBe(401);
+  });
+  it("authenticates every route", async () => {
+    const t = await setup();
+    for (const [method, path] of [["GET", "/me"], ["POST", "/socket-tickets"], ["GET", "/chats"], ["GET", `/chats/dm:${t.agent.id}`],
+      ["GET", `/chats/dm:${t.agent.id}/events`], ["POST", `/chats/dm:${t.agent.id}/read`], ["GET", "/debug/ledger"], ["GET", "/unknown"]] as const)
+      expect((await t.api(`${root}/web${path}`, "", method, method === "POST" ? {} : undefined)).status).toBe(401);
+  });
   it("stays off unless ledger_read is enabled", async () => {
     const t = await setup({ ledgerRead: false });
     expect(t.service.web).toBeUndefined();
@@ -143,7 +157,7 @@ describe("owner event socket", () => {
     const s = await connect(t);
     expect((await s.wait((frame) => frame.event === "hello")).data).toMatchObject({ heartbeatMs: 30000, limits: { maxReplayEvents: 500 } });
     s.socket.send(JSON.stringify({ type: "req", id: "1", method: "subscribe", params: { chats: [{ chatId, afterSeq: 1, generation: 1 }], index: true } }));
-    expect(await s.wait((frame) => frame.type === "res")).toEqual({ type: "res", id: "1", ok: true, result: { chats: [{ chatId, mode: "delta", lastSeq: 3, generation: 1 }] } });
+    expect(await s.wait((frame) => frame.type === "res")).toEqual({ type: "res", id: "1", ok: true, result: { chats: [{ chatId, mode: "delta", lastSeq: 3, generation: 1 }], errors: [] } });
     await s.wait((frame) => frame.event === "chat.event" && frame.data.seq === 3);
     t.core.receive("feishu", t.message("m4", "live"));
     const live = await s.wait((frame) => frame.event === "chat.event" && frame.data.seq === 4);
@@ -167,8 +181,12 @@ describe("owner event socket", () => {
       const reused = new WebSocket(`ws://127.0.0.1:${t.port}${root}/web/socket?ticket=${s.ticket}`);
       reused.addEventListener("open", () => resolve("open")); reused.addEventListener("error", () => reject(new Error("rejected")));
     })).rejects.toThrow("rejected");
-    s.socket.send(JSON.stringify({ type: "req", id: "1", method: "subscribe", params: { chats: [{ chatId: "dm:00000000-0000-4000-8000-000000000000" }] } }));
-    expect(await s.wait((frame) => frame.id === "1")).toEqual({ type: "res", id: "1", ok: false, error: { code: "chat_not_found" } });
+    // An unknown chat fails alone; the other chats of the same request are subscribed.
+    s.socket.send(JSON.stringify({ type: "req", id: "1", method: "subscribe", params: { chats: [{ chatId: "dm:00000000-0000-4000-8000-000000000000" }, { chatId }] } }));
+    expect(await s.wait((frame) => frame.id === "1")).toEqual({ type: "res", id: "1", ok: true, result: {
+      chats: [{ chatId, mode: "live", lastSeq: 1, generation: 1 }], errors: [{ chatId: "dm:00000000-0000-4000-8000-000000000000", code: "chat_not_found" }] } });
+    s.socket.send(JSON.stringify({ type: "req", id: "1b", method: "subscribe", params: { chats: Array.from({ length: 201 }, (_, index) => ({ chatId: `dm:a${index}` })) } }));
+    expect(await s.wait((frame) => frame.id === "1b")).toMatchObject({ ok: false, error: { code: "invalid_request" } });
     s.socket.send(JSON.stringify({ type: "req", id: "2", method: "subscribe", params: { chats: [{ chatId, afterSeq: 0, generation: 7 }] } }));
     expect((await s.wait((frame) => frame.id === "2")).result.chats[0].mode).toBe("reset");
     expect((await s.wait((frame) => frame.event === "snapshot_required")).data).toEqual({ chatId, reason: "generation_changed" });

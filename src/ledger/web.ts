@@ -91,6 +91,14 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       limit: z.coerce.number().int().min(1).max(200).default(50) }).strict().parse(req.query);
     res.json(hub(res).chats(principal(res).personId, { archived: query.archived === "true", cursor: query.cursor, limit: query.limit }));
   });
+  /** Phase 2: a DM chat exists for every owned agent, so this only resolves (and indexes) it. Idempotent. */
+  router.post("/chats/dm", async (req, res) => {
+    const body = z.object({ agentId: z.string().min(1).max(128) }).strict().parse(req.body);
+    const chatId = `dm:${body.agentId}`, target = await chat(res, chatId);
+    const summary = target.summary(chatId, principal(res).personId);
+    if (!summary) throw new WorkError("chat_not_found", 404);
+    res.json(summary);
+  });
   router.get("/chats/:chatId", async (req, res) => {
     const target = await chat(res, req.params.chatId);
     const summary = target.summary(req.params.chatId, principal(res).personId);
@@ -133,39 +141,46 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   };
   const connect = (ws: WebSocket, owner: OwnerPrincipal, token: string) => {
     const target = hubs.hub(owner.ownerId);
+    const open = [...target.sockets].filter((item) => item.personId === owner.personId).length;
+    if (open >= limits.socketsPerPerson) { ws.close(4429, "too_many_sockets"); return; }
     live.add(ws);
     const client: HubSocket = { personId: owner.personId, index: false, subscriptions: new Map(), send: (data) => {
       if (ws.readyState !== ws.OPEN) return;
       if (ws.bufferedAmount > 1024 * 1024) { ws.close(4408, "backpressure"); return; }
       ws.send(JSON.stringify(data));
     } };
-    const open = [...target.sockets].filter((item) => item.personId === owner.personId).length;
-    if (open >= limits.socketsPerPerson) { ws.close(4429, "too_many_sockets"); return; }
     target.sockets.add(client);
     // The bearer is re-checked every 10 minutes; a revoked session closes the socket.
     const recheck = setInterval(() => { authenticator.authenticate(token).catch(() => ws.close(4401, "token_invalid")); }, 600_000);
     recheck.unref();
     ws.on("close", () => { clearInterval(recheck); target.sockets.delete(client); live.delete(ws); });
-    ws.on("message", (raw, binary) => {
-      const text = raw.toString();
-      if (!binary && text === "ping") { ws.send("pong"); return; }
+    // Requests are handled one at a time so responses and replays keep the order of the requests.
+    let queue = Promise.resolve();
+    const handle = async (text: string) => {
       let id = "";
       try {
         const parsed = JSON.parse(text) as { id?: unknown };
         id = typeof parsed.id === "string" ? parsed.id : "";
         const request = frame.parse(parsed);
-        if (request.method === "unsubscribe") { target.unsubscribe(client, request.params.chatIds); ws.send(JSON.stringify({ type: "res", id, ok: true, result: {} })); return; }
-        for (const item of request.params.chats) {
-          const agentId = agentOf(item.chatId);
-          if (!agentId || !dependencies.owned(owner.ownerId).some((agent) => agent.id === agentId)) throw new WorkError("chat_not_found", 404);
+        if (request.method === "unsubscribe") { target.unsubscribe(client, request.params.chatIds); client.send({ type: "res", id, ok: true, result: {} }); return; }
+        // Agent runtimes (and so their ledgers) open lazily, as for HTTP; foreign agents are never opened.
+        const owned = new Set(dependencies.owned(owner.ownerId).map((agent) => agent.id));
+        for (const agentId of new Set(request.params.chats.map((item) => agentOf(item.chatId)))) {
+          if (agentId && owned.has(agentId)) await dependencies.open(agentId).catch(() => undefined);
         }
+        if (ws.readyState !== ws.OPEN) return;
         const subscribed = target.subscribe(client, request.params.chats, request.params.index);
-        ws.send(JSON.stringify({ type: "res", id, ok: true, result: subscribed.result }));
+        client.send({ type: "res", id, ok: true, result: subscribed.result });
         subscribed.then();
       } catch (error) {
         const code = error instanceof WorkError ? error.message : error instanceof z.ZodError || error instanceof SyntaxError ? "invalid_request" : "operation_failed";
-        ws.send(JSON.stringify({ type: "res", id, ok: false, error: { code } }));
+        client.send({ type: "res", id, ok: false, error: { code } });
       }
+    };
+    ws.on("message", (raw, binary) => {
+      const text = raw.toString();
+      if (!binary && text === "ping") { ws.send("pong"); return; }
+      queue = queue.then(() => handle(text));
     });
     client.send({ type: "event", event: "hello", data: { socketId: `so_${randomBytes(8).toString("hex")}`, epoch, heartbeatMs: 30_000,
       limits: { maxSubscriptions: LIMITS.subscriptions, maxReplayEvents: LIMITS.socketReplayEvents } } });
