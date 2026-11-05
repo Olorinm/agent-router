@@ -1,6 +1,6 @@
 # ADR 0005: Router-owned conversation ledger and web channel
 
-- Status: proposed (design only, nothing implemented)
+- Status: proposed; phases 1–2 implemented behind flags (see "Implementation notes")
 - Date: 2026-11-05
 - Affects: ADR 0002 (Matrix stops being the record of conversation history), ADR 0004 (login is unchanged until phase 6)
 - Scope: agent-router (ledger, delivery, web API), Mau web console (`mau/web`), Matrix adapter
@@ -890,3 +890,64 @@ Rules that make the port mechanical, applied from phase 1:
     `person_id`/`owner_person_id` split leaves room for an `agent_grants` table later.
 13. **Mau's derived stores** (`memory_history`, completed turns). Should they move to consuming ledger
     final events, and if so, in which phase?
+
+## Implementation notes (phases 1–2)
+
+Phases 1 and 2 are implemented in `src/ledger/` (read-only; no send). These choices fill gaps in the text above or
+deviate from it where the code required:
+
+1. **Scope.** Implemented: all `ledger_*`, `hub_*` and `reg_*` tables (`DurableStore.migrate(version, sql, name)`;
+   the registry uses its own meta row `registry_schema_version`), shadow writes, backfill, the read-only web API
+   (`/me`, `/socket-tickets`, `/chats`, `/chats/:chatId`, `/chats/:chatId/events`, `/chats/:chatId/read`,
+   `/chats/:chatId/turns/:turnId`, `/debug/ledger`) and the event socket. Deferred: `POST /chats/dm`, send, reset,
+   card answers, attachments, groups, pairing (phases 3–6). `GET /me` reports them in `limits.features` as `false`.
+   Hub rooms are created only by backfill and are not served yet.
+2. **Flag.** The web API and socket are mounted only with `ServiceConfig.ledgerRead` (`AGENT_LEDGER_READ=1`).
+   Shadow writes are always on for agents opened by `ManagedService`; a core built on a store without
+   `AgentLedger.open` writes nothing.
+3. **Shadow safety.** Every ledger write runs in a SQLite savepoint inside the legacy transaction (or its own
+   transaction). A ledger error rolls back only the ledger rows, is kept in `AgentLedger.lastError` (shown by
+   `/debug/ledger`) and never changes the legacy path.
+4. **Unknown senders.** Their claim is `ignored` (`sender_not_allowed`) and no conversation or session is created
+   (section 6.1 step 3 runs before authorization in the text; that would create sessions for strangers).
+5. **Conversation keys** are derived generically from `ChannelMessage`: direct → `peer_id` = sender,
+   `parent_id` = reply target; group → `peer_id` = `groupId` (else reply target); `thread_id` = the legacy
+   `threadId` when it differs from both. Session keys are exactly the legacy `conversationId`, so section 5's
+   legacy formula holds without per-channel code.
+6. **Idempotency keys.** Ingress and backfill both use `<connectionId>:<externalId>` (section 6.1). Section 10.3's
+   `matrix:<connectionId>:<event_id>` would not dedupe against live ingress, so it is not used. Hub room events
+   use `matrix:<event_id>`. Imported room ids are derived (`rm_` + digest of the Matrix room id) instead of a ULID
+   so that every agent of the owner imports the same room.
+7. **Persons.** `person_id` is derived from the owner id (`prs_` + digest) so that hub, registry and ledgers agree
+   without lookups; `matrix_agents` documents are not changed (they are plain strings today). Seeded identities:
+   the owner's Matrix id and each connection's `ownerAddresses` (`verified_by='config'`). Namespace: Feishu
+   `app_id`, Matrix server name, `''` for every other provider. Owner decisions still use `ownerAddresses`.
+8. **Turns.** `running`/`unknown` come from the Host worker, terminal states from `publishResults` (channel turns)
+   or the worker (work and schedule turns, which have no channel input). Each state appends one `turn` event.
+   The automatic "重新执行 / 不用了" card for unknown turns (6.2.4) belongs to the phase 3 dispatcher.
+9. **Cards.** Question notices are written as `card` events (with `ledger_cards` and tokens) by the Host worker;
+   chat answers write `card.update answered`, run end writes `expired`. Answers from other surfaces
+   (`runs/:claimId/calls/:callId/result`) are not tracked until phase 4.
+10. **Deliveries.** Every legacy outbox transition updates `ledger_deliveries`; a stale activity is `suppressed`.
+    The route column holds the frozen `ReplyRoute` plus `channel` (used for `DeliveryState.channel`).
+    `delivery` events are appended for `sent`, `unknown`, `rejected` and `suppressed` of event-bearing rows.
+11. **Schedule notices.** `WorkSessions.deliver` passes `schedule:<eventId>`; the notice has no `turnId` and its
+    delivery has `purpose='content'` (it still uses the legacy content outbox).
+12. **Tombstones.** `tombstone()`/`pruneTombstones()` exist and claims honor them, but nothing purges live
+    transcripts yet, so no tombstones are created in phases 1–2.
+13. **Oversized bodies** are cut to fit 256 KiB and marked `truncated: true` until the blob store exists (phase 4).
+14. **History edge cases.** `after` greater than `lastSeq` returns `reset` with reason `not_found`; `before` and
+    `after` together are a 400. A latest page that exceeds 1 MiB keeps the newest events. `inflight` is read from
+    `communication_runs` + `communication_run_events` (a document scan, bounded by run count).
+15. **Socket.** `ws` is a new runtime dependency. `createRouter().upgrade(req, socket, head)` must be attached to
+    the HTTP server's `upgrade` event (done in `agent:service`; embedders must do the same). A subscribe request
+    with any unknown chat fails as a whole with `chat_not_found`. Without `afterSeq` the result mode is `live`.
+    Replay over 500 events or 1 MiB gives `snapshot_required` with `gap_too_large`; `afterSeq > lastSeq` gives
+    `not_found`.
+16. **Backfill.** `npm run ledger:backfill -- (--agent <id> | --all) [--dry-run] [--synapse] [--state <dir>]`
+    (the Go CLI does not wrap it yet). It takes the agent store lease, so it fails while the service runs.
+    `--dry-run` runs everything in one transaction per agent and rolls it back (the empty tables are still
+    created). `--synapse` pages `/messages` backwards per room as the agent's virtual user with the AS token.
+    If a session already had events and receives older history, it is re-sequenced by time, its `generation`
+    is bumped and `published_seq` reset, so clients get `reset`. Only Matrix inbox/outbox records are linked;
+    legacy records of other channels from before the cutover are not backfilled.
