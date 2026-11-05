@@ -127,7 +127,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       }
     }
     namespaces.set(definition.id, { provider: definition.kind, namespace });
-    for (const address of ownerAddresses) options.persons?.link(owner, definition.kind, namespace, address, "config");
+    // Identity seeding is shadow data: a registry error never blocks the channel.
+    try { for (const address of ownerAddresses) options.persons?.link(owner, definition.kind, namespace, address, "config"); } catch { /* Seeded again on the next start. */ }
     core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds }, adapter, () => {
       if (definition.kind === "matrix") return adapter;
       if (definition.kind === "telegram") return new TelegramChannel(secret(directory, definition.botTokenFile));

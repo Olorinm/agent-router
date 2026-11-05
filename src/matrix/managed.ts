@@ -205,12 +205,15 @@ export class ManagedService {
     // This is an AS-owned journal, not an account restored from Matrix history.
     if (!store.get("meta", "sync")) store.set("meta", "sync", "0");
     // Shadow ledger (ADR 0005 phase 1): created before the channel runtime so its core writes into it.
-    const ledger = AgentLedger.open(store);
-    this.persons.ensurePerson(agent.owner, agent.owner.slice(1, agent.owner.indexOf(":")));
-    this.persons.link(personId(agent.owner), "matrix", this.config.serverName, agent.owner, "config");
-    this.ledgers.set(agent.id, ledger);
-    ledger.listen((sessionKey) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).publish(agent.id, sessionKey); });
-    ledger.listenStream((sessionKey, turnId, text) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).stream(agent.id, sessionKey, turnId, text); });
+    // A ledger that cannot open (migration or registry error) leaves the agent on the legacy path only.
+    try {
+      const ledger = AgentLedger.open(store);
+      this.ledgers.set(agent.id, ledger);
+      ledger.listen((sessionKey) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).publish(agent.id, sessionKey); });
+      ledger.listenStream((sessionKey, turnId, text) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).stream(agent.id, sessionKey, turnId, text); });
+      this.persons.ensurePerson(agent.owner, agent.owner.slice(1, agent.owner.indexOf(":")));
+      this.persons.link(personId(agent.owner), "matrix", this.config.serverName, agent.owner, "config");
+    } catch { /* Shadow only: the legacy runtime starts regardless. */ }
     const transport = this.dependencies.transport?.(agent, this.inbox) ?? new ApplicationTransport(
       this.config.homeserver, this.config.asToken, agent.matrixId, agent.id, this.inbox);
     const connector = new MatrixConnector(agent.matrixId, store, transport, undefined, 250);
@@ -256,7 +259,7 @@ export class ManagedService {
         const runtime = pending && await pending;
         if (runtime && this.activeRun(runtime.connector)) throw new WorkError("agent_has_active_or_unknown_run", 409);
         this.store.set("agents", id, { ...this.agent(id), status: "deleting" });
-        this.ledgers.delete(id); this.hubs.hub(agent.owner).forget(id);
+        this.forgetLedger(agent);
         if (runtime) {
           this.runtimes.delete(id);
           await runtime.extension?.stop(); await runtime.connector.stop(); runtime.connector.store.close();
@@ -287,8 +290,13 @@ export class ManagedService {
     if (body.errcode === "M_USER_DEACTIVATED") return;
     throw new WorkError("matrix_agent_deactivation_failed", 502);
   }
+  /** Drop the agent's ledger and hub index; a hub error never blocks deletion. */
+  private forgetLedger(agent: ManagedAgent) {
+    this.ledgers.delete(agent.id);
+    try { this.hubs.hub(agent.owner).forget(agent.id); } catch { /* The index is rebuilt from ledgers. */ }
+  }
   private purge(agent: ManagedAgent) {
-    this.ledgers.delete(agent.id); this.hubs.hub(agent.owner).forget(agent.id);
+    this.forgetLedger(agent);
     const events = this.store.entries<{ id: string; agentId: string }>("channel_events").filter(({ value }) => value.agentId === agent.id);
     this.store.transaction(() => {
       for (const { id, value } of this.store.entries<Record<string, string>>("as_members")) {

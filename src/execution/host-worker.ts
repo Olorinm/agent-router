@@ -360,8 +360,10 @@ export class HostWorker {
       }
     } else if (fallback) text = fallback;
     if (text && text !== prior.text) {
-      const ledger = AgentLedger.attached(this.store);
-      ledger?.stream(ledger.sessionForContext(binding.contextId) ?? binding.contextId, binding.taskId, text);
+      try {
+        const ledger = AgentLedger.attached(this.store);
+        ledger?.stream(ledger.sessionForContext(binding.contextId) ?? binding.contextId, binding.taskId, text);
+      } catch { /* Streams are best effort and never delay progress. */ }
       await this.communication.progress(binding.taskId, text);
     }
     this.store.set("communication_run_events", binding.runId, { cursor, text });
