@@ -43,6 +43,14 @@ export class DurableStore {
     return this.db.prepare("SELECT id,value FROM documents WHERE collection=? ORDER BY rowid").all(collection)
       .map((row) => ({ id: row.id as string, value: JSON.parse(row.value as string) as T }));
   }
+  /** Additive schema step guarded by a `meta` version row; each version runs once, inside one transaction. */
+  migrate(version: number, sql: string, name = "ledger_schema_version"): void {
+    if ((this.get<number>("meta", name) ?? 0) >= version) return;
+    this.transaction(() => {
+      if ((this.get<number>("meta", name) ?? 0) >= version) return;
+      this.db.exec(sql); this.set("meta", name, version);
+    });
+  }
   transaction<T>(work: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try { const result = work(); this.db.exec("COMMIT"); return result; }

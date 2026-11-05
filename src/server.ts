@@ -1,4 +1,6 @@
 /** Public embedding API. Router remains independently runnable via agent:service. */
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { ManagedService, createManagedApp, type ServiceConfig, type ServiceDependencies } from "./matrix/managed.js";
 import { ConnectionConfiguration, type ConnectionOptions, type HostBindingProvider } from "./connections/configuration.js";
 import { createConnections } from "./connections/routes.js";
@@ -21,6 +23,8 @@ export function createRouter(config: ServiceConfig, options: {
   let closed = false;
   return {
     service, connections, channelIds, app: createManagedApp(service, routes.router),
+    /** Event socket upgrade (ADR 0005 8.4); true when handled. Only active with `ledgerRead`. */
+    upgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => service.web?.upgrade(req, socket, head) ?? false,
     start: () => {
       if (closed) return Promise.reject(new Error("router_closed"));
       return starting ??= service.start().then(() => {
