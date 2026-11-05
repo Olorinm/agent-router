@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { DurableStore } from "../src/communication/store.js";
 import { CliWork } from "../src/execution/work.js";
 import { RunObservation } from "../src/execution/observation.js";
-import { compactRunEvents, runArchive } from "../src/execution/run-archive.js";
+import { archiveRun, archivedEvents, compactRunEvents, runArchive } from "../src/execution/run-archive.js";
 import { ChannelHttpError } from "../src/channels/http.js";
 import type { HostPort } from "../src/execution/host.js";
 
@@ -11,19 +11,44 @@ afterEach(() => { close.splice(0).forEach((fn) => fn()); });
 const note = (method: string, params: Record<string, unknown>) => ({ type: "native.notification", runId: "run-1", notification: { method, params } });
 
 it("compacts streaming fragments in order, drops usage noise and bounds large values", () => {
-  const { events, truncated } = compactRunEvents([
+  const { events, historyTruncated, contentTruncated } = compactRunEvents([
     { type: "assistant.delta", runId: "run-1", text: "Let me " }, { type: "assistant.delta", runId: "run-1", text: "check." },
     note("thread/tokenUsage/updated", { usage: 1 }),
     note("item/agentMessage/delta", { itemId: "a", delta: "Pl" }), note("item/agentMessage/delta", { itemId: "a", delta: "an" }),
-    { type: "native.tool", runId: "run-1", phase: "finished", callId: "cmd", native: { aggregatedOutput: "x".repeat(20_000) } },
+    { type: "native.tool", runId: "run-1", phase: "finished", callId: "cmd", native: { aggregatedOutput: "x".repeat(70_000) + "END" } },
     { type: "assistant.delta", runId: "run-1", text: "Done." },
   ]);
   expect(events.map(({ event }) => event.type)).toEqual(["assistant.delta", "native.notification", "native.tool", "assistant.delta"]);
   expect(events[0]!.event.text).toBe("Let me check.");
   expect((events[1]!.event.notification as any).params.delta).toBe("Plan");
-  expect(String((events[2]!.event.native as any).aggregatedOutput)).toMatch(/…\[truncated\]$/);
+  // Long output keeps its head and tail; the event itself is kept.
+  expect(String((events[2]!.event.native as any).aggregatedOutput)).toMatch(/^x{48000}\n…\[truncated\] 10003 characters omitted\nx+END$/);
   expect(events.map(({ sequence }) => sequence)).toEqual([1, 2, 3, 4]);
-  expect(truncated).toBe(true);
+  expect({ historyTruncated, contentTruncated }).toEqual({ historyTruncated: false, contentTruncated: true });
+});
+
+it("omits inline media without reporting truncation, and separates lost events from shortened values", () => {
+  const image = "data:image/png;base64," + "A".repeat(40_000);
+  const media = compactRunEvents([note("item/completed", { item: { id: "u", type: "userMessage", content: [{ type: "image", url: image }] } })]);
+  expect((media.events[0]!.event.notification as any).params.item.content[0].url).toBe("data:image/png;omitted");
+  expect(media).toMatchObject({ historyTruncated: false, contentTruncated: false });
+  // Archives written before the split: a clip marker means shortened, otherwise lost.
+  const legacy = (events: Array<Record<string, unknown>>) => archivedEvents({ runId: "r", run: {} as any, calls: [], truncated: true,
+    events: events.map((event, index) => ({ sequence: index + 1, event })), bytes: 0, archivedAt: "" }, 0, 10);
+  expect(legacy([{ type: "native.tool", native: { aggregatedOutput: "x…[truncated]" } }])).toMatchObject({ historyTruncated: false, contentTruncated: true });
+  expect(legacy([{ type: "turn.started" }])).toMatchObject({ historyTruncated: true, contentTruncated: false });
+});
+
+it("treats a Host liveGap as superseded fragments, not lost history", async () => {
+  const store = new DurableStore(":memory:", "archive-gap"); close.push(() => store.close());
+  const host = {
+    get: async (id: string) => ({ id, sessionId: "h", runtimeId: "native", status: "completed", answer: "ok" }),
+    calls: async () => [],
+    events: async () => ({ events: [{ sequence: 7, event: note("item/completed", { item: { id: "a", type: "agentMessage", text: "ok" } }) }],
+      cursor: 7, hasMore: false, historyTruncated: false, liveGap: true }),
+  } as unknown as HostPort;
+  const archive = await archiveRun(store, host, "claim-gap", "run-1");
+  expect(archive).toMatchObject({ historyTruncated: false, contentTruncated: false, truncated: false });
 });
 
 it("serves a finished run's history from Router while the Host is asleep", async () => {
@@ -49,7 +74,7 @@ it("serves a finished run's history from Router while the Host is asleep", async
   asleep = true;
   expect((await observation.run("claim-1")).run.answer).toBe("Plan ready.");
   expect((await observation.run("claim-1")).calls).toHaveLength(1);
-  expect(await observation.events("claim-1", 1, 200)).toMatchObject({ cursor: 2, hasMore: false, historyTruncated: false });
+  expect(await observation.events("claim-1", 1, 200)).toMatchObject({ cursor: 2, hasMore: false, historyTruncated: false, contentTruncated: false, liveGap: false });
   expect(eventReads).toBe(1);
 
   // A running run is never served from (or written to) the archive.
