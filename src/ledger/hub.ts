@@ -32,7 +32,7 @@ export interface HubDirectory {
 export interface HubSocket {
   personId: string; index: boolean;
   subscriptions: Map<string, { cursor: number; generation: number }>;
-  send(frame: { type: "event"; event: string; data: unknown }): void;
+  send(frame: { type: "event"; event: string; data: unknown } | { type: "res"; id: string; ok: boolean; result?: unknown; error?: { code: string } }): void;
 }
 export const LIMITS = { pageEvents: 200, pageBytes: 1024 * 1024, deltaGap: 1000, socketReplayEvents: 500, socketReplayBytes: 1024 * 1024, subscriptions: 200 };
 const fields: Record<string, string[]> = {
@@ -42,6 +42,14 @@ const fields: Record<string, string[]> = {
   redaction: ["targetEventId"], reaction: ["targetEventId", "key", "removed"], window: ["window", "reason"], member: ["action", "member", "title"],
 };
 const iso = (ms: number) => new Date(ms).toISOString();
+/** Host run bindings filtered in SQLite, so history reads never parse the whole run collection in JS. */
+function runBindings(ledger: AgentLedger, filter: { taskId?: string; phase?: RunBinding["phase"] }): RunBinding[] {
+  const clauses = ["collection='communication_runs'"], args: string[] = [];
+  if (filter.taskId !== undefined) { clauses.push("json_extract(value,'$.taskId')=?"); args.push(filter.taskId); }
+  if (filter.phase !== undefined) { clauses.push("json_extract(value,'$.phase')=?"); args.push(filter.phase); }
+  return ledger.store.db.prepare(`SELECT value FROM documents WHERE ${clauses.join(" AND ")} ORDER BY rowid`).all(...args)
+    .map((row) => JSON.parse(String(row.value)) as RunBinding);
+}
 const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
 /**
@@ -165,12 +173,16 @@ export class OwnerHub {
     }
   }
   /**
-   * Subscribe (ADR 8.4). Every chat must resolve, or nothing is subscribed. The response goes first;
-   * `then()` sends the replay or `snapshot_required` frames.
+   * Subscribe (ADR 8.4). Chats that do not resolve are listed in `errors` and are not subscribed; the others are.
+   * The response goes first; `then()` sends the replay or `snapshot_required` frames.
    */
   subscribe(socket: HubSocket, chats: Array<{ chatId: string; afterSeq?: number | undefined; generation?: number | undefined }>, index?: boolean) {
-    const resolved = chats.map((chat) => ({ chat, ...this.resolve(chat.chatId) }));
     if (new Set([...socket.subscriptions.keys(), ...chats.map((chat) => chat.chatId)]).size > LIMITS.subscriptions) throw new WorkError("too_many_subscriptions", 429);
+    const errors: Array<{ chatId: string; code: string }> = [], resolved = [];
+    for (const chat of chats) {
+      try { resolved.push({ chat, ...this.resolve(chat.chatId) }); }
+      catch (error) { socket.subscriptions.delete(chat.chatId); errors.push({ chatId: chat.chatId, code: error instanceof WorkError ? error.message : "operation_failed" }); }
+    }
     if (index !== undefined) socket.index = index;
     const after: Array<() => void> = [];
     const result = resolved.map(({ chat, sessionKey, ledger }) => {
@@ -187,13 +199,18 @@ export class OwnerHub {
       after.push(() => this.replay(socket, chat.chatId, chat.afterSeq!));
       return { chatId: chat.chatId, mode: "delta", lastSeq, generation };
     });
-    return { result: { chats: result }, then: () => { for (const send of after) send(); } };
+    return { result: { chats: result, errors }, then: () => { for (const send of after) send(); } };
   }
   unsubscribe(socket: HubSocket, chatIds: string[]) { for (const chatId of chatIds) socket.subscriptions.delete(chatId); }
-  /** Streaming partials are never stored; at most one frame per chat and turn every 250 ms, the latest text wins. */
+  /**
+   * Streaming partials are never stored; at most one frame per chat and turn every 250 ms, the latest text wins.
+   * Throttle entries idle for a minute are dropped, so finished turns do not accumulate.
+   */
   stream(agentId: string, sessionKey: string, turnId: string, text: string): void {
     const ledger = this.directory.ledger(agentId), session = ledger?.session(sessionKey);
     if (!ledger || !session) return;
+    const now = Date.now();
+    for (const [key, entry] of this.streams) if (!entry.timer && now - entry.at > 60_000) this.streams.delete(key);
     const chatId = this.chatId(agentId, session), id = `${chatId}\n${turnId}`;
     const send = () => {
       const entry = this.streams.get(id); if (!entry) return;
@@ -267,8 +284,9 @@ export class OwnerHub {
   }
   /** In-flight text of running turns comes from the Host run cache, never from stored partials. */
   private inflight(agentId: string, sessionKey: string, ledger: AgentLedger, afterSeq: number): Inflight[] {
-    return ledger.store.entries<RunBinding>("communication_runs").map(({ value }) => value)
-      .filter((run) => run.phase === "running" && run.runId && (ledger.sessionForContext(run.contextId) ?? run.contextId) === sessionKey)
+    if (!ledger.activeTurns(sessionKey)) return [];
+    return runBindings(ledger, { phase: "running" })
+      .filter((run) => run.runId && (ledger.sessionForContext(run.contextId) ?? run.contextId) === sessionKey)
       .flatMap((run) => {
         const cached = ledger.store.get<{ text: string }>("communication_run_events", run.runId!);
         return cached?.text ? [{ turnId: run.taskId, agentId, text: cached.text, updatedAt: iso(Date.now()), afterSeq }] : [];
@@ -291,8 +309,7 @@ export class OwnerHub {
     if (!turn || turn.sessionKey !== sessionKey) throw new WorkError("turn_not_found", 404);
     return { turnId, chatId, agentId, state: turn.state, admission: turn.admission, inputEventIds: ledger.turnInputs(turnId),
       finalEventId: turn.finalEventId, cardIds: ledger.cardsForTurn(turnId),
-      runs: ledger.store.entries<RunBinding>("communication_runs").map(({ value }) => value).filter((run) => run.taskId === turnId)
-        .map((run) => ({ claimId: run.claimId, runId: run.runId ?? null, phase: run.phase, error: run.error ?? null })) };
+      runs: runBindings(ledger, { taskId: turnId }).map((run) => ({ claimId: run.claimId, runId: run.runId ?? null, phase: run.phase, error: run.error ?? null })) };
   }
   /** Imported `ai.mau.room` groups (backfill). Served from phase 5; the id is derived so every agent imports the same room. */
   importRoom(matrixRoomId: string, title: string, members: Array<{ type: "person" | "agent"; id: string }>, at = Date.now()): string {

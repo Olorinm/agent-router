@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { DurableStore } from "../communication/store.js";
 import { digest, key } from "../execution/protocol.js";
-import { AGENT_LEDGER_V1 } from "./schema.js";
+import { AGENT_LEDGER_V1, AGENT_LEDGER_V2 } from "./schema.js";
 
 export type SessionKind = "owner_main" | "peer" | "group" | "room" | "schedule" | "work" | "delegation";
 export type Admission = "owner" | "peer" | "group" | "schedule" | "work" | "delegation";
@@ -68,7 +68,7 @@ export class AgentLedger {
   /** Create the tables (once) and attach the ledger to this store; channel cores then shadow-write into it. */
   static open(store: DurableStore): AgentLedger {
     let ledger = this.ledgers.get(store);
-    if (!ledger) { store.migrate(1, AGENT_LEDGER_V1); ledger = new AgentLedger(store); this.ledgers.set(store, ledger); }
+    if (!ledger) { store.migrate(1, AGENT_LEDGER_V1); store.migrate(2, AGENT_LEDGER_V2); ledger = new AgentLedger(store); this.ledgers.set(store, ledger); }
     return ledger;
   }
   static attached(store: DurableStore): AgentLedger | undefined { return this.ledgers.get(store); }

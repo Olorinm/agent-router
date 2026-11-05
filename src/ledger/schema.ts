@@ -108,3 +108,8 @@ CREATE TABLE reg_person_identities(
   verified_by TEXT NOT NULL CHECK(verified_by IN ('login','config','pairing','admin')),
   created_at INTEGER NOT NULL, revoked_at INTEGER, UNIQUE(provider, namespace, subject));
 CREATE INDEX reg_identities_person ON reg_person_identities(person_id);`;
+
+/** Turn lookups used by `turn` events and `TurnDetail` (inputs and cards of one turn). */
+export const AGENT_LEDGER_V2 = `
+CREATE INDEX ledger_pending_by_turn ON ledger_pending_inputs(turn_id) WHERE turn_id IS NOT NULL;
+CREATE INDEX ledger_cards_by_turn ON ledger_cards(turn_id);`;
