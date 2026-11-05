@@ -1,5 +1,6 @@
 import { ExternalIdentitySessions, type ExternalIdentityConfig } from "./external-identity.js";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import express from "express";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
@@ -16,7 +17,7 @@ import { ChannelRouter } from "../channels/router.js";
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export interface ManagedAgent {
   id: string; owner: string; name: string; address: string; matrixId: string;
-  createdAt: string; status: "provisioning" | "active";
+  createdAt: string; status: "provisioning" | "active" | "deleting";
 }
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
 export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string; }
@@ -35,6 +36,12 @@ export interface ServiceDependencies {
   provision?: (agent: ManagedAgent) => Promise<void>;
   transport?: (agent: ManagedAgent, inbox: ApplicationInbox) => MatrixTransport;
   configure?: (agent: ManagedAgent, connector: MatrixConnector) => Promise<ServiceExtension | undefined>;
+  /** Replaces Matrix account deactivation (tests and non-Synapse deployments). */
+  deprovision?: (agent: ManagedAgent) => Promise<void>;
+  /** Product teardown (environments, Host) while the Agent still exists; failure keeps the Agent. */
+  beforeDelete?: (agent: ManagedAgent) => Promise<void>;
+  /** Product state purge after Router state is gone. */
+  afterDelete?: (agent: ManagedAgent) => Promise<void>;
 }
 const newToken = () => randomBytes(32).toString("base64url");
 function bearer(req: express.Request): string { return req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? ""; }
@@ -51,6 +58,7 @@ export class ManagedService {
   readonly channels: ChannelRouter;
   private runtimes = new Map<string, Promise<Runtime>>();
   private configurations = new Map<string, Promise<void>>();
+  private deleteGuards: Array<(agentId: string) => void> = [];
   constructor(readonly config: ServiceConfig, readonly dependencies: ServiceDependencies = {}) {
     if (!/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(config.serverName)) throw new Error("invalid_server_name");
     for (const raw of [config.homeserver, config.publicUrl]) {
@@ -120,6 +128,7 @@ export class ManagedService {
   runtime(id: string): Promise<Runtime> {
     let pending = this.runtimes.get(id);
     if (!pending) {
+      if (this.agent(id).status === "deleting") return Promise.reject(new WorkError("agent_deleting", 409));
       pending = this.open(this.agent(id)).catch((error) => { this.runtimes.delete(id); throw error; });
       this.runtimes.set(id, pending);
     }
@@ -187,6 +196,81 @@ export class ManagedService {
     const token = newToken();
     return { connector, token, extension, app: createConnectorApp(connector, token, `${this.config.publicUrl}/agents/${agent.id}/gateway`) };
   }
+  /** Components holding per-Agent work Router does not see (e.g. connection setup) can veto deletion. */
+  guardDelete(guard: (agentId: string) => void) { this.deleteGuards.push(guard); }
+  /**
+   * Delete an Agent: product teardown, stop its runtime, deactivate its Matrix account and remove its state.
+   * Once Router state is touched the Agent stays `deleting`; repeating the call finishes the removal.
+   */
+  async delete(owner: string, id: string): Promise<void> {
+    const agent = this.owned(id, owner);
+    if (agent.status !== "deleting") {
+      if (this.channels.entries(id).length) throw new WorkError("agent_used_by_channel_configuration", 409);
+      for (const guard of this.deleteGuards) guard(id);
+      if (this.runtimes.has(id) && this.activeRun((await this.runtime(id)).connector)) throw new WorkError("agent_has_active_or_unknown_run", 409);
+      // Product teardown may itself quiesce the runtime, so it runs before this method takes the Agent's lock.
+      await this.dependencies.beforeDelete?.(agent);
+    }
+    const previous = this.configurations.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const operation = new Promise<void>((r) => { release = r; });
+    this.configurations.set(id, operation);
+    try {
+      await previous.catch(() => {});
+      if (this.agent(id).status !== "deleting") {
+        const pending = this.runtimes.get(id);
+        const runtime = pending && await pending;
+        if (runtime && this.activeRun(runtime.connector)) throw new WorkError("agent_has_active_or_unknown_run", 409);
+        this.store.set("agents", id, { ...this.agent(id), status: "deleting" });
+        if (runtime) {
+          this.runtimes.delete(id);
+          await runtime.extension?.stop(); await runtime.connector.stop(); runtime.connector.store.close();
+        }
+      }
+      await this.deprovision(agent);
+      this.purge(agent);
+    } finally {
+      release();
+      if (this.configurations.get(id) === operation) this.configurations.delete(id);
+    }
+    await this.dependencies.afterDelete?.(agent);
+  }
+  private activeRun(connector: MatrixConnector) {
+    return connector.store.entries<{ phase: string }>("communication_runs")
+      .some(({ value }) => ["running", "submitting", "unknown"].includes(value.phase));
+  }
+  private async deprovision(agent: ManagedAgent) {
+    if (this.dependencies.deprovision) { await this.dependencies.deprovision(agent); return; }
+    // Synapse lets an application service deactivate its own users without interactive auth;
+    // deactivation leaves every room, rejects invites and removes the user from the directory.
+    const response = await fetch(`${this.config.homeserver}/_matrix/client/v3/account/deactivate?user_id=${encodeURIComponent(agent.matrixId)}`, {
+      method: "POST", headers: { Authorization: `Bearer ${this.config.asToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ erase: false }), redirect: "error", signal: AbortSignal.timeout(30_000),
+    });
+    if (response.ok) return;
+    const body = await response.json().catch(() => ({})) as { errcode?: string };
+    if (body.errcode === "M_USER_DEACTIVATED") return;
+    throw new WorkError("matrix_agent_deactivation_failed", 502);
+  }
+  private purge(agent: ManagedAgent) {
+    const events = this.store.entries<{ id: string; agentId: string }>("channel_events").filter(({ value }) => value.agentId === agent.id);
+    this.store.transaction(() => {
+      for (const { id, value } of this.store.entries<Record<string, string>>("as_members")) {
+        if (!(agent.id in value)) continue;
+        const { [agent.id]: _removed, ...rest } = value;
+        if (Object.keys(rest).length) this.store.set("as_members", id, rest); else this.store.delete("as_members", id);
+      }
+      this.store.db.prepare("DELETE FROM documents WHERE collection=?").run(`as_queue:${agent.id}`);
+      for (const { id, value } of this.store.entries<{ agentId: string }>("instances")) if (value.agentId === agent.id) this.store.delete("instances", id);
+      for (const { id, value } of this.store.entries<{ agentId: string }>("connection_setup_jobs")) if (value.agentId === agent.id) this.store.delete("connection_setup_jobs", id);
+      for (const { id, value } of events) { this.store.delete("channel_events", id); this.store.delete("channel_reply_attachments", value.id); }
+      this.store.delete("matrix_agents", agent.matrixId);
+      this.store.delete("agents", agent.id);
+    });
+    const journal = join(this.config.stateDir, "agents", `${agent.id}.sqlite`);
+    for (const file of [journal, `${journal}-wal`, `${journal}-shm`]) rmSync(file, { force: true });
+    rmSync(join(this.config.stateDir, "connections", "agents", agent.id), { recursive: true, force: true });
+  }
   instances(agentId: string) { return this.store.entries<Instance>("instances").map((r) => r.value).filter((i) => i.agentId === agentId).map(publicInstance); }
   issue(agentId: string, name: string): { instance: ReturnType<typeof publicInstance>; token: string; gatewayUrl: string } {
     this.agent(agentId); agentName.parse(name);
@@ -213,7 +297,7 @@ export class ManagedService {
     const { connector } = await this.runtime(agentId);
     for (const work of connector.cli!.list()) if (work.worker === instance.id) await connector.cli!.cancel(work.id);
   }
-  async start(): Promise<void> { for (const agent of this.agents()) await this.runtime(agent.id); }
+  async start(): Promise<void> { for (const agent of this.agents()) if (agent.status !== "deleting") await this.runtime(agent.id); }
   async close(): Promise<void> {
     await Promise.allSettled(this.configurations.values());
     await this.channels.close();
@@ -296,6 +380,7 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
   app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  app.delete(`${root}/agents/:agentId`, async (req, res) => { await service.delete(res.locals.owner, req.params.agentId); res.status(204).end(); });
   if (setup) app.use(setup);
   const extension = async (id: string) => {
     const runtime = await service.runtime(id);

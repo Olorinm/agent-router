@@ -41,6 +41,14 @@ before invoking a product lifecycle operation. Both successful and failed
 operations rebuild the communication runtime through its existing factory.
 The product owns its operation journal, recovery and readiness guard.
 
+`service.delete(owner, agentId)` (also `DELETE /_agent-router/v1/agents/:agentId`)
+calls the `beforeDelete` dependency first, while the Agent still exists, so the
+product can destroy its execution environment; a failure there leaves the Agent
+untouched. Router then stops the runtime, marks the Agent `deleting`, deactivates
+its Matrix account (or calls `deprovision`), removes its Router state and finally
+calls `afterDelete` for product state. Repeating the call finishes a deletion that
+stopped after the Agent became `deleting`.
+
 Mau is one consumer. Dependencies point from Mau to Router, Host and Environment;
 none of these components import Mau. Mau and Router can share a process while
 keeping separate HTTP namespaces and state directories. Scheduler is outside this change.

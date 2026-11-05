@@ -114,6 +114,10 @@ export class ConnectionSetup {
       delete job.url;
       service.store.set(jobsCollection, job.id, job);
     }
+    service.guardDelete((agentId) => {
+      if ([...this.jobs.values()].some((job) => job.agentId === agentId && !terminal(job)))
+        throw new WorkError("connection_setup_running", 409);
+    });
   }
   private save(job: Job) {
     const { controller: _controller, operation: _operation, pairingCode: _pairingCode, ...record } = job;
