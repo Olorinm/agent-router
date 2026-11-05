@@ -68,9 +68,11 @@ function fixture() {
   };
   const store = new DurableStore(join(directory, "registry.sqlite"), "fixture");
   cleanup.push(() => store.close());
+  const deleteGuards: Array<(agentId: string) => void> = [];
   const service = {
     store,
     owned,
+    guardDelete: (guard: (agentId: string) => void) => deleteGuards.push(guard),
     agents: () => [agent],
     runtime: async () => ({
       connector: {
@@ -101,6 +103,7 @@ function fixture() {
     directory,
     checkpoints,
     service, config, store,
+    canDelete: () => { for (const guard of deleteGuards) guard(agent.id); },
     get current() {
       return current;
     },
@@ -130,6 +133,7 @@ it("connects messaging after app consent without waiting for personal consent", 
   const personal = vi.spyOn(FeishuAccount.prototype, "authorizationLink");
   const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { personalTools: true });
   expect(job.state).toBe("application");
+  expect(() => f.canDelete()).toThrow("connection_setup_running");
   expect(job.qr).toMatch(/^[ █▀▄\n]+$/);
   expect(Date.parse(job.expiresAt) - Date.now()).toBeGreaterThan(1_799_000);
   expect(() => f.setup.status("@bob:example.test", f.agent.id, job.id)).toThrow("agent_not_found");

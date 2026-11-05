@@ -99,6 +99,21 @@ agent-router --profile owner agent-instance-revoke INSTANCE_ID
 仍需运行时停止，服务不能远程强制结束任意工具。服务不自动重跑不确定的执行。
 没有自动故障转移或上下文跨机器迁移。
 
+## 删除 Agent
+
+```sh
+curl -X DELETE -H "Authorization: Bearer $MATRIX_TOKEN" https://router.example/_agent-router/v1/agents/AGENT_ID
+```
+
+只有 Agent 的所有者能删除，成功返回 204。删除会注销该 Agent 的 Matrix 账号（Synapse 由
+应用服务直接停用，账号随之离开所有房间、拒绝待处理邀请），并删除它的实例凭证、通信日志、
+渠道连接目录（含飞书应用凭据与 CLI 授权）和房间成员索引。已发送的消息仍留在房间历史里。
+
+存在运行中或结果不确定的任务、正在进行的渠道连接配置，或运营配置的渠道入口（如 agentmail）
+仍指向该 Agent 时，返回 409 且不做任何改动；先等待任务结束、完成或放弃配置、移除渠道入口。
+Matrix 注销或清理中途失败时，Agent 保持 `deleting` 状态，不再接收或执行消息，重启后也不会重新
+开启；再次调用同一请求即可完成删除。同名新 Agent 会得到新的 ID 和 Matrix 账号。
+
 ## 部署节点
 
 新节点运行 `homeserver-init.mjs` 时一并生成 AS 注册及两个独立秘密。
