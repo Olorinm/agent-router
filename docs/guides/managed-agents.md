@@ -102,6 +102,13 @@ agent-router --profile owner agent-instance-revoke INSTANCE_ID
 ## 删除 Agent
 
 ```sh
+agent-router --profile owner agent-delete coder --yes
+```
+
+参数可以是 Agent 名称或 ID；必须带 `--yes` 确认，否则返回 `confirm_with_yes` 且不发请求。
+若删除的正是当前 profile 选中的 Agent，CLI 同时清除本地选择。也可直接调用 HTTP 接口：
+
+```sh
 curl -X DELETE -H "Authorization: Bearer $MATRIX_TOKEN" https://router.example/_agent-router/v1/agents/AGENT_ID
 ```
 
