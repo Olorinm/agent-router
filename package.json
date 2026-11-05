@@ -41,6 +41,7 @@
     "weixin:login": "node dist/channels/weixin/login.js",
     "feishu:setup": "node dist/services/feishu/setup.js",
     "channels:check": "node dist/service/check-cli.js",
+    "ledger:backfill": "node dist/ledger/backfill-cli.js",
     "prepack": "npm run build"
   },
   "dependencies": {
