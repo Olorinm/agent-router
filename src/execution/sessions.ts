@@ -111,15 +111,20 @@ export class WorkSessions {
     if (input.admission.kind === "schedule" && !input.admission.toolGrants) throw new WorkError("scheduled_work_grants_required", 403);
     if (Buffer.byteLength(input.input) > 24_000) throw new WorkError("work_input_too_large", 413);
     const sessionId = input.sessionId ?? `w-${digest(key(this.agentId, input.eventId)).slice(0, 40)}`;
+    // A ledger session that was reset (ADR 0005 16.3) runs new work in its current window's execution context.
+    const ledger = AgentLedger.attached(this.store);
+    const contextId = ledger?.authoritative && ledger.session(sessionId) ? ledger.contextFor(sessionId) : sessionId;
     // Existing owner chats retain their native catalog, but this work has no channel reply route.
     // The execution handler denies channel tools without a separately admitted channel message.
-    const priorBinding = this.store.get<ExecutionSession>("execution_sessions", sessionId);
+    const priorBinding = this.store.get<ExecutionSession>("execution_sessions", contextId);
     if (priorBinding && priorBinding.channelTools === undefined && this.ownerInput(sessionId))
-      this.store.set("execution_sessions", sessionId, { ...priorBinding, channelTools: priorBinding.tools !== false });
-    const binding = this.reserve(sessionId);
+      this.store.set("execution_sessions", contextId, { ...priorBinding, channelTools: priorBinding.tools !== false });
+    if (contextId !== sessionId && !this.store.get<ExecutionSession>("execution_sessions", contextId) && this.ownerInput(sessionId))
+      this.store.set("execution_sessions", contextId, { sessionId: `h-${digest(key(this.agentId, this.instanceId, contextId)).slice(0, 40)}`, runtimeId: this.runtimeId, channelTools: true } satisfies ExecutionSession);
+    const binding = this.reserve(contextId);
     if (this.store.get<SessionMetadata>("work_sessions", sessionId)?.archived) throw new WorkError("session_archived", 409);
     this.work.submit(SendMessageRequest.fromJSON({ message: {
-      messageId: `work-event-${digest(key(this.agentId, input.eventId))}`, contextId: sessionId,
+      messageId: `work-event-${digest(key(this.agentId, input.eventId))}`, contextId,
       role: input.admission.kind === "owner" ? "ROLE_USER" : "ROLE_AGENT", parts: [{ text: input.input }],
     }, configuration: { returnImmediately: true } }), {
       sender: `product:${this.agentId}`, room: `work:${sessionId}`, approved: true,

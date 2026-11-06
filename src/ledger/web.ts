@@ -10,6 +10,7 @@ import { WorkError } from "../execution/work.js";
 import { LIMITS, type HubSocket, type OwnerHubs } from "./hub.js";
 import { personId, type PersonRegistry } from "./registry.js";
 import type { WebChannel } from "../channels/web.js";
+import type { LedgerControl } from "./control.js";
 
 export interface OwnerPrincipal { personId: string; ownerId: string; matrixUserId: string }
 /** ADR 0005 section 8.1. Phase 6 adds a native implementation beside Synapse whoami. */
@@ -38,6 +39,11 @@ export interface WebLedgerDependencies {
   send?: boolean | undefined;
   /** The agent's web channel; undefined when the agent has no channel runtime. */
   channel?(agentId: string): Promise<WebChannel | undefined>;
+  /** ADR 0005 `cards` and `reset` (phase 4); both need `send`. */
+  cards?: boolean | undefined;
+  reset?: boolean | undefined;
+  /** The agent's card and control ledger; undefined when the agent has no channel runtime. */
+  control?(agentId: string): Promise<LedgerControl | undefined>;
 }
 const bearer = (req: IncomingMessage) => req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? "";
 const baseLimits = { textBytes: 24_000, eventBytes: 256 * 1024, historyPage: LIMITS.pageEvents, historyBytes: LIMITS.pageBytes,
@@ -78,7 +84,8 @@ class Tickets {
 export function createWebLedger(dependencies: WebLedgerDependencies) {
   const { hubs, persons, authenticator } = dependencies, tickets = new Tickets(), epoch = `ep_${randomBytes(8).toString("hex")}`;
   const send = Boolean(dependencies.send && dependencies.channel);
-  const limits = { ...baseLimits, features: { history: true, send, cards: false, attachments: false, reset: false, groups: false } };
+  const cards = send && Boolean(dependencies.cards && dependencies.control), reset = send && Boolean(dependencies.reset && dependencies.control);
+  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: false, reset, groups: false } };
   const router = express.Router();
   // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
@@ -169,6 +176,100 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       const result = channel.redact(principal(res).personId, resolved.sessionKey, req.params.eventId as string, body.idempotencyKey);
       res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event), dropped: result.dropped });
     });
+  }
+  if (cards || reset) {
+    const key = sendRequest.shape.idempotencyKey;
+    const sends = rateLimit({ windowMs: 60_000, limit: baseLimits.sendsPerMinute, standardHeaders: "draft-8", legacyHeaders: false,
+      keyGenerator: (_req, res) => `control:${principal(res).personId}`,
+      handler: (req, res) => {
+        const reset = (req as express.Request & { rateLimit?: { resetTime?: Date } }).rateLimit?.resetTime;
+        res.status(429).json({ error: "rate_limit_exceeded", retryAfterMs: Math.max(0, (reset?.getTime() ?? Date.now() + 60_000) - Date.now()) });
+      } });
+    /** The chat, its agent's control ledger and whether it may be written (observed chats are read-only). */
+    const controlled = async (res: express.Response, chatId: string, write: boolean) => {
+      const target = await chat(res, chatId), resolved = target.resolve(chatId);
+      if (write && resolved.kind !== "dm") throw new WorkError("chat_read_only", 403);
+      const control = await dependencies.control!(resolved.agentId);
+      if (!control) throw new WorkError("agent_channels_not_configured", 409);
+      const render = (event: import("./ledger.js").LedgerEvent) =>
+        target.render(chatId, resolved.agentId, resolved.ledger, resolved.ledger.session(resolved.sessionKey)?.generation ?? 1, event, true);
+      return { target, resolved, control, render };
+    };
+    /**
+     * `hub_commands` idempotency: the same key and request return the stored response; another request is 409. The row
+     * is written before the work runs, so a retry after a crash runs it again (each step is itself idempotent).
+     */
+    const once = async (res: express.Response, target: ReturnType<typeof hubs.hub>, idempotencyKey: string, request: unknown,
+      run: () => Promise<Record<string, unknown>>, options: { keep?: (response: Record<string, unknown>) => boolean; duplicate?: (stored: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown> } = {}) => {
+      const person = principal(res).personId, hash = digest(["web-command", request]), prior = target.command(person, idempotencyKey);
+      if (prior && prior.hash !== hash) throw new WorkError("idempotency_key_reused", 409);
+      if (prior && !prior.response.planned) return options.duplicate ? options.duplicate(prior.response) : prior.response;
+      if (!prior) target.saveCommand(person, idempotencyKey, hash, { planned: true });
+      const response = await run();
+      if (options.keep?.(response) ?? true) target.saveCommand(person, idempotencyKey, hash, response);
+      return response;
+    };
+    if (cards) {
+      const answerRequest = z.object({ idempotencyKey: key, choiceId: z.string().min(1).max(16).optional(), text: z.string().min(1).max(24_000).optional(),
+        result: z.json().optional() }).strict().refine((body) => [body.choiceId !== undefined, body.text !== undefined, "result" in body].filter(Boolean).length <= 1, "one_answer_form");
+      const scoped = (control: LedgerControl, cardId: string, sessionKey: string) => {
+        const card = control.card(cardId);
+        if (!card || card.sessionKey !== sessionKey) throw new WorkError("card_not_found", 404);
+        return card;
+      };
+      router.get("/chats/:chatId/cards/:cardId", async (req, res) => {
+        const { resolved, control } = await controlled(res, req.params.chatId, false);
+        scoped(control, req.params.cardId, resolved.sessionKey);
+        res.set("Cache-Control", "no-store").json(await control.view(req.params.cardId, true));
+      });
+      router.post("/chats/:chatId/cards/:cardId/answer", sends, async (req, res) => {
+        const body = answerRequest.parse(req.body ?? {}), chatId = req.params.chatId as string, cardId = req.params.cardId as string;
+        const { target, resolved, control } = await controlled(res, chatId, true);
+        scoped(control, cardId, resolved.sessionKey);
+        const { idempotencyKey, ...answer } = body, person = principal(res).personId;
+        res.json(await once(res, target, idempotencyKey, ["card.answer", chatId, cardId, answer], async () => control.answer(cardId, {
+          key: `web:${person}:${idempotencyKey}`, by: person, surface: "web", choiceId: answer.choiceId, text: answer.text,
+          ...("result" in answer ? { result: answer.result, hasResult: true } : {}) }) as unknown as Record<string, unknown>, {
+          keep: (response) => response.status === "accepted",
+          duplicate: async () => ({ status: "duplicate", card: await control.view(cardId) }) }));
+      });
+    }
+    if (reset) {
+      router.post("/chats/:chatId/turns/:turnId/cancel", sends, async (req, res) => {
+        z.object({}).strict().parse(req.body ?? {});
+        const { resolved, control } = await controlled(res, req.params.chatId as string, true);
+        res.json(await control.cancel(resolved.sessionKey, req.params.turnId as string));
+      });
+      router.post("/chats/:chatId/turns/:turnId/steer", sends, async (req, res) => {
+        const body = z.object({ idempotencyKey: key, text: z.string().min(1).max(baseLimits.textBytes) }).strict().parse(req.body ?? {});
+        if (Buffer.byteLength(body.text) > baseLimits.textBytes) throw new WorkError("message_too_large", 413);
+        if (!body.text.trim()) throw new WorkError("message_empty", 422);
+        const chatId = req.params.chatId as string, turnId = req.params.turnId as string, { target, resolved, control, render } = await controlled(res, chatId, true);
+        res.json(await once(res, target, body.idempotencyKey, ["turn.steer", chatId, turnId, body.text], async () => {
+          const result = await control.steer(resolved.sessionKey, turnId, { personId: principal(res).personId, idempotencyKey: body.idempotencyKey, text: body.text });
+          return result.status === "accepted" ? { status: "accepted", event: render(result.event) } : result;
+        }, { keep: (response) => response.status === "accepted" }));
+      });
+      router.post("/chats/:chatId/reset", sends, async (req, res) => {
+        const body = z.object({ idempotencyKey: key, cancelActive: z.boolean().optional() }).strict().parse(req.body ?? {});
+        const chatId = req.params.chatId as string, { target, resolved, control, render } = await controlled(res, chatId, true);
+        res.json(await once(res, target, body.idempotencyKey, ["chat.reset", chatId, Boolean(body.cancelActive)], async () => {
+          const result = await control.reset(resolved.sessionKey, { cancelActive: Boolean(body.cancelActive) });
+          return { window: result.window, event: render(result.event) };
+        }));
+      });
+      router.post("/chats/:chatId/purge", sends, async (req, res) => {
+        const body = z.object({ idempotencyKey: key, confirm: z.string().max(512), cancelActive: z.boolean().optional() }).strict().parse(req.body ?? {});
+        const chatId = req.params.chatId as string;
+        if (body.confirm !== chatId) throw new WorkError("purge_confirmation_required", 422);
+        const { target, resolved, control } = await controlled(res, chatId, true);
+        res.json(await once(res, target, body.idempotencyKey, ["chat.purge", chatId, Boolean(body.cancelActive)], async () => {
+          const result = await control.purge(resolved.sessionKey, { cancelActive: Boolean(body.cancelActive) });
+          target.clearRead(chatId);
+          return result;
+        }));
+      });
+    }
   }
   /** Phase 1 diffing aid: ledger counts beside the legacy and Matrix mirror counts, per owned agent. */
   router.get("/debug/ledger", async (_req, res) => {

@@ -11,7 +11,10 @@ interface Receipt { workId: string; revision: number; worker: string; actions: R
 type Policy = "allow" | "ask" | "deny";
 export type WorkAction = "progress" | "defer" | "reply" | "need-input" | "fail" | "cancelled";
 export class WorkError extends Error {
+  /** Extra response members beside `error` (for example `detail`, `activeTurns`). */
+  fields?: Record<string, unknown>;
   constructor(message: string, readonly status = 409, readonly nativeError?: unknown) { super(message); }
+  with(fields: Record<string, unknown>): this { this.fields = { ...this.fields, ...fields }; return this; }
 }
 
 /** The default execution adapter is a durable CLI inbox, with no additional HTTP agent service. */

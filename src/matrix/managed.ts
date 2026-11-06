@@ -28,15 +28,21 @@ export interface ServiceConfig { serverName: string; homeserver: string; publicU
   /** ADR 0005 `ledger_read`: serve the read-only web history API and event socket from the owner ledger. */
   ledgerRead?: boolean;
   /** ADR 0005 `send` (phase 3, needs `ledgerRead`): owner web messages through the web channel; dispatch and flush read the ledger. */
-  ledgerSend?: boolean; }
+  ledgerSend?: boolean;
+  /** ADR 0005 `cards` (phase 4, `AGENT_LEDGER_CARDS`, needs `ledgerSend`): card answers over HTTP; first answer wins. */
+  ledgerCards?: boolean;
+  /** ADR 0005 `reset` (phase 4, `AGENT_LEDGER_CONTROL`, needs `ledgerSend`): cancel, steer, reset ("新对话") and purge. */
+  ledgerControl?: boolean; }
 export interface ServiceExtension {
   observation?: import("../execution/observation.js").RunObservation;
   sessions?: import("../execution/sessions.js").WorkSessions;
   /** The channel core and its web channel (ADR 0005 phase 3). */
   communication?: import("../communication/core.js").CommunicationCore;
   web?: import("../channels/web.js").WebChannel;
+  /** Phase 4 cards and control (ADR 0005 section 16). */
+  control?: import("../ledger/control.js").LedgerControl;
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
-  resolve(callId: string, result: unknown): Promise<void>;
+  resolve(callId: string, result: unknown): Promise<void | "accepted" | "stale">;
   reconcile(claimId: string, runId: string): Promise<void>;
   closeUnknown(claimId: string): Promise<void>;
   authorization?(connectionId: string, action: "status" | "begin" | "complete"): Promise<unknown>;
@@ -103,6 +109,8 @@ export class ManagedService {
     this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons,
       authenticator: new SynapseWhoamiAuthenticator((token) => this.authenticate(token)),
       send: config.ledgerSend, channel: async (agentId) => (await this.runtime(agentId)).extension?.web,
+      cards: Boolean(config.ledgerSend && config.ledgerCards), reset: Boolean(config.ledgerSend && config.ledgerControl),
+      control: async (agentId) => (await this.runtime(agentId)).extension?.control,
       open: async (agentId) => { await this.runtime(agentId); }, owned: (owner) => this.agents(owner).filter((agent) => agent.status === "active"),
       debug: (agentId) => {
         const ledger = this.ledgers.get(agentId), store = ledger?.store;
@@ -215,6 +223,7 @@ export class ManagedService {
     try {
       const ledger = AgentLedger.open(store);
       ledger.authoritative = Boolean(this.config.ledgerRead && this.config.ledgerSend);
+      ledger.features = { cards: ledger.authoritative && Boolean(this.config.ledgerCards), reset: ledger.authoritative && Boolean(this.config.ledgerControl) };
       this.ledgers.set(agent.id, ledger);
       ledger.listen((sessionKey) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).publish(agent.id, sessionKey); });
       ledger.listenStream((sessionKey, turnId, text) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).stream(agent.id, sessionKey, turnId, text); });
@@ -497,8 +506,13 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
   });
   app.post(`${communication}/runs/:claimId/calls/:callId/result`, async (req, res) => {
     const body = z.object({ result: z.json() }).strict().parse(req.body);
-    await (await observation(req.params.agentId)).resolve(req.params.claimId, req.params.callId, body.result);
-    res.json({ status: "accepted" });
+    const runtime = await extension(req.params.agentId), value = await observation(req.params.agentId);
+    const resolve = () => value.resolve(req.params.claimId, req.params.callId, body.result);
+    // One card record for every answer surface (ADR 0005 16.1): the first answer wins, a later one is stale.
+    const runId = runtime.control ? value.store.get<{ runId?: string }>("communication_runs", req.params.claimId)?.runId : undefined;
+    const status = runtime.control && runId ? await runtime.control.record(runId, req.params.callId, { by: personId(res.locals.owner), surface: "run-api", result: body.result }, resolve)
+      : (await resolve(), "accepted");
+    res.json({ status });
   });
   app.post(`${communication}/tasks/:taskId/cancel`, async (req, res) => {
     z.object({}).strict().parse(req.body);
@@ -518,7 +532,7 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
   });
   app.post(`${root}/agents/:agentId/communication/calls/:callId/result`, async (req, res) => {
     const body = z.object({ result: z.json() }).strict().parse(req.body);
-    await (await extension(req.params.agentId)).resolve(req.params.callId, body.result); res.json({ status: "accepted" });
+    const status = await (await extension(req.params.agentId)).resolve(req.params.callId, body.result); res.json({ status: status ?? "accepted" });
   });
   app.post(`${root}/agents/:agentId/communication/runs/:claimId/reconcile`, async (req, res) => {
     const body = z.object({ runId: z.string().min(1).max(160) }).strict().parse(req.body);
@@ -558,7 +572,8 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof WorkError ? error.status : error instanceof z.ZodError ? 400 : 500)
       .json({ error: error instanceof WorkError ? error.message : error instanceof z.ZodError ? "invalid_request" : "operation_failed",
-        ...(error instanceof WorkError && error.nativeError !== undefined ? { nativeError: error.nativeError } : {}) });
+        ...(error instanceof WorkError && error.nativeError !== undefined ? { nativeError: error.nativeError } : {}),
+        ...(error instanceof WorkError && error.fields ? error.fields : {}) });
   });
   return app;
 }

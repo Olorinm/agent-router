@@ -13,6 +13,8 @@ export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): Service
     ...(env.AGENT_CHANNELS_CONFIG_FILE ? { channelConfigFile: env.AGENT_CHANNELS_CONFIG_FILE } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_READ ?? "") ? { ledgerRead: true } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_SEND ?? "") ? { ledgerSend: true } : {}),
+    ...(["1", "true"].includes(env.AGENT_LEDGER_CARDS ?? "") ? { ledgerCards: true } : {}),
+    ...(["1", "true"].includes(env.AGENT_LEDGER_CONTROL ?? "") ? { ledgerControl: true } : {}),
     ...(env.AGENT_TRUST_PROXY ? { trustedProxies: env.AGENT_TRUST_PROXY.split(",").map(v => v.trim()).filter(Boolean) } : {}),
     ...(env.AGENT_IDENTITY_CONFIG_FILE ? { externalIdentity: externalIdentityConfigSchema.parse({
       providers: JSON.parse(readFileSync(env.AGENT_IDENTITY_CONFIG_FILE, "utf8")), adminToken: token("MATRIX_ADMIN_TOKEN_FILE"),
