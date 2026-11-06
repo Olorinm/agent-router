@@ -163,11 +163,11 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event),
         addressed: [{ agentId: resolved.agentId, state: result.inputState === "control" ? "control" : "queued" }] });
     });
-    router.post("/chats/:chatId/messages/:eventId/redact", sends, async (req, res) => {
+    router.post("/chats/:chatId/events/:eventId/redact", sends, async (req, res) => {
       const body = z.object({ idempotencyKey: sendRequest.shape.idempotencyKey }).strict().parse(req.body ?? {});
       const chatId = req.params.chatId as string, { target, resolved, channel } = await writable(res, chatId);
       const result = channel.redact(principal(res).personId, resolved.sessionKey, req.params.eventId as string, body.idempotencyKey);
-      res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event) });
+      res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event), dropped: result.dropped });
     });
   }
   /** Phase 1 diffing aid: ledger counts beside the legacy and Matrix mirror counts, per owned agent. */

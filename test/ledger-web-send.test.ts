@@ -135,7 +135,7 @@ describe("owner send via Router (web channel)", () => {
     const t = await setup();
     const sent = await t.send({ idempotencyKey: key, text: "私密" });
     expect(await t.send({ idempotencyKey: key, text: "私密" }, "bob")).toEqual({ status: 404, data: { error: "chat_not_found" } });
-    expect(await t.api(`${root}/web/chats/${enc(t.chatId)}/messages/${sent.data.event.eventId}/redact`, "bob", "POST", { idempotencyKey: key })).toEqual({ status: 404, data: { error: "chat_not_found" } });
+    expect(await t.api(`${root}/web/chats/${enc(t.chatId)}/events/${sent.data.event.eventId}/redact`, "bob", "POST", { idempotencyKey: key })).toEqual({ status: 404, data: { error: "chat_not_found" } });
     expect(await t.api(`${root}/web/chats/dm`, "bob", "POST", { agentId: t.agent.id })).toEqual({ status: 404, data: { error: "chat_not_found" } });
     // Observed chats (other sessions of the agent) are read-only.
     t.extension().communication!.receive("matrix", { externalId: "$g1", sender: owner, scope: "group", groupId: "!group:example.test", mentions: { self: true, all: false },
@@ -163,14 +163,14 @@ describe("owner send via Router (web channel)", () => {
     const t = await setup();
     const sent = await t.send({ idempotencyKey: key, text: "撤回我" });
     const events = await until(t.events, (items) => items.some((event) => event.text === "回答-1"));
-    const redact = (eventId: string, idempotencyKey = `${key}r`) => t.api(`${root}/web/chats/${enc(t.chatId)}/messages/${enc(eventId)}/redact`, "alice", "POST", { idempotencyKey });
+    const redact = (eventId: string, idempotencyKey = `${key}r`) => t.api(`${root}/web/chats/${enc(t.chatId)}/events/${enc(eventId)}/redact`, "alice", "POST", { idempotencyKey });
     const first = await redact(sent.data.event.eventId);
-    expect(first.data).toMatchObject({ status: "accepted", event: { kind: "redaction", targetEventId: sent.data.event.eventId, sender: { type: "person" }, channel: { kind: "web" } } });
+    expect(first.data).toMatchObject({ status: "accepted", dropped: false, event: { kind: "redaction", targetEventId: sent.data.event.eventId, sender: { type: "person" }, channel: { kind: "web" } } });
     expect((await redact(sent.data.event.eventId)).data).toMatchObject({ status: "duplicate", event: { eventId: first.data.event.eventId } });
     const history = await t.events();
     expect(history.find((event) => event.eventId === sent.data.event.eventId)).toMatchObject({ text: "", redacted: true });
     expect(await redact(events.find((event) => event.text === "回答-1").eventId, `${key}s`)).toEqual({ status: 403, data: { error: "redaction_not_allowed" } });
-    expect((await t.api(`${root}/web/chats/${enc(t.chatId)}/messages/${sent.data.event.eventId}/redact`, "alice", "POST", {})).status).toBe(400);
+    expect((await t.api(`${root}/web/chats/${enc(t.chatId)}/events/${sent.data.event.eventId}/redact`, "alice", "POST", {})).status).toBe(400);
     expect(await redact("ev_missing", `${key}t`)).toEqual({ status: 404, data: { error: "event_not_found" } });
     expect(t.host.starts).toHaveLength(1);
   }, 20_000);
@@ -178,7 +178,7 @@ describe("owner send via Router (web channel)", () => {
     const t = await setup({ ledgerSend: false });
     expect((await t.api(`${root}/web/me`)).data.limits.features.send).toBe(false);
     expect((await t.send({ idempotencyKey: key, text: "x" })).status).toBe(404);
-    expect((await t.api(`${root}/web/chats/${enc(t.chatId)}/messages/ev_x/redact`, "alice", "POST", { idempotencyKey: key })).status).toBe(404);
+    expect((await t.api(`${root}/web/chats/${enc(t.chatId)}/events/ev_x/redact`, "alice", "POST", { idempotencyKey: key })).status).toBe(404);
     expect(t.ledger.authoritative).toBe(false);
     // No web connection without the flag: channel status and dispatch are exactly the phase 2 ones.
     expect(t.extension().web).toBeUndefined();

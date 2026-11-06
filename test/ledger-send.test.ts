@@ -110,7 +110,7 @@ describe("web channel ingress and the authoritative ledger queue", () => {
     expect(h.web.redact(person, ownerMain, sent.event.eventId, key(8))).toMatchObject({ duplicate: true, event: { eventId: redaction.event.eventId } });
     await h.complete();
     expect(h.host.starts).toHaveLength(0);
-    expect(h.ledger.event(sent.event.eventId)!.body).toEqual({ text: "", redacted: true, channel: "web" });
+    expect(h.ledger.event(sent.event.eventId)!.body).toEqual({ text: "", redacted: true, redactedAt: expect.any(String), channel: "web" });
     expect(h.ledger.input(h.ledger.claimFor(WEB_CONNECTION, `${person}:${key(1)}`)!.inputId)).toMatchObject({ state: "dropped", reason: "redacted" });
     const legacy = h.store.entries<InboxRecord>("communication_inbox").map(({ value }) => value);
     expect(legacy.map((item) => [item.state, item.source.text, item.reason ?? null])).toEqual([["done", "", "redacted_before_start"],

@@ -210,9 +210,9 @@ export class AgentLedger {
       bounded({ ...event.body, ...patch.body }), eventId);
   }
   /** Redaction removes the content of the target and keeps its place (seq, sender, channel). */
-  redactBody(eventId: string): void {
+  redactBody(eventId: string, at = Date.now()): void {
     const event = this.event(eventId); if (!event) return;
-    this.run("UPDATE ledger_events SET body=? WHERE event_id=?", JSON.stringify({ text: "", redacted: true,
+    this.run("UPDATE ledger_events SET body=? WHERE event_id=?", JSON.stringify({ text: "", redacted: true, redactedAt: new Date(at).toISOString(),
       ...(typeof event.body.channel === "string" ? { channel: event.body.channel } : {}) }), eventId);
   }
   /** Re-sequence a session by time after history was rewritten (late backfill) and bump its generation. */
