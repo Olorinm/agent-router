@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { SendMessageRequest } from "@a2a-js/sdk";
 import { ManagedService, type ManagedAgent } from "../src/matrix/managed.js";
 import type { ApplicationInbox } from "../src/matrix/application-service.js";
@@ -127,6 +128,52 @@ describe("ledger backfill", () => {
     expect(opened.ledger.session(session)).toMatchObject({ lastSeq: 7, generation: 2, publishedSeq: 0 });
     expect(opened.ledger.events(session).map((item) => item.body.text ?? item.kind)).toEqual(["最早", "", "你好", "在的", "reaction", "你好呀", "live"]);
     opened.store.close();
+  });
+  it("pages Synapse history for every room and agent with no transaction open, then writes once (dry run, real, idempotent)", async () => {
+    const f = await fixture();
+    const agentPath = join(f.stateDir, "agents", `${f.agent.id}.sqlite`), hubPath = join(f.stateDir, "owners", `${digest(owner)}.sqlite`);
+    // A write transaction open across the network await would hold the write lock: a second connection could not take it.
+    const unlocked = (path: string) => { const db = new DatabaseSync(path); try { db.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE; ROLLBACK"); return true; } catch { return false; } finally { db.close(); } };
+    const calls: string[] = [], locked: string[] = [];
+    const history = (agent: ManagedAgent) => async (room: string, from?: string) => {
+      await new Promise((r) => setTimeout(r, 1)); await Promise.resolve();
+      for (const path of [agentPath, hubPath]) if (existsSync(path) && !unlocked(path)) locked.push(`${agent.id}:${room}:${from ?? ""}`);
+      calls.push(`${agent.id}:${room}:${from ?? ""}`);
+      const page = Number(from ?? 0);
+      if (agent.id !== f.agent.id || room === "!team:example.test" || page >= 3) return { events: [] };
+      return { events: [event(`$h${page}${room}`, owner, 10 + page, { msgtype: "m.text", body: `history ${page}` }),
+        { event_id: `$j${page}${room}`, sender: owner, type: "m.room.member", state_key: owner, content: { membership: "join" }, origin_server_ts: 5 + page } as RoomEvent],
+      end: String(page + 1) };
+    };
+    const dry = await backfill({ stateDir: f.stateDir, dryRun: true, history });
+    expect(dry.agents.find((item) => item.agentId === f.agent.id)!.rooms.find((room) => room.room === "!dm:example.test")).toMatchObject({ imported: 10, fromSynapse: 6 });
+    let opened = f.open(); expect(opened.ledger.counts().events).toBe(0); opened.store.close();
+    calls.length = 0;
+    const real = await backfill({ stateDir: f.stateDir, history });
+    expect(locked).toEqual([]);
+    // Four pages (three with events, one empty) for each of the agent's five rooms; one empty page per sibling room.
+    expect(calls.filter((call) => call.startsWith(`${f.agent.id}:!dm:`))).toEqual(["", "1", "2", "3"].map((page) => `${f.agent.id}:!dm:example.test:${page}`));
+    const rooms = real.agents.find((item) => item.agentId === f.agent.id)!.rooms;
+    expect(rooms.find((room) => room.room === "!dm:example.test")).toMatchObject({ imported: 10, fromSynapse: 6 });
+    expect(rooms.find((room) => room.room === "!peer:example.test")).toMatchObject({ imported: 7, fromSynapse: 6 });
+    const again = await backfill({ stateDir: f.stateDir, history });
+    expect(again.agents.flatMap((item) => item.rooms).every((room) => room.imported === 0)).toBe(true);
+    opened = f.open(); expect(opened.store.get("meta", "ledger_backfill")).toBeDefined(); opened.store.close();
+  });
+  it("surfaces the SQLite error when SQLite already rolled the transaction back", () => {
+    const dir = mkdtempSync(join(tmpdir(), "durable-store-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const store = new DurableStore(join(dir, "s.sqlite"), "id"); cleanup.push(() => store.close());
+    // Statement journals and sorts never need a temp file (read-only containers have no writable temp directory).
+    expect(store.db.prepare("PRAGMA temp_store").get()).toEqual({ temp_store: 2 });
+    // SQLITE_IOERR and SQLITE_FULL end the transaction inside SQLite; the caller must see that error, not the ROLLBACK's.
+    expect(() => store.transaction(() => { store.set("x", "1", 1); store.db.exec("ROLLBACK"); throw new Error("disk I/O error"); })).toThrow("disk I/O error");
+    expect(store.db.isTransaction).toBe(false); expect(store.get("x", "1")).toBeUndefined();
+    const ledger = AgentLedger.open(store);
+    // A shadow write that loses the outer transaction fails the legacy write too, rather than continuing in autocommit.
+    expect(() => store.transaction(() => { store.set("x", "2", 2); ledger.shadow(() => { store.db.exec("ROLLBACK"); throw new Error("disk I/O error"); }); store.set("x", "3", 3); }))
+      .toThrow("disk I/O error");
+    expect(store.get("x", "2")).toBeUndefined(); expect(store.get("x", "3")).toBeUndefined();
+    expect(store.transaction(() => ledger.shadow(() => { throw new Error("ledger_bad"); }) ?? ledger.lastError)).toBe("ledger_bad");
   });
   it("refuses to run while the service holds the agent store", async () => {
     const f = await fixture();

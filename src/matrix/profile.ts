@@ -80,7 +80,7 @@ export class ProfileStore {
       }
       db.prepare("INSERT INTO owner VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(JSON.stringify(owner));
       db.exec("COMMIT");
-    } catch (error) { db.exec("ROLLBACK"); db.close(); throw error; }
+    } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); db.close(); throw error; }
     let released = false;
     return () => {
       if (released) return; released = true;

@@ -4,6 +4,7 @@ import { createServer as createTcpServer } from "node:net";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { createRouter, loadServiceConfig, type ServiceConfig } from "../src/server.js";
 import type { ManagedAgent } from "../src/matrix/managed.js";
@@ -417,7 +418,14 @@ describe("Synapse removal tooling (19.4)", () => {
     await t.stop(); cleanup.splice(cleanup.indexOf(t.stop), 1);
 
     const store = createBlobStore(undefined, stateDir), reads: string[] = [];
-    const read = () => async (uri: string) => { reads.push(uri); return png; };
+    // The media read is a network call: no SQLite write transaction may be open on the agent store or the owner hub across it.
+    const unlocked = (path: string) => { const db = new DatabaseSync(path); try { db.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE; ROLLBACK"); return true; } catch { return false; } finally { db.close(); } };
+    const read = () => async (uri: string) => {
+      await new Promise((r) => setTimeout(r, 5));
+      expect(unlocked(join(stateDir, "agents", `${agent.id}.sqlite`))).toBe(true);
+      expect(unlocked(join(stateDir, "owners", `${digest(owner)}.sqlite`))).toBe(true);
+      reads.push(uri); return png;
+    };
     const before = await exportMatrix({ stateDir, all: true });
     expect(before.report).toMatchObject({ ready: false, blocking: { unpromotedMedia: 1 } });
     expect(await promoteMedia({ stateDir, all: true, dryRun: true, store })).toMatchObject({ remaining: 1, agents: [{ candidates: 1, promoted: 0 }] });
