@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SendMessageRequest, TaskState } from "@a2a-js/sdk";
 import { CommunicationCore, type InboxRecord, type OutboxRecord } from "../src/communication/core.js";
+import { WorkSessions } from "../src/execution/sessions.js";
 import { DurableStore } from "../src/communication/store.js";
 import { CliWork, WorkError } from "../src/execution/work.js";
 import { HostWorker } from "../src/execution/host-worker.js";
@@ -65,6 +66,33 @@ function message(id: string, sender = "owner-feishu", overrides: Partial<Channel
 async function complete(h: ReturnType<typeof harness>) { await h.core.dispatch(); await h.worker().tick(); await h.core.dispatch(); await h.core.flush(); }
 
 describe("communication receipt and routing", () => {
+  it("keeps a Feishu owner on owner-main when the session's newest turns came through a connection that is gone", async () => {
+    const h = harness(); await h.core.start();
+    h.core.receive("feishu", message("older")); await complete(h);
+    h.core.receive("matrix", message("newest", "owner-matrix")); await complete(h);
+    const owner = h.store.entries<{ conversationId: string }>("communication_inbox")[0]!.value.conversationId;
+    const session = h.store.get("execution_sessions", owner);
+    await h.core.stop();
+
+    // AGENT_MATRIX=off: the same store, the Matrix connection is not registered.
+    const core = new CommunicationCore("agent", h.store, h.work), feishu = new Adapter("feishu");
+    core.register({ id: "feishu", ownerAddresses: ["owner-feishu"], peerAddresses: [], groupIds: [] }, feishu);
+    await core.start();
+    const sessions = new WorkSessions("agent", "owner", "fixture", "instance", h.store, h.work, h.host, core);
+    expect(sessions.getSession(owner).ownerConversation).toBe(true);
+    sessions.deliver({ eventId: "notice-1", targetSessionId: owner, text: "定时通知" });
+    await core.flush();
+    expect(feishu.sent).toMatchObject([{ route: { connectionId: "feishu", target: "chat-older" }, text: "定时通知" }]);
+
+    core.receive("feishu", message("after"));
+    await core.dispatch();
+    const worker = new HostWorker("agent", "instance", h.store, h.work, h.host, "fixture", "instructions", () => {}, (id, text) => core.saveResult(id, text));
+    await worker.tick(); await core.dispatch(); await core.flush();
+    expect(h.host.starts.at(-1)!.input).toContain("input-after");
+    expect(h.host.starts.at(-1)!.sessionId).toBe((session as { sessionId: string }).sessionId);
+    expect(feishu.sent.at(-1)).toMatchObject({ route: { connectionId: "feishu", target: "chat-after" }, text: "回答" });
+    expect(core.status().error).toBeNull();
+  });
   it("delivers provider IDs for history lookup without including raw credentials or reply data", async () => {
     const h = harness(); await h.core.start();
     const incoming = message("om_current", "owner-feishu", { scope: "group", groupId: "group",
