@@ -267,6 +267,14 @@ export class OwnerAttachments {
     let media: MediaContent;
     try { media = await this.deps.readChannel(agentId, String(claim.input_id), reference); }
     catch { throw new WorkError("attachment_unavailable", 502); }
+    return this.storePromoted(ownerId, agentId, ledger, attachmentId, media, reference.name, at);
+  }
+  /**
+   * Store channel media read elsewhere under the owner's prefix, reference it from the agent attachment and rewrite the
+   * row's locator to the blob. Lazy promotion and the offline `ledger promote-media` (ADR 0005 19.4 item 6) share it.
+   */
+  async storePromoted(ownerId: string, agentId: string, ledger: AgentLedger, attachmentId: string, media: MediaContent,
+    fallbackName: string, at = Date.now()): Promise<AttachmentMeta> {
     const file = await this.spool([Buffer.from(media.data, "base64")], media.mediaType, MAX_MEDIA_BYTES);
     try {
       return await this.locked(ownerId, file.sha256, async () => {
@@ -276,7 +284,7 @@ export class OwnerAttachments {
         hub.store.transaction(() => { this.upsertBlob(hub, file.sha256, file.size, media.mediaType, "channel", at); this.addRef(hub, file.sha256, refs.agent(agentId, attachmentId), at); });
         ledger.store.db.prepare("UPDATE ledger_attachments SET sha256=?, size=?, content_type=?, locator=? WHERE attachment_id=?")
           .run(file.sha256, file.size, media.mediaType, JSON.stringify({ blob: `sha256:${file.sha256}` }), attachmentId);
-        return { attachmentId, name: media.name || reference.name, contentType: media.mediaType, size: file.size, sha256: file.sha256 };
+        return { attachmentId, name: media.name || fallbackName, contentType: media.mediaType, size: file.size, sha256: file.sha256 };
       });
     } finally { await file.cleanup(); }
   }

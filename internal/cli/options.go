@@ -14,6 +14,8 @@ type options struct {
 	profile, homeserver, passwordFile, registrationTokenFile, deviceName                             string
 	connectorURL, endpointTokenFile, connectorRuntime                                                string
 	serviceURL, outputFile                                                                           string
+	accessClientIDFile, accessClientSecretFile, accessTokenFile                                      string
+	edge                                                                                             bool
 	contextID, taskID, messageID, note, from, since, room, worker, wait, dataFile                    string
 	tags, attachments                                                                                []string
 	passwordStdin, allowLocal, allowHTTP, receive, execution, all, help, version, yes                bool
@@ -64,6 +66,10 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.StringVar(&o.ownerEmail, "owner-email", "", "Owner's mail sender address")
 	f.StringVar(&o.pairingCodeFile, "pairing-code-file", "", "Read Weixin pairing code from a private file")
 	f.BoolVar(&o.noWait, "no-wait", false, "Return the connection job for later polling")
+	f.BoolVar(&o.edge, "edge", false, "Log in through Cloudflare Access instead of a Matrix account")
+	f.StringVar(&o.accessClientIDFile, "access-client-id-file", "", "Read the Cloudflare Access service token client ID from a file")
+	f.StringVar(&o.accessClientSecretFile, "access-client-secret-file", "", "Read the Cloudflare Access service token client secret from a file")
+	f.StringVar(&o.accessTokenFile, "access-token-file", "", "Read a Cloudflare Access token (cloudflared access token) from a file")
 	if err := f.Parse(args); err != nil {
 		return o, nil, err
 	}
@@ -81,6 +87,7 @@ func (o options) waitSeconds(max int) (int, error) {
 const help = `Agent Router — Go CLI
   register SERVER USERNAME       Register your owner account
   login @name:server             Log in (hidden password prompt)
+  login --edge URL               Log in through Cloudflare Access (Matrix-free deployments)
   whoami | logout                Verify identity / revoke this device
   connection-options | connection-check  List channel services / verify selected Agent
   channels                       Show connected platforms
@@ -129,6 +136,9 @@ Use --profile NAME for separate local identities (default: default).
 One account owns multiple Agents. Managed instances need only this Go CLI;
 Matrix credentials stay on the server. New instance credentials use --out FILE.
 Automation: --password-stdin or --password-file FILE; --registration-token-file FILE.
+Edge login: run cloudflared access login URL first, or use an Access service token with
+--access-client-id-file and --access-client-secret-file (or CF_ACCESS_CLIENT_ID[_FILE] and
+CF_ACCESS_CLIENT_SECRET[_FILE]); --access-token-file / CF_ACCESS_TOKEN[_FILE] pass a token.
 Setup uses the saved owner account. Platforms are optional. QR flows wait by default;
 use --no-wait for scripts. Telegram uses --bot-token-file; mail uses --api-key-file,
 --mail-service, --inbox and --owner-email. Feishu includes personal authorization;

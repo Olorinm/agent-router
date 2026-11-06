@@ -6,7 +6,7 @@ import type { ManagedService } from "./managed.js";
 
 const fieldPath=z.array(z.string().min(1).max(80)).min(1).max(8);
 const providerSchema = z.object({ issuer:z.string().min(1).max(512), userInfoUrl:z.url().refine(v=>{const u=new URL(v);return u.protocol==="https:"&&!u.username&&!u.password&&!u.hash&&!u.search;}), subjectPath:fieldPath,rolesPath:fieldPath,requiredRoles:z.array(z.string().min(1)).min(1) }).strict();
-export const externalIdentityConfigSchema=z.object({providers:z.record(z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),providerSchema),adminToken:z.string().min(1)}).strict();
+export const externalIdentityConfigSchema=z.object({providers:z.record(z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),providerSchema),adminToken:z.string().min(1).optional()}).strict();
 export type ExternalIdentityConfig=z.infer<typeof externalIdentityConfigSchema>;
 interface Owner {owner:string;issuer:string;subject:string;active:boolean}
 interface Session {owner:string;expiresAt:number}
@@ -65,8 +65,11 @@ export class ExternalIdentitySessions {
   private async provision(key:string,issuer:string,subject:string):Promise<Owner>{
     let owner=this.service.store.get<Owner>("external_owners",key);
     if(!owner){owner={owner:`@ext_${randomUUID().replaceAll("-","")}:${this.service.config.serverName}`,issuer,subject,active:false};this.service.store.set("external_owners",key,owner);}
+    // ADR 0005 19.2: without Matrix there is no homeserver account to provision; the record is active at once.
+    if(!this.service.matrixOn){if(!owner.active){owner={...owner,active:true};this.service.store.set("external_owners",key,owner);}return owner;}
+    if(!this.config.adminToken)throw new WorkError("account_provisioning_unavailable",503);
     const binding={auth_provider:`agent-router:${issuer}`,external_id:subject};
-    const url=`${this.service.config.homeserver}/_synapse/admin/v2/users/${encodeURIComponent(owner.owner)}`;
+    const url=`${this.service.matrixConfig().homeserver}/_synapse/admin/v2/users/${encodeURIComponent(owner.owner)}`;
     const call=async(method:string,body?:unknown)=>{
       try{return await fetch(url,{method,headers:{Authorization:`Bearer ${this.config.adminToken}`,"Content-Type":"application/json"},redirect:"error",signal:AbortSignal.timeout(10000),...(body===undefined?{}:{body:JSON.stringify(body)})});}
       catch{throw new WorkError("account_provisioning_unavailable",503);}

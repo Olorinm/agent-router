@@ -6,7 +6,7 @@ import { ServiceHttp } from "../channels/http.js";
 import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js";
 import { loadWeixinCredentials, type ChannelConfiguration } from "./channels.js";
 
-export interface Check { agentId: string; connectionId?: string; kind: string; status: "verified" | "needs_action" | "not_verified"; detail: string; }
+export interface Check { agentId: string; connectionId?: string; kind: string; status: "verified" | "needs_action" | "not_verified" | "disabled"; detail: string; }
 /** Checks access without starting consumers, consuming messages, sending replies or running a model. */
 export async function checkChannels(configuration: ChannelConfiguration, node?: ServiceHttp, suppliedHost?: ServiceHttp): Promise<Check[]> {
   const checks: Check[] = [], file = (path: string) => readFileSync(resolve(configuration.directory, path), "utf8").trim();

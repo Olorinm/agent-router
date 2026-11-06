@@ -355,15 +355,7 @@ export class OwnerHub {
     return { inputEventIds: ledger.turnInputs(turnId), finalEventId: ledger.turn(turnId)?.finalEventId ?? null, cardIds: ledger.cardsForTurn(turnId),
       runs: runBindings(ledger, { taskId: turnId }).map((run) => ({ claimId: run.claimId, runId: run.runId ?? null, phase: run.phase, error: run.error ?? null })) };
   }
-  /** Imported `ai.mau.room` groups (backfill). Served from phase 5; the id is derived so every agent imports the same room. */
-  importRoom(matrixRoomId: string, title: string, members: Array<{ type: "person" | "agent"; id: string }>, at = Date.now()): string {
-    const roomId = `rm_${digest(["matrix-room", matrixRoomId]).slice(0, 26)}`;
-    this.store.db.prepare("INSERT OR IGNORE INTO hub_rooms(room_id,title,created_by,created_at,matrix_room_id) VALUES(?,?,?,?,?)")
-      .run(roomId, title, this.ownerId, at, matrixRoomId);
-    for (const member of members) this.store.db.prepare(`INSERT OR IGNORE INTO hub_room_members(room_id,member_type,member_id,role,joined_at) VALUES(?,?,?,?,?)`)
-      .run(roomId, member.type, member.id, member.type === "person" ? "owner" : "agent", at);
-    return roomId;
-  }
+
   appendRoomEvent(roomId: string, input: { kind: string; role: string; senderType: string; senderId: string; refEventId?: string | null | undefined;
     idempotencyKey: string; createdAt: number; body: Record<string, unknown> }): { eventId: string; duplicate: boolean } {
     const prior = this.store.db.prepare("SELECT event_id FROM hub_room_events WHERE room_id=? AND idempotency_key=?").get(roomId, input.idempotencyKey);

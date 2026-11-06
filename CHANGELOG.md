@@ -4,6 +4,26 @@ Notable changes to Agent Router, newest first. Pushing a `v*` tag publishes a Gi
 notes are this file's section for that version (`.github/workflows/release.yml`), so add the section
 in the version-bump commit before tagging.
 
+## [0.7.0-alpha.11] - 2026-11-06
+
+- Owner ledger, phases 3–7 of ADR 0005. Every feature has its own flag and is off by default.
+  - Send through Router (`AGENT_LEDGER_SEND`): a web channel, `POST /web/chats/:chatId/messages` with
+    an idempotency key, owner DMs merged across channels, and redaction of own web messages.
+  - Cards and control (`AGENT_LEDGER_CARDS`, `AGENT_LEDGER_CONTROL`): one card record for every
+    answer surface, a retry card for unknown outcomes, cancel, steer, reset and chat purge.
+  - Attachments (`AGENT_LEDGER_ATTACHMENTS`): local or R2 blob store, proxied downloads, per-owner
+    quota, files to and from the agent.
+  - Native groups (`AGENT_LEDGER_GROUPS`): rooms, members, mentions and capped group context. Only
+    the owner's `@agent` or `@all` reaches agents.
+  - Identity (`AGENT_LEDGER_IDENTITY`): persons, linked channel identities and `/link` pairing codes.
+- Edge login: `AGENT_EDGE_IDENTITY_FILE` verifies Cloudflare Access JWTs, with an Origin check on
+  unsafe requests.
+- Matrix is optional: `AGENT_MATRIX=off` runs without a homeserver, agents have an `active`,
+  `dormant` or `none` Matrix state, and `ledger:promote-media`, `matrix:export` and `matrix:forget`
+  prepare a homeserver for removal. Both CLIs gain an edge login.
+
+PRs: [#74](https://github.com/Olorinm/agent-router/pull/74), [#75](https://github.com/Olorinm/agent-router/pull/75), [#76](https://github.com/Olorinm/agent-router/pull/76), [#77](https://github.com/Olorinm/agent-router/pull/77), [#78](https://github.com/Olorinm/agent-router/pull/78), [#79](https://github.com/Olorinm/agent-router/pull/79), [#80](https://github.com/Olorinm/agent-router/pull/80), [#82](https://github.com/Olorinm/agent-router/pull/82)
+
 ## [0.7.0-alpha.10] - 2026-11-05
 
 - Owner ledger, phases 1–2 of ADR 0005. The API is read-only and behind a flag; sending still goes

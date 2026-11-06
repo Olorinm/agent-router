@@ -76,9 +76,11 @@ export class WorkSessions {
       runs: this.store.entries<RunBinding>("communication_runs").map(({ value }) => value)
         .filter(run => run.contextId === sessionId).map(run => ({ taskId: run.taskId, runId: run.runId ?? null, phase: run.phase, error: run.error ?? null })) };
   }
-  private ownerInput(sessionId: string): InboxRecord | undefined {
+  private ownerInput(sessionId: string): InboxRecord | undefined { return this.ownerInputs(sessionId)[0]; }
+  /** The session's owner inputs, newest first. */
+  private ownerInputs(sessionId: string): InboxRecord[] {
     return this.store.entries<InboxRecord>("communication_inbox").map(({ value }) => value).reverse()
-      .find(input => input.taskId && input.conversationId === sessionId && this.communication.isOwnerInput(input));
+      .filter(input => input.taskId && input.conversationId === sessionId && this.communication.isOwnerInput(input));
   }
   validateTarget(sessionId: string) {
     this.getSession(sessionId);
@@ -274,7 +276,9 @@ export class WorkSessions {
     const hash = digest(input), prior = this.store.get<{ hash: string; taskId: string; deliveryId: string }>("work_session_deliveries", input.eventId);
     if (prior && prior.hash !== hash) throw new WorkError("delivery_event_id_reused", 409);
     if (!prior) this.store.transaction(() => {
-      const taskId = this.ownerInput(input.targetSessionId)!.taskId!;
+      // The newest route that still exists: an owner-main session outlives the channels it came through (Matrix off).
+      const inputs = this.ownerInputs(input.targetSessionId);
+      const taskId = (inputs.find(item => this.communication.connected(item.connectionId)) ?? inputs[0]!).taskId!;
       const deliveryId = this.communication.queueContent(taskId, { text: input.text }, `work-event:${input.eventId}`, { notice: `schedule:${input.eventId}` });
       this.store.set("work_session_deliveries", input.eventId, { hash, taskId, deliveryId });
     });

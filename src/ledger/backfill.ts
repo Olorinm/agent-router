@@ -21,7 +21,7 @@ export interface BackfillOptions {
   maxPages?: number | undefined;
 }
 export interface RoomReport {
-  room: string; class: "owner_dm" | "peer" | "group" | "hub_room"; imported: number; duplicate: number; fromSynapse: number; skipped: Record<string, number>;
+  room: string; class: "owner_dm" | "peer" | "group" | "mau_group"; imported: number; duplicate: number; fromSynapse: number; skipped: Record<string, number>;
 }
 export interface AgentReport {
   agentId: string; rooms: RoomReport[]; linked: { turns: number; deliveries: number; cards: number };
@@ -97,7 +97,8 @@ async function backfillAgent(options: BackfillOptions, agent: ManagedAgent, all:
       const classify = (room: string): RoomReport["class"] => {
         const info = store.get<{ members?: string[]; group?: boolean }>("rooms", room) ?? store.get<{ members?: string[] }>("room_info", room);
         const others = [...new Set(info?.members ?? [])].filter((member) => member !== agent.matrixId);
-        if ((info as { group?: boolean } | undefined)?.group) return "hub_room";
+        // `ai.mau.room` groups are not migrated (product decision 2026-11-06): their history stays in the Synapse archive.
+        if ((info as { group?: boolean } | undefined)?.group) return "mau_group";
         if (others.length === 1 && others[0] === owner) return "owner_dm";
         return others.length === 1 ? "peer" : "group";
       };
@@ -112,6 +113,7 @@ async function backfillAgent(options: BackfillOptions, agent: ManagedAgent, all:
         : mxid === owner ? { role: "user", senderType: "person", senderId: ownerPerson } : { role: "user", senderType: "external", senderId: mxid };
       for (const { room, event, synapse } of stamped) {
         const item = roomReport(room), content = event.content ?? {};
+        if (item.class === "mau_group") { item.skipped.mau_group = (item.skipped.mau_group ?? 0) + 1; continue; }
         const relation = content["m.relates_to"] as { rel_type?: string; event_id?: string; key?: string; "m.in_reply_to"?: { event_id?: string } } | undefined;
         const skip = (reason: string) => { item.skipped[reason] = (item.skipped[reason] ?? 0) + 1; };
         const target = (id: string | undefined) => id ? ledger.platformEvent(connection, id) : undefined;
@@ -148,15 +150,6 @@ async function backfillAgent(options: BackfillOptions, agent: ManagedAgent, all:
         } else { skip(event.type); continue; }
         const at = event.origin_server_ts ?? 0, who = sender(event.sender);
         const body: Record<string, unknown> = { ...input.body, channel: "matrix", source: "backfill" };
-        if (item.class === "hub_room") {
-          const name = store.get<{ name?: string }>("room_info", room)?.name || room;
-          const members = [...new Set(store.get<{ members?: string[] }>("rooms", room)?.members ?? [])]
-            .flatMap((member): Array<{ type: "person" | "agent"; id: string }> => agents.has(member) ? [{ type: "agent", id: agents.get(member)! }] : member === owner ? [{ type: "person", id: ownerPerson }] : []);
-          const roomId = hub.importRoom(room, name, members, at);
-          const result = hub.appendRoomEvent(roomId, { ...input, ...who, idempotencyKey: `matrix:${event.event_id}`, createdAt: at, body });
-          if (result.duplicate) item.duplicate++; else { item.imported++; if (synapse) item.fromSynapse++; }
-          continue;
-        }
         const thread = relation?.rel_type === "m.thread" && relation.event_id ? `${room}:${relation.event_id}` : room;
         const peer = item.class === "owner_dm" ? owner : item.class === "peer" ? [...new Set(store.get<{ members?: string[] }>("rooms", room)?.members ?? store.get<{ members?: string[] }>("room_info", room)?.members ?? [])]
           .find((member) => member !== agent.matrixId) ?? event.sender : event.sender;

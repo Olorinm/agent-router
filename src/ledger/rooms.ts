@@ -433,8 +433,7 @@ export class HubRooms {
     const room = this.room(roomId)!, mentions = event.body.mentions as { all?: boolean } | undefined;
     const replyTo = typeof event.body.replyTo === "string" ? this.event(roomId, event.body.replyTo) : undefined;
     return { externalId: `${roomId}:${event.seq}`, sender: this.hub.ownerId, scope: "group", groupId: roomChatId(roomId),
-      // Imported rooms keep each agent's Matrix group session (17.6 step 3).
-      threadId: (room.matrix_room_id as string | null) ?? roomChatId(roomId), text: String(event.body.text ?? ""),
+      threadId: roomChatId(roomId), text: String(event.body.text ?? ""),
       mentions: { self: true, all: Boolean(mentions?.all) }, privateGroup: true,
       ...(replyTo ? { quoted: { messageId: replyTo.eventId, ...(typeof replyTo.body.text === "string" && replyTo.body.text ? { text: cut(replyTo.body.text, ROOM_LIMITS.contextMessageBytes) } : {}) } } : {}),
       reply: { target: roomId, messageId: event.eventId, data: { roomId } } };

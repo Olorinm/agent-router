@@ -42,11 +42,19 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
     next();
   };
   app.get("/health/live", (_req, res) => res.json({ status: "ok", transport: "matrix" }));
-  app.get("/health/ready", auth, (_req, res) => res.status(Date.now() - connector.lastSyncAt < 90_000 ? 200 : 503).json({
-    status: Date.now() - connector.lastSyncAt < 90_000 ? "ready" : "syncing", userId: connector.userId,
-    lastSyncAt: connector.lastSyncAt, lastError: connector.lastError,
+  // A dormant connector (Matrix off) never syncs; its work queue is ready as soon as it runs.
+  const ready = () => Boolean(connector.transport.dormant) || Date.now() - connector.lastSyncAt < 90_000;
+  app.get("/health/ready", auth, (_req, res) => res.status(ready() ? 200 : 503).json({
+    status: ready() ? "ready" : "syncing", userId: connector.userId,
+    lastSyncAt: connector.lastSyncAt, lastError: connector.lastError, ...(connector.transport.dormant ? { matrix: "dormant" } : {}),
   }));
   app.use(auth);
+  // ADR 0005 19.2: the Matrix social API needs a homeserver. Work, inbox, requests and status keep working.
+  // Case-insensitive like Express routing, so no spelling of the path bypasses it (the transport refuses anyway).
+  app.use(/^\/api\/(contacts|blocked|invites|conversations|messages|rooms|events)(\/|$)/i, (_req, res, next) => {
+    if (connector.transport.dormant) { res.status(409).json({ error: "matrix_disabled" }); return; }
+    next();
+  });
   app.use("/api/work/:id/update", express.json({ limit: 6_000_000 }));
   app.use(express.json({ limit: "64kb" }));
   app.get("/api/status", (_req, res) => {

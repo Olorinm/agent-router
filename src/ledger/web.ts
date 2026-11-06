@@ -55,6 +55,8 @@ export interface WebLedgerDependencies {
   kick?(): void;
   /** ADR 0005 `identity` (phase 6, `AGENT_LEDGER_IDENTITY`): the identity page and pairing codes. */
   identity?: Identities | undefined;
+  /** ADR 0005 19.1: the deployment's Matrix switch, always reported as `features.matrix` (client contract 1). */
+  matrix?: boolean | undefined;
 }
 /** The request's credentials, kept in memory with a socket ticket so the socket can be re-checked. */
 const credentials = (req: IncomingMessage): OwnerRequest => ({ headers: Object.fromEntries(["authorization", "cf-access-jwt-assertion"]
@@ -103,7 +105,8 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   const send = Boolean(dependencies.send && dependencies.channel);
   const cards = send && Boolean(dependencies.cards && dependencies.control), reset = send && Boolean(dependencies.reset && dependencies.control);
   const groups = send && Boolean(dependencies.groups);
-  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: Boolean(dependencies.attachments), reset, groups, identity: Boolean(dependencies.identity) } };
+  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: Boolean(dependencies.attachments), reset, groups, identity: Boolean(dependencies.identity),
+    matrix: dependencies.matrix !== false } };
   const router = express.Router();
   // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
