@@ -24,6 +24,10 @@ function sessionOf(record: InboxRecord, channel: string, owner: boolean): { kind
 /** Section 5 keying, derived generically from the fields every adapter already emits. */
 function conversationOf(ctx: ShadowContext, record: InboxRecord, personId: string | undefined, at: number) {
   const source = record.source, direct = source.scope === "direct";
+  // Web DMs (section 5): one conversation per person, independent of the request that carried the message.
+  if (ctx.channel(record.connectionId) === "web") return { connectionId: record.connectionId, channel: "web", accountId: ctx.account(record.connectionId),
+    kind: "direct" as const, peerId: `person:${personId ?? source.sender}`, parentId: "", threadId: "", sessionKey: record.conversationId,
+    ...(personId ? { personId } : {}), replyRoute: { ...record.replyRoute, messageId: "" }, at };
   const peerId = direct ? source.sender : source.groupId ?? source.reply.target;
   const parentId = direct ? source.reply.target : "";
   const threadId = [peerId, parentId].includes(source.threadId) ? "" : source.threadId;
@@ -49,13 +53,13 @@ export function shadowReceive(ledger: AgentLedger, ctx: ShadowContext, record: I
   const session = sessionOf(record, channel, facts.owner);
   ledger.ensureSession(record.conversationId, session.kind, session.label, at);
   const conversationId = ledger.ensureConversation(conversationOf(ctx, record, who.senderType === "person" ? who.senderId : undefined, at),
-    session.kind === "owner_main" ? "participant" : "primary");
+    session.kind === "owner_main" && channel !== "web" ? "participant" : "primary");
   if (record.state === "ignored") {
     ledger.settleClaim(connectionId, source.externalId, "ignored", { reason: record.reason ?? "input_empty", conversationId });
     if (facts.oversized && facts.noticeId) {
       const notice = ledger.append(record.conversationId, { kind: "notice", role: "system", senderType: "system", senderId: "router", conversationId,
         idempotencyKey: `notice:${facts.noticeId}`, createdAt: at, body: { text: "这条消息超过当前 24 KB 的文字输入上限，请缩短内容后再发送。", level: "warning", channel } }).event;
-      ledger.createDelivery({ deliveryId: facts.noticeId, eventId: notice.eventId, conversationId, connectionId,
+      if (channel !== "web") ledger.createDelivery({ deliveryId: facts.noticeId, eventId: notice.eventId, conversationId, connectionId,
         route: { ...record.replyRoute, channel }, purpose: "notice", at });
     }
     return;
@@ -75,7 +79,10 @@ export function shadowReceive(ledger: AgentLedger, ctx: ShadowContext, record: I
     const token = ledger.cardToken(source.action.token);
     input = { kind: "action", body: { targetCardId: token?.card_id ?? null, label: token ? String(token.choice_id) : "" } };
   } else {
-    const replyTo = source.quoted?.messageId ? ledger.platformEvent(connectionId, source.quoted.messageId) : undefined;
+    // A quote names a platform message id, or (web) an event id of the same session.
+    const quotedId = source.quoted?.messageId;
+    const replyTo = quotedId ? ledger.platformEvent(connectionId, quotedId) ??
+      (ledger.event(quotedId)?.sessionKey === record.conversationId ? quotedId : undefined) : undefined;
     input = { kind: "message", body: { text: source.text,
       ...(replyTo ? { replyTo } : source.quoted ? { quoted: { ...(source.quoted.messageId ? { externalId: source.quoted.messageId } : {}), ...(source.quoted.text ? { text: source.quoted.text } : {}) } } : {}),
       ...(source.event ? { event: { type: source.event.type, data: source.event.data } } : {}),
@@ -127,7 +134,8 @@ export function shadowOutbox(ledger: AgentLedger, ctx: ShadowContext, input: Inb
     id = ledger.append(ledger.turn(turnId ?? "")?.sessionKey ?? input.conversationId, { role: "assistant", senderType: "agent", senderId: ctx.agentId,
       conversationId: claim.conversationId, createdAt: at, ...event, turnId, body: { ...event.body, channel } }).event.eventId;
   }
-  ledger.createDelivery({ deliveryId: outbox.id, eventId: id, conversationId: claim.conversationId, connectionId: input.connectionId,
+  // Web needs no delivery row: the transcript is its delivery (ADR 2.4).
+  if (channel !== "web") ledger.createDelivery({ deliveryId: outbox.id, eventId: id, conversationId: claim.conversationId, connectionId: input.connectionId,
     route: { ...outbox.route, channel }, purpose, ...(outbox.content ? { content: outbox.content } : {}), at });
   return id ?? undefined;
 }

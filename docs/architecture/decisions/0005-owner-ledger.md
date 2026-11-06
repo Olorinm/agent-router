@@ -1,6 +1,6 @@
 # ADR 0005: Router-owned conversation ledger and web channel
 
-- Status: proposed; phases 1–2 implemented behind flags (see "Implementation notes")
+- Status: proposed; phases 1–3 implemented behind flags (see "Implementation notes")
 - Date: 2026-11-05
 - Affects: ADR 0002 (Matrix stops being the record of conversation history), ADR 0004 (login is unchanged until phase 6)
 - Scope: agent-router (ledger, delivery, web API), Mau web console (`mau/web`), Matrix adapter
@@ -582,10 +582,11 @@ Folding rules for clients:
 | `GET /me` | — | `{ person:{id,name}, ownerId, identities: Identity[], limits }` |
 | `POST /socket-tickets` | `{}` | `{ ticket, expiresAt }` (single use, 60 s) |
 | `GET /chats?archived=false&cursor=` | — | `{ data: ChatSummary[], next: string \| null }`, newest first |
-| `POST /chats/dm` | `{ agentId }` | `ChatSummary`. Idempotent: one DM chat per agent. |
+| `POST /chats/dm` | `{ agentId }` | `ChatSummary`. Idempotent: one DM chat per agent. Creates the chat when it does not exist. |
 | `GET /chats/:chatId` | — | `ChatSummary & { members: Actor[] }` |
 | `GET /chats/:chatId/events` | query below | `EventPage` |
 | `POST /chats/:chatId/messages` | `SendRequest` | `SendResponse` |
+| `POST /chats/:chatId/messages/:eventId/redact` | `{ idempotencyKey }` | `{ status:"accepted" \| "duplicate", event: ChatEvent /* kind "redaction" */ }` (phase 3) |
 | `POST /chats/:chatId/reset` | `{ idempotencyKey }` | `{ window, event: ChatEvent }` |
 | `POST /chats/:chatId/read` | `{ seq }` | `{ readSeq, unread }`. Monotonic: a lower seq is ignored. |
 | `GET /chats/:chatId/turns/:turnId` | — | `TurnDetail` |
@@ -652,10 +653,11 @@ Error codes:
 
 | Status | Codes |
 | --- | --- |
-| 409 | `idempotency_key_reused` (same key, different body) |
+| 409 | `idempotency_key_reused` (same key, different body), `agent_channels_not_configured` |
 | 413 | `message_too_large` |
 | 403 | `chat_read_only` |
-| 422 | `mention_not_member`, `attachment_not_found`, `message_empty` |
+| 422 | `mention_not_member`, `attachment_not_found`, `attachments_unsupported` (phase 3), `message_empty`, `reply_target_not_found` |
+| 429 | `rate_limit_exceeded` with `retryAfterMs` |
 
 Clients render an optimistic bubble keyed by `idempotencyKey`. They replace it with the response event
 or with the matching socket event, whichever comes first. On a network failure the client retries with
@@ -992,3 +994,95 @@ These answers are normative for clients; the Router and the Mau console (`web/sr
    access gate (for example Cloudflare Access) sees its cookie, and authenticate with the bearer header. The
    socket URL is same-origin `ws(s)://<host>/_agent-router/v1/web/socket?ticket=…`; the browser sends the
    edge cookie on the upgrade.
+10. **Sending in phase 3.** With `send: true`, DMs are opened with `POST /chats/dm` (which creates the chat) and messages are
+    sent with `POST /chats/:chatId/messages`; no Matrix room is created. See "Implementation notes (phase 3)" for the exact
+    shapes. Group chats stay read-only until phase 5.
+
+## Implementation notes (phase 3)
+
+Phase 3 adds the `WebChannel` adapter (`src/channels/web.ts`), switches dispatch and flush to the ledger, and adds the send
+and redaction endpoints. These choices fill gaps in the text above or deviate from it:
+
+1. **Flag.** `ServiceConfig.ledgerSend` (`AGENT_LEDGER_SEND=1`), effective only together with `ledgerRead`. It mounts the two
+   write routes, sets `GET /me` → `limits.features.send: true`, and makes the agent ledgers authoritative
+   (`AgentLedger.authoritative`). Embedders and tests pass `ledgerSend: true` in the `ServiceConfig` given to `createRouter` /
+   `ManagedService`. Flag off: the routes are 404, `send` is `false`, and dispatch and flush use the legacy records again;
+   Matrix send keeps working.
+2. **Authoritative ledger.** With the flag, ledger writes on the channel path are no longer shadow writes: they run in the same
+   transaction as the legacy record, so a ledger error fails the receipt (the adapter does not advance its cursor) or the
+   transition. Without the flag they stay shadow writes (phase 1 rule 3).
+3. **Dispatch** reads `ledger_pending_inputs` (`state IN ('queued','starting')`, ordered by `created_at`, then receipt order).
+   An input becomes `starting` when the dispatcher takes it, before control handling; after a crash a `starting` input is sent
+   again with the same `channel-<input_id>` message id. `received` legacy records without a pending input (reactions, edits,
+   redactions, and receipts from before the cutover) are still dispatched, found by one SQL query. A pending input whose legacy
+   record has already moved on is reconciled (`started`/`control`/`dropped`), never dispatched again. Resume and quote lookups
+   and `input(taskId)` use the ledger indexes (new migration 3: `ledger_pending_inputs(session_key, created_at)`).
+4. **Unknown work** is never replayed: when a turn becomes `unknown`, its inputs move to `unknown` (and back to `started` if the
+   run is reconciled). The existing "系统不会自动重复执行" notice is the visible marker. The "重新执行 / 不用了" retry card of
+   6.2.4 needs card answers over HTTP and moves to phase 4.
+5. **Flush** reads `ledger_deliveries` (`status='queued' AND next_at<=now`) and then queued legacy outbox rows that have no
+   delivery row (for example rows from before the cutover). A due delivery whose legacy row is no longer queued is resynced,
+   not sent. Adapters, chunk checkpoints and dispositions are unchanged.
+6. **Web channel.** Every channel runtime registers `WebChannel` as connection `web` (the id is reserved in channel
+   configuration) with the owner's person id as its only owner address. A web message is a normal `ChannelMessage`:
+   `externalId = <personId>:<idempotencyKey>`, `sender = <personId>`, `scope: "direct"`, reply target `person:<personId>`,
+   and `quoted.messageId = replyTo`. It goes through the same receive → claim → event → pending input → turn path, into the
+   owner-main session, so web, Feishu, mail and Matrix owner DMs are one chat with one execution session. Its conversation is
+   `(web, digest(ownerId), direct, person:<personId>)` and is the session's `primary`. The event's idempotency key is
+   `web:<personId>:<idempotencyKey>` (section 4.1). Web turns have owner admission like other owner DMs.
+7. **Web delivery.** A reply, notice or card to a web turn is recorded as its event and gets no `ledger_deliveries` row and no
+   `delivery` event. Its legacy outbox row is written `accepted` at once with `externalId = eventId`, so
+   `communication/tasks` (`replyMessageIds`) and other legacy views keep working. Deliveries to other channels are unchanged.
+   The web channel reports `send: ["text"]` only, so agent media and HTML to a web turn are rejected until phase 4.
+8. **Idempotency.** The claim hash is computed from the request (text and `replyTo`), so the same key and body return the
+   stored event with `status: "duplicate"` (also after a redaction), and the same key with another body is 409
+   `idempotency_key_reused` (Matrix txnId semantics). Two concurrent sends are ordered by their receipt: seq and dispatch order
+   follow the commit order.
+9. **Validation order.** Chat (`chat_not_found` 404 for foreign or unknown chats, `chat_read_only` 403 for observed chats),
+   agent runtime (`agent_channels_not_configured` 409 when the agent has no channel runtime), size (`message_too_large` 413 over
+   24 KB UTF-8), attachments (any → 422 `attachments_unsupported`), mentions (a DM accepts only its own agent id, otherwise
+   422 `mention_not_member`; they are not stored), empty text (422 `message_empty`), `replyTo` (an event of the same chat,
+   otherwise 422 `reply_target_not_found`). A malformed body or key is 400 `invalid_request`.
+10. **Rate limits.** Besides the 600/min/IP `/web` limit, sends and redactions share 60 requests per minute per person; the 429
+    body is `{ "error": "rate_limit_exceeded", "retryAfterMs": n }`.
+11. **`POST /chats/dm`** now creates the owner-main session and the web conversation when they do not exist, and indexes the
+    chat (it appears in `GET /chats` with `lastSeq: 0`). It needs no flag.
+12. **Redaction (open question 6).** The owner may withdraw own web messages; there is no edit.
+    `POST /chats/:chatId/messages/:eventId/redact` with `{ idempotencyKey }` goes through ingress as a `message-redaction`
+    (`externalId = <personId>:redact:<idempotencyKey>`) and appends a `redaction` event (`ref_event_id` = target). The target's
+    stored body becomes `{ text: "", redacted: true, channel: "web" }`, and the legacy inbox text is cleared (its hash is kept).
+    If no turn has taken the input yet (`queued`), it is `dropped` (legacy reason `redacted_before_start`); a turn already
+    started is not canceled. Same key: the stored redaction (`duplicate`); same key for another target: 409
+    `idempotency_key_reused`; another key for a redacted target: the existing redaction (`duplicate`). Only `message` events
+    the person sent through the web can be redacted: others are 403 `redaction_not_allowed`, unknown ids 404 `event_not_found`.
+    History renders the target with `redacted: true` and empty `text`.
+13. **Decisions recorded.** Open question 1: the merged owner DM is confirmed (one owner-main session, channel badges from
+    `ChatEvent.channel.kind`: `web`, `matrix`, `feishu`, `grove-mail`, …). Open question 4: reset (phase 4) resets the shared
+    owner-main session for every owner channel. Open question 6: redaction of own web messages, no edit (above).
+
+Final shapes:
+
+```jsonc
+// POST /_agent-router/v1/web/chats/dm%3A<agentId>/messages
+{ "idempotencyKey": "01JC9Z7Q4M0000000000000001", "text": "你好", "replyTo": "ev_…" /* optional */ }
+// 200
+{ "status": "accepted",                       // "duplicate" for a retry with the same key and body
+  "event": { "chatId": "dm:<agentId>", "seq": 1, "generation": 1, "eventId": "ev_…", "at": "2026-11-06T04:00:00.000Z",
+    "sender": { "type": "person", "id": "prs_…", "name": "alice" }, "channel": { "kind": "web" },
+    "idempotencyKey": "01JC9Z7Q4M0000000000000001", "kind": "message", "role": "user", "text": "你好", "replyTo": "ev_…" },
+  "addressed": [ { "agentId": "<agentId>", "state": "queued" } ] }
+// 409 { "error": "idempotency_key_reused" }
+
+// POST /_agent-router/v1/web/chats/dm%3A<agentId>/messages/<eventId>/redact
+{ "idempotencyKey": "01JC9Z7Q4M0000000000000002" }
+// 200
+{ "status": "accepted",                       // or "duplicate"
+  "event": { "chatId": "dm:<agentId>", "seq": 6, "generation": 1, "eventId": "ev_…", "at": "…",
+    "sender": { "type": "person", "id": "prs_…", "name": "alice" }, "channel": { "kind": "web" },
+    "kind": "redaction", "targetEventId": "<eventId>" } }
+// History afterwards: { "eventId": "<eventId>", "kind": "message", "role": "user", "text": "", "redacted": true, … }
+```
+
+The reply arrives on the socket as `chat.event` frames: `turn` (`queued`, `running`), the assistant `message` with
+`final: true`, `channel: { kind: "web" }` and the turn's `turnId`, then `turn` `completed`.
+

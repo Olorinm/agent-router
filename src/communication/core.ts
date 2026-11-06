@@ -64,10 +64,29 @@ export class CommunicationCore {
       account: (id) => this.store.get<string>("communication_checkpoints", key(id, "account")) ?? id,
       ...(this.persons ? { person: this.persons } : {}) };
   }
-  private shadow(work: (ledger: AgentLedger) => void): void { const ledger = this.ledger; if (ledger) ledger.shadow(() => work(ledger)); }
+  /** Phase 3: the ledger is the dispatch and delivery queue (see `AgentLedger.authoritative`). */
+  private get authoritative(): boolean { return Boolean(this.ledger?.authoritative); }
+  /**
+   * A ledger write beside its legacy record. Shadow mode (phases 1–2) swallows ledger errors. Authoritative mode
+   * runs it in the caller's transaction, so a ledger error rolls back the legacy record as well.
+   */
+  private shadow<T>(work: (ledger: AgentLedger) => T): T | undefined {
+    const ledger = this.ledger; if (!ledger) return undefined;
+    if (!ledger.authoritative) return ledger.shadow(() => work(ledger));
+    return this.store.db.isTransaction ? work(ledger) : this.store.transaction(() => work(ledger));
+  }
+  /** One transaction for a legacy record and its ledger write. */
+  private atomic<T>(work: () => T): T { return this.store.db.isTransaction ? work() : this.store.transaction(work); }
   private setOutbox(id: string, value: OutboxRecord, suppressed = false): void {
-    this.store.set("communication_outbox", id, value);
-    this.shadow((ledger) => shadowDelivery(ledger, value, suppressed));
+    this.atomic(() => {
+      this.store.set("communication_outbox", id, value);
+      this.shadow((ledger) => shadowDelivery(ledger, value, suppressed));
+    });
+  }
+  /** Web replies are delivered by being recorded; the legacy outbox row is settled at once for compatibility. */
+  private settleWeb(outbox: OutboxRecord, eventId: string | undefined): void {
+    if (this.connections.get(outbox.route.connectionId)?.adapter.kind !== "web") return;
+    this.store.set("communication_outbox", outbox.id, { ...outbox, state: "accepted", externalId: eventId ?? outbox.id } satisfies OutboxRecord);
   }
 
   register(definition: ConnectionDefinition, adapter: ChannelAdapter, reload?: () => ChannelAdapter): void {
@@ -151,6 +170,7 @@ export class CommunicationCore {
           text: "这条消息超过当前 24 KB 的文字输入上限，请缩短内容后再发送。", state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
       }
       this.shadow((ledger) => shadowReceive(ledger, this.shadowContext, record, { owner, allowed, oversized, noticeId }));
+      if (noticeId) this.settleWeb(this.store.get<OutboxRecord>("communication_outbox", noticeId)!, undefined);
     };
     // Matrix invokes receipt inside its existing transaction; other channels create their own.
     if (this.store.db.isTransaction) commit(); else this.store.transaction(commit);
@@ -160,9 +180,13 @@ export class CommunicationCore {
     if (this.dispatching) return;
     this.dispatching = true;
     try {
-      for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) {
-        if (value.state !== "received") continue;
+      for (const { id, value: listed } of this.dueInputs()) {
         this.validate();
+        // Earlier items await; re-read so an input redacted or settled meanwhile is not dispatched from a stale list.
+        const value = this.authoritative ? this.store.get<InboxRecord>("communication_inbox", id) : listed;
+        if (!value || value.state !== "received") continue;
+        const pending = this.authoritative ? this.ledger!.input(id) : undefined;
+        if (pending && !["queued", "starting"].includes(String(pending.state))) continue;
         const eventType = value.source.event?.type;
         // Message state changes are durable context, not new requests or answers to pending interactions.
         if (eventType && ["reaction", "message-edit", "message-redaction"].includes(eventType)) {
@@ -170,17 +194,27 @@ export class CommunicationCore {
             reason: eventType === "message-edit" ? "edit_recorded_without_reexecution" : `${eventType}_recorded_without_execution` });
           continue;
         }
+        // Taken by the dispatcher: a later redaction no longer drops it. After a crash `starting` is retried with the
+        // same message id, and CliWork returns the same task.
+        if (pending?.state === "queued") this.shadow((ledger) => ledger.updateInput(id, "starting"));
         if (this.control && await this.control(value)) {
-          this.store.set("communication_inbox", id, { ...value, state: "done" }); this.shadow((ledger) => shadowControl(ledger, value, "control")); continue;
+          this.atomic(() => { this.store.set("communication_inbox", id, { ...value, state: "done" }); this.shadow((ledger) => shadowControl(ledger, value, "control")); }); continue;
         }
-        if (value.source.action) { this.notice(value, "这个按钮已失效，请根据当前提问重新操作。", "stale-action"); this.store.set("communication_inbox", id, { ...value, state: "done" });
-          this.shadow((ledger) => shadowControl(ledger, value, "stale_action")); continue; }
-        const prior = this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).reverse().find((item) =>
-          item.taskId && item.conversationId === value.conversationId &&
-          (item.connectionId === value.connectionId && item.source.sender === value.source.sender || this.isOwnerInput(item) && this.isOwnerInput(value)));
+        if (value.source.action) { this.notice(value, "这个按钮已失效，请根据当前提问重新操作。", "stale-action");
+          this.atomic(() => { this.store.set("communication_inbox", id, { ...value, state: "done" }); this.shadow((ledger) => shadowControl(ledger, value, "stale_action")); }); continue; }
+        const resumable = (item: InboxRecord) => Boolean(item.taskId) && item.conversationId === value.conversationId &&
+          (item.connectionId === value.connectionId && item.source.sender === value.source.sender || this.isOwnerInput(item) && this.isOwnerInput(value));
+        const prior = (this.authoritative ? this.ledger!.startedInputs(value.conversationId).map(({ inputId }) => this.store.get<InboxRecord>("communication_inbox", inputId))
+          .find((item): item is InboxRecord => Boolean(item && resumable(item))) : undefined) ??
+          this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).reverse().find(resumable);
         const previous = prior?.taskId ? await this.work.get(prior.taskId) : undefined;
         const resume = previous && [TaskState.TASK_STATE_INPUT_REQUIRED, TaskState.TASK_STATE_AUTH_REQUIRED].includes(previous.status?.state ?? 0);
         let quote = value.source.quoted?.text;
+        if (!quote && value.source.quoted?.messageId && this.authoritative) {
+          const ledger = this.ledger!, quotedId = value.source.quoted.messageId;
+          const target = ledger.event(ledger.platformEvent(value.connectionId, quotedId) ?? quotedId);
+          if (target && typeof target.body.text === "string" && !target.body.redacted) quote = target.body.text;
+        }
         if (!quote && value.source.quoted?.messageId) {
           const original = this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).find((item) => item.connectionId === value.connectionId && item.replyRoute.target === value.replyRoute.target && item.replyRoute.messageId === value.source.quoted!.messageId);
           try { quote = original?.source.text ?? await this.connection(value.connectionId).adapter.readQuote?.(value.source); }
@@ -201,8 +235,10 @@ export class CommunicationCore {
         // Both steps are independently durable. The stable message ID closes the restart window.
         const task = await this.work.send(request, { sender: resume ? this.work.inspect(previous!.id).from : key("channel", value.connectionId, value.source.sender),
           room: value.conversationId, approved: true });
-        this.store.set("communication_inbox", id, { ...value, state: "submitted", taskId: task.id });
-        this.shadow((ledger) => shadowStart(ledger, this.shadowContext, value, task.id, this.isOwnerInput(value)));
+        this.atomic(() => {
+          this.store.set("communication_inbox", id, { ...value, state: "submitted", taskId: task.id });
+          this.shadow((ledger) => shadowStart(ledger, this.shadowContext, value, task.id, this.isOwnerInput(value)));
+        });
       }
       this.publishResults();
       this.lastError = "";
@@ -232,12 +268,13 @@ export class CommunicationCore {
               task.status?.message?.parts.filter((part) => part.content?.$case === "text").map((part) => part.content!.value).join("\n") || "本轮执行失败，请查看运行状态。";
           const outbox: OutboxRecord = { id: digest(key(task.id, "final")), taskId: task.id, route: input.replyRoute,
             text: answer || fallback, final: true, state: "queued", attempts: 0, nextAt: 0 };
-          if (this.store.insert("communication_outbox", outbox.id, outbox)) this.shadow((ledger) => {
+          if (this.store.insert("communication_outbox", outbox.id, outbox)) this.settleWeb(outbox, this.shadow((ledger) => {
             const finalEventId = shadowOutbox(ledger, this.shadowContext, input, outbox, "reply", { kind: "message", turnId: task.id,
               idempotencyKey: `turn:${task.id}:final`, body: { text: outbox.text, final: true } });
             const state = task.status?.state === TaskState.TASK_STATE_COMPLETED ? "completed" : task.status?.state === TaskState.TASK_STATE_CANCELED ? "canceled" : "failed";
             ledger.turnState(task.id, state, { agentId: this.agentId, ...(finalEventId ? { finalEventId } : {}), ...(state === "failed" ? { error: (answer || fallback).slice(0, 500) } : {}) });
-          });
+            return finalEventId;
+          }));
           for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) if (value.taskId === task.id)
             this.store.set("communication_inbox", id, { ...value, state: "done" });
         }
@@ -246,8 +283,8 @@ export class CommunicationCore {
           if (text) {
             const id = digest(key(task.id, "notice", text));
             const notice: OutboxRecord = { id, taskId: task.id, route: input.replyRoute, text, state: "queued", attempts: 0, nextAt: 0 };
-            if (this.store.insert("communication_outbox", id, notice)) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
-              { kind: "notice", idempotencyKey: `notice:${id}`, body: { text, level: "info" } }));
+            if (this.store.insert("communication_outbox", id, notice)) this.settleWeb(notice, this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
+              { kind: "notice", idempotencyKey: `notice:${id}`, body: { text, level: "info" } })));
           }
         }
         this.work.ack(eventId);
@@ -255,20 +292,20 @@ export class CommunicationCore {
     }
   }
   saveResult(taskId: string, answer: string): boolean {
-    if (!this.store.entries<InboxRecord>("communication_inbox").some(({ value }) => value.taskId === taskId)) return false;
+    if (!this.input(taskId)) return false;
     const previous = this.store.get<string>("communication_results", taskId);
     if (previous !== undefined && previous !== answer) throw new Error("execution_result_changed");
     this.store.set("communication_results", taskId, answer);
     return true;
   }
   isOwnerTask(conversationId: string, taskId: string): boolean {
-    const input = this.store.entries<InboxRecord>("communication_inbox").find(({ value }) => value.taskId === taskId)?.value;
+    const input = this.input(taskId);
     return Boolean(input && input.conversationId === conversationId && input.source.scope === "direct" &&
       this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
   }
   /** The owner's turn in a group of only the owner and the owner's agents, as reported at receipt. */
   isPrivateGroupOwnerTask(conversationId: string, taskId: string): boolean {
-    const input = this.store.entries<InboxRecord>("communication_inbox").find(({ value }) => value.taskId === taskId)?.value;
+    const input = this.input(taskId);
     return Boolean(input && input.conversationId === conversationId && input.source.scope === "group" && input.source.privateGroup === true &&
       this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
   }
@@ -276,8 +313,7 @@ export class CommunicationCore {
     if (this.flushing) return;
     this.flushing = true;
     try {
-      for (const { id, value } of this.store.entries<OutboxRecord>("communication_outbox")) {
-        if (value.state !== "queued" || value.nextAt > now) continue;
+      for (const { id, value } of this.dueOutbox(now)) {
         this.validate();
         const connection = this.connections.get(value.route.connectionId);
         if (!connection) { this.setOutbox(id, { ...value, state: "failed", error: "connection_removed" }); continue; }
@@ -317,14 +353,53 @@ export class CommunicationCore {
         connectionId: value.route.connectionId, state: value.state, attempts: value.attempts, error: value.error ?? null })) };
   }
   input(taskId: string): InboxRecord | undefined {
+    const indexed = this.authoritative ? this.ledger!.inputForTurn(taskId) : undefined;
+    const record = indexed ? this.store.get<InboxRecord>("communication_inbox", indexed) : undefined;
+    if (record?.taskId === taskId) return record;
     return this.store.entries<InboxRecord>("communication_inbox").map(({ value }) => value).reverse().find((item) => item.taskId === taskId);
+  }
+  /**
+   * Dispatch candidates. Legacy: every `received` inbox record. Authoritative: `ledger_pending_inputs` in order, after
+   * `received` records that have no pending input (lifecycle events and receipts from before the cutover).
+   * A pending input whose legacy record has moved on is reconciled instead of dispatched again.
+   */
+  private dueInputs(): Array<{ id: string; value: InboxRecord }> {
+    if (!this.authoritative) return this.store.entries<InboxRecord>("communication_inbox").filter(({ value }) => value.state === "received");
+    const ledger = this.ledger!, due: Array<{ id: string; value: InboxRecord }> = [];
+    const orphans = this.store.db.prepare(`SELECT id, value FROM documents WHERE collection='communication_inbox' AND json_extract(value,'$.state')='received'
+      AND NOT EXISTS (SELECT 1 FROM ledger_pending_inputs p WHERE p.input_id=documents.id) ORDER BY rowid`).all();
+    for (const row of orphans) due.push({ id: String(row.id), value: JSON.parse(String(row.value)) as InboxRecord });
+    for (const id of ledger.dueInputs()) {
+      const value = this.store.get<InboxRecord>("communication_inbox", id);
+      if (value?.state === "received") { due.push({ id, value }); continue; }
+      this.shadow((target) => target.updateInput(id, value?.taskId ? "started" : value ? "control" : "dropped", value?.taskId ? { turnId: value.taskId } : { reason: value ? "legacy_input_settled" : "legacy_input_missing" }));
+    }
+    return due;
+  }
+  /** Flush candidates: `ledger_deliveries` due rows (authoritative), plus queued outbox rows that have no delivery row. */
+  private dueOutbox(now: number): Array<{ id: string; value: OutboxRecord }> {
+    const ready = ({ value }: { value: OutboxRecord }) => value.state === "queued" && value.nextAt <= now;
+    if (!this.authoritative) return this.store.entries<OutboxRecord>("communication_outbox").filter(ready);
+    const ledger = this.ledger!, due: Array<{ id: string; value: OutboxRecord }> = [];
+    for (const id of ledger.dueDeliveries(now)) {
+      const value = this.store.get<OutboxRecord>("communication_outbox", id);
+      if (value && ready({ value })) due.push({ id, value });
+      else if (value && value.state !== "queued") this.shadow((target) => shadowDelivery(target, value));
+    }
+    const orphans = this.store.db.prepare(`SELECT id, value FROM documents WHERE collection='communication_outbox' AND json_extract(value,'$.state')='queued'
+      AND NOT EXISTS (SELECT 1 FROM ledger_deliveries d WHERE d.delivery_id=documents.id) ORDER BY rowid`).all();
+    for (const row of orphans) { const item = { id: String(row.id), value: JSON.parse(String(row.value)) as OutboxRecord }; if (ready(item)) due.push(item); }
+    return due;
   }
   notice(input: InboxRecord, text: string, suffix: string, content?: ChannelContent): string {
     const id = digest(key(input.id, suffix));
     const notice: OutboxRecord = { id, taskId: null, route: input.replyRoute, text, ...(content ? { content } : {}), state: "queued", attempts: 0, nextAt: 0 };
     // Question notices are recorded as `card` events by the Host worker, which owns the call.
-    if (this.store.insert("communication_outbox", id, notice) && !suffix.startsWith("question:")) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
-      { kind: "notice", role: "system", senderType: "system", senderId: "router", idempotencyKey: `notice:${id}`, body: { text, level: "info" } }));
+    this.atomic(() => {
+      if (!this.store.insert("communication_outbox", id, notice)) return;
+      this.settleWeb(notice, suffix.startsWith("question:") ? undefined : this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
+        { kind: "notice", role: "system", senderType: "system", senderId: "router", idempotencyKey: `notice:${id}`, body: { text, level: "info" } })));
+    });
     return id;
   }
   async attachments(taskId: string): Promise<MediaContent[]> {
@@ -365,10 +440,12 @@ export class CommunicationCore {
     const id = digest(key(taskId, "content", sendKey));
     const outbox: OutboxRecord = { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
       content, state: "queued", attempts: 0, nextAt: 0 };
-    if (this.store.insert("communication_outbox", id, outbox)) this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
-      options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
-        : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
-          ...(content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } }));
+    this.atomic(() => {
+      if (this.store.insert("communication_outbox", id, outbox)) this.settleWeb(outbox, this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
+        options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
+          : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
+            ...(content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } })));
+    });
     return id;
   }
   delivery(taskId: string, id: string) {

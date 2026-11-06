@@ -26,10 +26,15 @@ export interface ManagedAgent {
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
 export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string;
   /** ADR 0005 `ledger_read`: serve the read-only web history API and event socket from the owner ledger. */
-  ledgerRead?: boolean; }
+  ledgerRead?: boolean;
+  /** ADR 0005 `send` (phase 3, needs `ledgerRead`): owner web messages through the web channel; dispatch and flush read the ledger. */
+  ledgerSend?: boolean; }
 export interface ServiceExtension {
   observation?: import("../execution/observation.js").RunObservation;
   sessions?: import("../execution/sessions.js").WorkSessions;
+  /** The channel core and its web channel (ADR 0005 phase 3). */
+  communication?: import("../communication/core.js").CommunicationCore;
+  web?: import("../channels/web.js").WebChannel;
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
   resolve(callId: string, result: unknown): Promise<void>;
   reconcile(claimId: string, runId: string): Promise<void>;
@@ -97,6 +102,7 @@ export class ManagedService {
     });
     this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons,
       authenticator: new SynapseWhoamiAuthenticator((token) => this.authenticate(token)),
+      send: config.ledgerSend, channel: async (agentId) => (await this.runtime(agentId)).extension?.web,
       open: async (agentId) => { await this.runtime(agentId); }, owned: (owner) => this.agents(owner).filter((agent) => agent.status === "active"),
       debug: (agentId) => {
         const ledger = this.ledgers.get(agentId), store = ledger?.store;
@@ -208,6 +214,7 @@ export class ManagedService {
     // A ledger that cannot open (migration or registry error) leaves the agent on the legacy path only.
     try {
       const ledger = AgentLedger.open(store);
+      ledger.authoritative = Boolean(this.config.ledgerRead && this.config.ledgerSend);
       this.ledgers.set(agent.id, ledger);
       ledger.listen((sessionKey) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).publish(agent.id, sessionKey); });
       ledger.listenStream((sessionKey, turnId, text) => { if (this.ledgers.get(agent.id) === ledger) this.hubs.hub(agent.owner).stream(agent.id, sessionKey, turnId, text); });

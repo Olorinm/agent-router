@@ -1,4 +1,4 @@
-export type ChannelKind = "matrix" | "grove-mail" | "feishu" | "telegram" | "weixin";
+export type ChannelKind = "matrix" | "grove-mail" | "feishu" | "telegram" | "weixin" | "web";
 
 /** Provider-specific reply data is frozen on receipt, never inferred from the latest chat. */
 export interface ReplyRoute {

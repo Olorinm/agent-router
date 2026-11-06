@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { DurableStore } from "../communication/store.js";
 import { digest, key } from "../execution/protocol.js";
-import { AGENT_LEDGER_V1, AGENT_LEDGER_V2 } from "./schema.js";
+import { AGENT_LEDGER_V1, AGENT_LEDGER_V2, AGENT_LEDGER_V3 } from "./schema.js";
 
 export type SessionKind = "owner_main" | "peer" | "group" | "room" | "schedule" | "work" | "delegation";
 export type Admission = "owner" | "peer" | "group" | "schedule" | "work" | "delegation";
@@ -68,11 +68,16 @@ export class AgentLedger {
   /** Create the tables (once) and attach the ledger to this store; channel cores then shadow-write into it. */
   static open(store: DurableStore): AgentLedger {
     let ledger = this.ledgers.get(store);
-    if (!ledger) { store.migrate(1, AGENT_LEDGER_V1); store.migrate(2, AGENT_LEDGER_V2); ledger = new AgentLedger(store); this.ledgers.set(store, ledger); }
+    if (!ledger) { store.migrate(1, AGENT_LEDGER_V1); store.migrate(2, AGENT_LEDGER_V2); store.migrate(3, AGENT_LEDGER_V3); ledger = new AgentLedger(store); this.ledgers.set(store, ledger); }
     return ledger;
   }
   static attached(store: DurableStore): AgentLedger | undefined { return this.ledgers.get(store); }
   lastError = "";
+  /**
+   * Phase 3 (`AGENT_LEDGER_SEND`): the dispatcher and flush read the ledger, and ledger writes on the channel path
+   * are no longer shadow writes. A failed ledger write then fails the receipt or transition it belongs to.
+   */
+  authoritative = false;
   private readonly listeners = new Set<(sessionKey: string) => void>();
   private readonly streams = new Set<(sessionKey: string, turnId: string, text: string) => void>();
   private dirty = new Set<string>();
@@ -193,12 +198,22 @@ export class AgentLedger {
     const row = this.row(`SELECT * FROM ledger_events WHERE session_key=? AND kind IN ('message','notice','card') ORDER BY seq DESC LIMIT 1`, sessionKey);
     return row ? eventRow(row) : undefined;
   }
+  /** Events that refer to a target (redactions, edits, reactions), oldest first. */
+  references(eventId: string, kind: string): LedgerEvent[] {
+    return this.rows("SELECT * FROM ledger_events WHERE ref_event_id=? AND kind=? ORDER BY seq", eventId, kind).map(eventRow);
+  }
   turnEvents(turnId: string): LedgerEvent[] { return this.rows("SELECT * FROM ledger_events WHERE turn_id=? ORDER BY session_key, seq", turnId).map(eventRow); }
   /** Patch an event that has not changed meaning (backfill linking only). */
   annotate(eventId: string, patch: { turnId?: string; body?: Record<string, unknown> }): void {
     const event = this.event(eventId); if (!event) return;
     this.run("UPDATE ledger_events SET turn_id=COALESCE(?,turn_id), body=? WHERE event_id=?", patch.turnId ?? null,
       bounded({ ...event.body, ...patch.body }), eventId);
+  }
+  /** Redaction removes the content of the target and keeps its place (seq, sender, channel). */
+  redactBody(eventId: string): void {
+    const event = this.event(eventId); if (!event) return;
+    this.run("UPDATE ledger_events SET body=? WHERE event_id=?", JSON.stringify({ text: "", redacted: true,
+      ...(typeof event.body.channel === "string" ? { channel: event.body.channel } : {}) }), eventId);
   }
   /** Re-sequence a session by time after history was rewritten (late backfill) and bump its generation. */
   resequence(sessionKey: string): void {
@@ -258,6 +273,21 @@ export class AgentLedger {
       state, fields.turnId ?? null, fields.reason ?? null, at, inputId);
   }
   input(inputId: string) { return this.row("SELECT * FROM ledger_pending_inputs WHERE input_id=?", inputId); }
+  /** Dispatch order (ADR 6.2): accepted inputs not yet consumed, oldest first, in receipt order within one millisecond. */
+  dueInputs(limit = 500): string[] {
+    return this.rows("SELECT input_id FROM ledger_pending_inputs WHERE state IN ('queued','starting') ORDER BY created_at, rowid LIMIT ?", limit)
+      .map((row) => row.input_id as string);
+  }
+  /** The newest input of a turn (a resumed turn has several). */
+  inputForTurn(turnId: string): string | undefined {
+    return this.row("SELECT input_id FROM ledger_pending_inputs WHERE turn_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1", turnId)?.input_id as string | undefined;
+  }
+  inputForEvent(eventId: string) { return this.row("SELECT * FROM ledger_pending_inputs WHERE event_id=?", eventId); }
+  /** Inputs of one session that became turns, newest first (resume lookup). */
+  startedInputs(sessionKey: string, limit = 50): Array<{ inputId: string; turnId: string }> {
+    return this.rows(`SELECT input_id, turn_id FROM ledger_pending_inputs WHERE session_key=? AND turn_id IS NOT NULL
+      ORDER BY created_at DESC, rowid DESC LIMIT ?`, sessionKey, limit).map((row) => ({ inputId: row.input_id as string, turnId: row.turn_id as string }));
+  }
   turnInputs(turnId: string): string[] {
     return this.rows("SELECT event_id FROM ledger_pending_inputs WHERE turn_id=? ORDER BY created_at", turnId).map((row) => row.event_id as string);
   }
@@ -289,6 +319,9 @@ export class AgentLedger {
       started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END,
       finished_at=CASE WHEN ? IN ('completed','failed','canceled') THEN COALESCE(finished_at,?) ELSE finished_at END WHERE turn_id=?`,
       state, fields.error ?? null, fields.finalEventId ?? null, state, at, state, at, turnId);
+    // Unknown work is never replayed (ADR 6.2.4): its inputs leave the started set until the outcome is known.
+    if (state === "unknown") this.run("UPDATE ledger_pending_inputs SET state='unknown', updated_at=? WHERE turn_id=? AND state='started'", at, turnId);
+    else if (turn.state === "unknown") this.run("UPDATE ledger_pending_inputs SET state='started', updated_at=? WHERE turn_id=? AND state='unknown'", at, turnId);
     if (turn.state === state && state !== "queued") return undefined;
     return this.append(turn.sessionKey, { kind: "turn", role: "system", senderType: "system", senderId: "router", turnId,
       idempotencyKey: `turn:${turnId}:${state}`, createdAt: at,
@@ -305,6 +338,11 @@ export class AgentLedger {
       platform_message_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, input.deliveryId, input.eventId, input.conversationId,
       input.connectionId, JSON.stringify(input.route), input.purpose, input.status ?? "queued",
       input.content === undefined ? null : JSON.stringify(input.content), input.platformMessageId ?? null, at, at);
+  }
+  /** Flush order (ADR 6.4): queued deliveries that are due. */
+  dueDeliveries(now = Date.now(), limit = 500): string[] {
+    return this.rows("SELECT delivery_id FROM ledger_deliveries WHERE status='queued' AND next_at<=? ORDER BY next_at, created_at, rowid LIMIT ?", now, limit)
+      .map((row) => row.delivery_id as string);
   }
   delivery(deliveryId: string): Delivery | undefined {
     const row = this.row("SELECT * FROM ledger_deliveries WHERE delivery_id=?", deliveryId);
