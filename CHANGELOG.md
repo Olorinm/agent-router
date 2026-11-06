@@ -8,7 +8,7 @@ in the version-bump commit before tagging.
 
 - Owner ledger, phases 1–2 of ADR 0005. The API is read-only and behind a flag; sending still goes
   through Matrix.
-  - Shadow ledger. The channel core writes Matrix, Feishu, mail, Telegram and Weixin traffic to
+  - Shadow ledger. The channel core writes every channel's traffic to
     `ledger_*`, `hub_*` and `reg_*` tables: ingress, conversations and sessions, events with a
     sequence that has no gaps, turns, cards, deliveries and the platform-message index. Every
     ledger write runs in a SQLite savepoint, so a ledger failure never changes the current
@@ -107,7 +107,7 @@ PR: [#64](https://github.com/Olorinm/agent-router/pull/64)
 ## [0.7.0-alpha.2] - 2026-10-14
 
 - Channel registration and polling move into the public lifecycle. Embedded Routers (`createRouter`)
-  also poll operator-managed mail. Start and close are idempotent.
+  also poll operator-managed channels. Start and close are idempotent.
 - Optional Host-binding wake hook, called only when authorized, deliverable work is waiting. The
   product owns the sleep and resume policy.
 
@@ -118,16 +118,14 @@ PR: [#53](https://github.com/Olorinm/agent-router/pull/53)
 - Managed Agent accounts, with Agents created per owner and worker instances scoped separately. A
   standalone product SDK uses the official A2A JSON-RPC transport for send, get, cancel and watch
   (#24, #26, #28).
-- Configurable AgentMail ingress, with allow/ask/deny visitor rules (#36).
-- Personal channels: Feishu (with the official app and personal authorization), Telegram, Weixin,
-  mail and Matrix conversations. Each turn's result is sent back to the original chat (#38).
+- Personal channels: Feishu (with the official app and personal authorization), Telegram, Weixin
+  and Matrix conversations. Each turn's result is sent back to the original chat (#38).
 - Channel media, streaming and native conversation controls: questions, follow-up input and cancel
   (#44).
 - CLI `setup`, Host selection, channel connection jobs with terminal QR codes, renewal of personal
   authorization and connection checks (#45).
 - Fixes for Feishu delayed messages, group mentions and native activity feedback (#47). Codex
-  worker connection failures are reported (#22). Deployed mail workers keep working after an
-  upgrade (#46).
+  worker connection failures are reported (#22).
 - The official larkCLI runs in the Agent's execution environment, and channel requests carry the
   provider IDs it needs (#48).
 - Cloud Agent onboarding through environments, replacing the standalone Codex worker (#49, #50,
