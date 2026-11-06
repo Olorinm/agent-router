@@ -4,7 +4,7 @@ Notable changes to Agent Router, newest first. Pushing a `v*` tag publishes a Gi
 notes are this file's section for that version (`.github/workflows/release.yml`), so add the section
 in the version-bump commit before tagging.
 
-## [Unreleased]
+## [0.7.0-alpha.12] - 2026-11-06
 
 - Removed the legacy operator channel path: `ChannelRouter` with its allow/ask/deny visitor approvals,
   the AgentMail adapter, `AGENT_CHANNELS_CONFIG_FILE` (`config.channelConfigFile`), the
@@ -34,6 +34,11 @@ in the version-bump commit before tagging.
   `running` or `unknown` run, delete the stored scope of each such Agent
   (`DELETE FROM documents WHERE collection='communication_host' AND id='scope'` in
   `agents/<agentId>.sqlite`). Router writes the new scope at start; execution sessions are kept.
+- SQLite stores keep temporary files in memory, so Router runs on a read-only root filesystem;
+  a failed transaction no longer reports `cannot rollback - no transaction is active`.
+- Dependency updates: zod 4.6.7, undici 8.12.4, vitest 5.1.0, body-parser 2.4.0, follow-redirects 1.16.2.
+
+PRs: [#84](https://github.com/Olorinm/agent-router/pull/84), [#85](https://github.com/Olorinm/agent-router/pull/85), [#86](https://github.com/Olorinm/agent-router/pull/86), [#88](https://github.com/Olorinm/agent-router/pull/88)
 
 ## [0.7.0-alpha.11] - 2026-11-06
 
