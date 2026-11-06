@@ -21,6 +21,9 @@ import { SynapseWhoamiAuthenticator, createWebLedger } from "../ledger/web.js";
 import { RoomFanout } from "../ledger/rooms-fanout.js";
 import { CloudflareAccessAuthenticator, CompositeAuthenticator, IdentityError, assertEdgeOwners, type EdgeIdentityConfig,
   type OwnerPrincipal, type OwnerRequest } from "../auth/edge-identity.js";
+import { createBlobStore, type BlobStore, type BlobStoreConfig } from "../ledger/blobs.js";
+import { OwnerAttachments } from "../ledger/blobs-hub.js";
+import type { AttachmentReference, MediaContent } from "../communication/types.js";
 
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export interface ManagedAgent {
@@ -75,6 +78,24 @@ export interface ServiceDependencies {
   /** Product state purge after Router state is gone. */
   afterDelete?: (agent: ManagedAgent) => Promise<void>;
 }
+// ---- ADR 0005 phase 4 (attachments). Separate declarations (merged by TypeScript) keep the phase 3 edits above apart. ----
+export interface ServiceConfig {
+  /** ADR 0005 `attachments` (phase 4, `AGENT_LEDGER_ATTACHMENTS`, needs `ledgerSend`): upload/download routes and `features.attachments`. */
+  ledgerAttachments?: boolean;
+  /** Blob store for attachments; default `LocalBlobStore` under `<stateDir>/blobs`. R2 credentials are read from files. */
+  blobStore?: BlobStoreConfig;
+  /** Per-owner quota over distinct blobs; default 5 GiB. */
+  attachmentQuotaBytes?: number;
+}
+export interface ServiceExtension {
+  /** Read one attachment of a stored inbound message (lazy promotion into the blob store). */
+  readAttachment?(inputId: string, reference: AttachmentReference): Promise<MediaContent>;
+}
+export interface ServiceDependencies {
+  /** Replaces the configured blob store (tests, embedders with their own storage). */
+  blobStore?: BlobStore;
+}
+// ---- end phase 4 ----
 const newToken = () => randomBytes(32).toString("base64url");
 function bearer(req: express.Request): string { return req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? ""; }
 function equal(a: string, b: string): boolean {
@@ -94,6 +115,8 @@ export class ManagedService {
   readonly web: ReturnType<typeof createWebLedger> | undefined;
   readonly edgeIdentity: CloudflareAccessAuthenticator | undefined;
   private readonly owners: CompositeAuthenticator;
+  /** Attachments and blob store (ADR 0005 16.5); only with `ledgerSend` and `ledgerAttachments`. */
+  readonly attachments: OwnerAttachments | undefined;
   private readonly ledgers = new Map<string, AgentLedger>();
   /** The hub room fan-out worker (phase 5); present with `ledgerGroups`. */
   readonly fanout: RoomFanout | undefined;
@@ -140,6 +163,16 @@ export class ManagedService {
       return { personId: personId(ownerId), ownerId, via: "bearer", matrixUserId: ownerId };
     }, this.edgeIdentity);
     const whoami = new SynapseWhoamiAuthenticator((token) => this.authenticate(token));
+    this.attachments = config.ledgerRead && config.ledgerSend && config.ledgerAttachments ? new OwnerAttachments({ hubs: this.hubs,
+      store: dependencies.blobStore ?? createBlobStore(config.blobStore, config.stateDir), quotaBytes: config.attachmentQuotaBytes,
+      tempDir: join(config.stateDir, "tmp", "uploads"), owned: (owner) => this.agents(owner).filter((agent) => agent.status === "active"),
+      open: async (agentId) => { await this.runtime(agentId); }, ledger: (agentId) => this.ledgers.get(agentId),
+      readChannel: async (agentId, inputId, reference) => {
+        const read = (await this.runtime(agentId)).extension?.readAttachment;
+        if (!read) throw new Error("channel_attachment_read_unsupported");
+        return read(inputId, reference);
+      } }) : undefined;
+    this.attachments?.startSweeper();
     this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons, identity: this.identity,
       authenticator: new CompositeAuthenticator((token) => whoami.authenticate(token), this.edgeIdentity),
       send: config.ledgerSend, channel: async (agentId) => (await this.runtime(agentId)).extension?.web,
@@ -147,6 +180,7 @@ export class ManagedService {
       control: async (agentId) => (await this.runtime(agentId)).extension?.control,
       groups: Boolean(config.ledgerSend && config.ledgerGroups), kick: () => this.fanout?.kick(),
       open: async (agentId) => { await this.runtime(agentId); }, owned: (owner) => this.agents(owner).filter((agent) => agent.status === "active"),
+      attachments: this.attachments,
       debug: (agentId) => {
         const ledger = this.ledgers.get(agentId), store = ledger?.store;
         const count = (collection: string) => Number(store?.db.prepare("SELECT COUNT(*) AS n FROM documents WHERE collection=?").get(collection)?.n ?? 0);
@@ -412,7 +446,7 @@ export class ManagedService {
     for (const pending of this.runtimes.values()) {
       try { const { connector, extension } = await pending; await extension?.stop(); await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
     }
-    this.runtimes.clear(); this.ledgers.clear(); this.web?.close(); this.hubs.close(); this.store.close();
+    this.runtimes.clear(); this.ledgers.clear(); this.attachments?.stop(); this.web?.close(); this.hubs.close(); this.store.close();
   }
 }
 
@@ -423,6 +457,8 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
   // The authenticated runtime parses attachment-bearing updates with a separate bound.
   app.use((req, res, next) => {
     if (req.method === "POST" && /^\/_agent-router\/v1\/agents\/[^/]+\/gateway\/api\/work\/[^/]+\/update$/.test(req.path)) next();
+    // Attachment uploads stream their raw body (any content type, including application/json) to the blob store.
+    else if (req.method === "POST" && req.path === "/_agent-router/v1/web/attachments") next();
     else jsonBody(req, res, next);
   });
   app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service" }));

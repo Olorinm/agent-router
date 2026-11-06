@@ -2,7 +2,7 @@ import { Message, SendMessageRequest, TaskState } from "@a2a-js/sdk";
 import { z } from "zod";
 import { digest, key, terminal } from "../execution/protocol.js";
 import { CliWork } from "../execution/work.js";
-import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent } from "./types.js";
+import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent, type AttachmentReference } from "./types.js";
 import { DurableStore } from "./store.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { shadowControl, shadowDelivery, shadowOutbox, shadowReceive, shadowStart, type ShadowContext } from "../ledger/shadow.js";
@@ -529,6 +529,21 @@ export class CommunicationCore {
     const adapter = this.connection(input.connectionId).adapter;
     if (!adapter.native || !this.capabilities(taskId)?.native.includes(operation)) throw new Error("channel_native_operation_unsupported");
     return adapter.native(input.replyRoute, operation, args);
+  }
+  /**
+   * One attachment of a stored inbound message, for lazy promotion into the blob store (ADR 0005 16.5). Reuses the
+   * model's media cache when the input was already read, so an expired platform resource can still be promoted.
+   */
+  async readStoredAttachment(inputId: string, reference: AttachmentReference): Promise<MediaContent> {
+    const input = this.store.get<InboxRecord>("communication_inbox", inputId); if (!input) throw new Error("channel_input_not_found");
+    const adapter = this.connection(input.connectionId).adapter;
+    const read = (input.source.attachments ?? []).filter((item) => !(item.kind === "sticker" && adapter.capabilities?.receive.includes("sticker-reference")));
+    const index = read.findIndex((item) => item.id === reference.id), cached = this.store.get<MediaContent[]>("communication_media", inputId);
+    if (index >= 0 && cached?.[index]) return cached[index]!;
+    const attachment = (input.source.attachments ?? []).find((item) => item.id === reference.id);
+    if (!attachment) throw new Error("channel_attachment_not_found");
+    if (!adapter.readAttachment) throw new Error("channel_attachment_read_unsupported");
+    return adapter.readAttachment(input.source, attachment);
   }
   private connection(id: string): Connection {
     const connection = this.connections.get(id);

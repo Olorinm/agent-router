@@ -3,6 +3,8 @@ import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
 import express from "express";
 import { ipKeyGenerator, rateLimit } from "express-rate-limit";
+import { attachmentRoutes } from "./blobs-web.js";
+import type { OwnerAttachments } from "./blobs-hub.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
 import { digest } from "../execution/protocol.js";
@@ -71,6 +73,9 @@ const historyQuery = z.object({ before: seq.optional(), after: seq.optional(), g
   .refine((query) => query.before === undefined || query.after === undefined, "before_and_after_are_exclusive");
 const agentOf = (chatId: string) => /^(?:dm|obs):([^:]+)/.exec(chatId)?.[1];
 
+/** Phase 4 attachments (ADR 0005 16.5); present only while the `attachments` feature is on. */
+export interface WebLedgerDependencies { attachments?: OwnerAttachments | undefined }
+
 /** Single-use socket tickets (60 s), kept in memory only. */
 class Tickets {
   private readonly tickets = new Map<string, { principal: OwnerPrincipal; credentials: OwnerRequest; expires: number }>();
@@ -97,7 +102,7 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   const send = Boolean(dependencies.send && dependencies.channel);
   const cards = send && Boolean(dependencies.cards && dependencies.control), reset = send && Boolean(dependencies.reset && dependencies.control);
   const groups = send && Boolean(dependencies.groups);
-  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: false, reset, groups, identity: Boolean(dependencies.identity) } };
+  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: Boolean(dependencies.attachments), reset, groups, identity: Boolean(dependencies.identity) } };
   const router = express.Router();
   // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
@@ -121,7 +126,8 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   };
   router.get("/me", (_req, res) => {
     const { personId: id, ownerId, via, email, expiresAt } = principal(res);
-    res.json({ person: { id, name: persons.person(id)?.displayName ?? ownerId }, ownerId, identities: persons.identities(id), limits,
+    res.json({ person: { id, name: persons.person(id)?.displayName ?? ownerId }, ownerId, identities: persons.identities(id),
+      limits: { ...limits, ...(dependencies.attachments ? { attachmentQuotaBytes: dependencies.attachments.quotaBytes } : {}) },
       auth: { via, ...(email ? { email } : {}), ...(expiresAt ? { expiresAt: new Date(expiresAt).toISOString() } : {}) } });
   });
   router.post("/socket-tickets", (req, res) => {
@@ -312,6 +318,8 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     for (const agent of dependencies.owned(principal(res).ownerId)) { await dependencies.open(agent.id); data.push({ agentId: agent.id, ...dependencies.debug(agent.id) }); }
     res.json({ data });
   });
+  // ---- Phase 4: attachments (ADR 0005 16.5), routes in src/ledger/blobs-web.ts ----
+  attachmentRoutes(router, dependencies.attachments, principal);
 
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   const live = new Set<WebSocket>();

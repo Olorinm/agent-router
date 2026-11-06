@@ -263,5 +263,6 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       if (action === "complete") return account.complete();
       return account.status(true);
     },
+    readAttachment: (inputId, reference) => core.readStoredAttachment(inputId, reference),
   };
 }

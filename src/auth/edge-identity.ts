@@ -113,6 +113,9 @@ export class CloudflareAccessAuthenticator implements OwnerAuthenticator {
     const length = request.headers["content-length"], chunked = request.headers["transfer-encoding"] !== undefined;
     if (!chunked && (length === undefined || length === "0")) return;
     const type = request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() ?? "";
+    // A raw attachment upload carries the file's own type (text/plain, …) and `X-File-Name`. That header is not
+    // CORS-safelisted, so a cross-site page can only send it after a preflight, which Router never grants.
+    if (request.headers["x-file-name"] !== undefined) return;
     if (!type || SIMPLE_TYPES.has(type)) throw new WorkError("content_type_not_allowed", 415);
   }
   async authenticate(request: OwnerRequest): Promise<OwnerPrincipal> {

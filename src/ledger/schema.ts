@@ -101,6 +101,17 @@ CREATE TABLE hub_pairing_codes(code_hash TEXT PRIMARY KEY, person_id TEXT NOT NU
 CREATE TABLE hub_blobs(sha256 TEXT PRIMARY KEY, size INTEGER NOT NULL, content_type TEXT NOT NULL,
   uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL);`;
 
+/** ADR 0005 16.8 (phase 4 attachments). The two indexes are not in the ADR text: unbound-upload sweeps and ref lookups. */
+export const OWNER_HUB_V2 = `
+CREATE TABLE hub_uploads(attachment_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, name TEXT NOT NULL, content_type TEXT NOT NULL,
+  size INTEGER NOT NULL, uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL, bound_at INTEGER);
+CREATE INDEX hub_uploads_unbound ON hub_uploads(created_at) WHERE bound_at IS NULL;
+CREATE TABLE hub_blob_refs(sha256 TEXT NOT NULL, ref TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(sha256, ref));
+CREATE INDEX hub_blob_refs_ref ON hub_blob_refs(ref);
+CREATE TABLE hub_room_attachments(attachment_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, event_id TEXT, name TEXT NOT NULL,
+  content_type TEXT NOT NULL, size INTEGER, sha256 TEXT, locator TEXT NOT NULL, created_at INTEGER NOT NULL);
+ALTER TABLE hub_blobs ADD COLUMN unreferenced_at INTEGER;`;
+
 export const REGISTRY_V1 = `
 CREATE TABLE reg_persons(person_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE reg_person_identities(

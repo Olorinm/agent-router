@@ -1976,6 +1976,69 @@ deviate from it where the code required:
     is bumped and `published_seq` reset, so clients get `reset`. Only Matrix inbox/outbox records are linked;
     legacy records of other channels from before the cutover are not backfilled.
 
+## Implementation notes (phase 4: attachments and the blob store)
+
+The attachment part of section 16.5 is implemented in `src/ledger/blobs.ts` (stores), `src/ledger/blobs-hub.ts`
+(`OwnerAttachments`: uploads, permissions, reference counting, sweeper, send binding) and `src/ledger/blobs-web.ts`
+(routes). Cards, control (cancel, steer, reset, redaction, purge) and schedule targets are not part of this change.
+
+1. **Flag and config.** `ServiceConfig.ledgerAttachments` (`AGENT_LEDGER_ATTACHMENTS=1`, needs `ledgerRead`) builds
+   `ManagedService.attachments` and sets `features.attachments`. Phase 3's `send` is not on `main` yet, so the flag
+   does not check it; once `send` lands, `attachments` must also require it (section 16 table). `GET /me` adds
+   `limits.attachmentQuotaBytes` while the feature is on. Blob store: `ServiceConfig.blobStore` =
+   `{ kind: "local", dir? }` (default `<stateDir>/blobs`) or `{ kind: "r2", bucket, accessKeyIdFile,
+   secretAccessKeyFile, endpoint? | accountId? }` (`AGENT_BLOB_STORE=r2`, `AGENT_R2_*` as in 16.5, plus
+   `AGENT_R2_ACCOUNT_ID` as an alternative to the endpoint, `AGENT_BLOB_DIR`, `AGENT_ATTACHMENT_QUOTA_BYTES`).
+   The key files are read once when the service is built. Embedders and tests can pass
+   `ServiceDependencies.blobStore` instead. Nothing in the store logs; errors carry codes only.
+2. **R2.** Path-style `<endpoint>/<bucket>/<key>`. `PutObject` sends `X-Amz-Content-Sha256` (the verified hash, so the
+   payload is signed), `Content-MD5`, `If-None-Match: *` (412 is success); the file is read into memory (at most
+   30 MiB). `http:` endpoints are accepted only on loopback (tests). The request timeout covers the response
+   headers; download bodies stream.
+3. **Upload.** The service JSON parser skips `POST /web/attachments`, so any content type (including
+   `application/json`) streams raw. A chunked body or no `Content-Length` gives 411 `content_length_required`; early
+   rejections close the connection. `Content-Type` parameters are dropped (`text/html; charset=utf-8` →
+   `text/html`). `X-File-Name` is RFC 8187 (`UTF-8''…`) or ASCII; separators and controls become `_`, at most
+   200 bytes, default `attachment`. A body shorter than `Content-Length` gives 400 `upload_incomplete`. The rate
+   limit (60/min) is keyed by person.
+4. **Order of writes.** Upload: quota pre-check → spool to `<stateDir>/tmp/uploads` while hashing → (per owner and
+   sha256 lock) `head`/`put` → one hub transaction that re-checks the quota and writes `hub_blobs`, `hub_uploads`
+   and `upload:<id>`. If that transaction fails and the owner held no such blob, the object is deleted again. The
+   in-process lock also serializes lazy promotion and the sweeper, so a sweep never deletes an object an upload
+   has just found present (single Router process; phase 8 gets this from the Durable Object).
+5. **Download.** Lookup order: the caller's own upload, a bound room attachment (phase 5), then the agent ledgers
+   of the owner's active agents (the `agent:<agentId>:<id>` reference is a fast path; otherwise each owned agent is
+   opened, as history does). Only rows with `event_id` set are readable. 404 everywhere else. `Range` supports one
+   `bytes=a-b`, `a-` or `-n` range; several ranges get the whole body; 416 carries `Content-Range: bytes */<size>`.
+   Responses also carry `Accept-Ranges` and `ETag: "sha256:<hex>"`.
+6. **Lazy promotion.** A `{"channel":…}` row is read through `ServiceExtension.readAttachment(inputId, reference)`
+   (`CommunicationCore.readStoredAttachment`: the claim's input → `communication_inbox` source →
+   `adapter.readAttachment`, reusing the `communication_media` cache when the model already read it). The bytes
+   are stored under the owner's prefix, the row gets `sha256`, `size`, the sniffed type and `{"blob":…}`, and the
+   hub gets `agent:<agentId>:<id>`. The event body is not rewritten (its `size`/`sha256` stay `null`). Promotion does
+   not check the quota (the owner did not choose to upload it) but counts toward it. Inbound media is not
+   promoted on ingest.
+7. **Sweeper.** Hourly over the hubs this process opened (every owner with a started agent). Unbound uploads
+   older than 24 h lose `upload:` and their row; blobs without references get `unreferenced_at`; after 7 days the
+   object is deleted, then the row (a failed store delete keeps the row for the next sweep). Schema `OWNER_HUB_V2`
+   adds two indexes not listed in 16.8: `hub_uploads_unbound` and `hub_blob_refs_ref`.
+8. **Integration point for send (phase 3) and control.** `ManagedService.attachments` (`OwnerAttachments`):
+   - `reserve(owner, attachmentIds, { agentId } | { roomId })` before the send transaction: checks the caller's own
+     unbound uploads (422 `attachment_not_found`, 422 `too_many_attachments` over 10, 413 `attachments_too_large`
+     over 30 MiB) and pins each with its `agent:`/`room:` reference. Returns `MessageAttachment[]`
+     (`{ attachmentId, name, contentType, size, sha256 }`) for the event body's `attachments`; `render` adds `url`.
+   - `writeLedger(ledger, items, eventId)` inside the agent ledger's send transaction (rooms: `writeRoom`). The
+     ledger row reuses the upload's `attachmentId`, so the URL the client already has keeps working.
+   - `commit(owner, attachmentIds)` after the send committed (`bound_at`, drops `upload:`); `abort(ownerId, ids,
+     target)` if it failed. A crash between commit of the send and `commit` leaves the upload unbound: the sweeper
+     removes the `upload:` reference after 24 h and the pinned reference keeps the blob.
+   - `WebChannel.readAttachment` / `RoomChannel.readAttachment`: `readMedia(ownerId, item)` (cap
+     `MAX_MEDIA_BYTES`). Agent outbound media on a web turn: `storeMedia(ownerId, target, media)` then `writeLedger`.
+   - Redaction and purge (16.4): `releaseAgent(ownerId, agentId, attachmentIds)` / `releaseRoom(…)` after the
+     ledger rows lose their `event_id` or are deleted.
+9. **Not done here.** Text over 256 KiB still becomes `truncated: true` (implementation note 13) rather than an
+   attachment; the Mau console composer; promotion on ingest.
+
 ## Client contract (phase 2, settled with the Mau console)
 
 These answers are normative for clients; the Router and the Mau console (`web/src/api/ledger.ts`) both test them.
