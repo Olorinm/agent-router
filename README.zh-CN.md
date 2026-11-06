@@ -32,7 +32,7 @@ Router 管理 Agent 身份、渠道连接、通信会话、任务投递和回复
 
 | 入口 | 当前能力 |
 | --- | --- |
-| 飞书 | 官方 Channel 收发文字和媒体、引用、流式卡片、交互按钮；扫码配置应用、个人授权后使用官方 CLI 工具 |
+| 飞书 | 官方 Channel 收发文字和媒体、引用、流式卡片、交互按钮；扫码配置应用 |
 | 微信 | 腾讯 iLink 扫码登录、私聊文字/媒体、语音转写和引用 |
 | Telegram | grammY Bot API：文字/媒体、草稿流、按钮和引用，支持私聊和群组话题 |
 | 邮件 | [Grove Mail](docs/guides/personal-channels.md) 的收信和回复 |
@@ -55,7 +55,7 @@ agent-router channel-connect feishu  # 可选，也可选微信、Telegram、邮
 agent-router connection-check
 ```
 
-扫码和个人授权链接直接显示在终端。平台可选；朋友注册账号后可以通过 CLI 调用你授权的 Agent。见[CLI 开通指南](docs/guides/connections.zh-CN.md)，其中也说明管理员的一次性准备。
+扫码链接直接显示在终端。平台可选；朋友注册账号后可以通过 CLI 调用你授权的 Agent。见[CLI 开通指南](docs/guides/connections.zh-CN.md)，其中也说明管理员的一次性准备。
 
 从源码构建，需 Node.js 24+ 和 Go 1.25+；Go 按 `go.mod` 选择工具链：
 

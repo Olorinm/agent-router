@@ -49,7 +49,6 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
-    "@larksuite/cli": "1.0.97",
     "@larksuiteoapi/node-sdk": "1.74.0",
     "aws4fetch": "^1.0.20",
     "express": "^5.2.1",
@@ -92,9 +91,6 @@
     "scripts/fixtures/native-sessions-server.mjs",
     "THIRD_PARTY_NOTICES.md"
   ],
-  "allowScripts": {
-    "@larksuite/cli@1.0.97": true
-  },
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",
   "exports": {

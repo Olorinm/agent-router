@@ -284,9 +284,6 @@ export class ConnectionConfiguration {
       connections: (config?.connections ?? []).map((connection) => ({
         id: connection.id,
         kind: connection.kind,
-        ...(connection.kind === "feishu"
-          ? { personalTools: connection.personalTools }
-          : {}),
       })),
     };
   }

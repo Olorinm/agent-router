@@ -6,7 +6,6 @@ import { Client } from "@larksuiteoapi/node-sdk";
 import { ServiceHttp } from "../src/http.js";
 import { checkChannels } from "../src/service/check.js";
 import { channelConfigSchema } from "../src/service/channels.js";
-import { FeishuAccount } from "../src/services/feishu/cli.js";
 
 const cleanup: string[] = [];
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -56,19 +55,16 @@ it("does not accept access to a different mailbox as proof of the configured inb
   const f = fixture(); f.wrongInbox();
   expect((await checkChannels(f.configuration)).find((c) => c.kind === "grove-mail")!.status).toBe("needs_action");
 });
-it("requires personal authorization separately from a valid Feishu bot", async () => {
+it("loads a legacy Feishu connection with personalTools and checks only the bot", async () => {
   const f = fixture();
   writeFileSync(join(f.directory, "credentials.json"), JSON.stringify({ version: 1, appId: "app", appSecretFile: "token", domain: "feishu", ownerOpenId: "ou_owner" }));
   f.configuration.agents[0]!.connections = channelConfigSchema.parse({ agents: [{ ...f.configuration.agents[0], connections: [
     { id: "feishu", kind: "feishu", credentialsFile: "credentials.json", personalTools: true },
   ] }] }).agents[0]!.connections;
   vi.spyOn(Client.prototype, "request").mockResolvedValue({ code: 0, bot: { open_id: "bot" } });
-  vi.spyOn(FeishuAccount.prototype, "status").mockResolvedValue({ appId: "app", ownerOpenId: "ou_owner", authorized: false, verified: false, status: "missing", scope: [], userName: "" });
   const checks = await checkChannels(f.configuration);
   expect(checks.find((c) => c.kind === "feishu")!.status).toBe("verified");
-  expect(checks.find((c) => c.kind === "feishu_personal")!.status).toBe("needs_action");
-  vi.mocked(FeishuAccount.prototype.status).mockRejectedValueOnce(new Error("CLI unavailable"));
-  expect((await checkChannels(f.configuration)).find((c) => c.kind === "feishu")!.status).toBe("verified");
+  expect(checks.filter((c) => c.connectionId === "feishu")).toHaveLength(1);
 });
 
 it("reports missing messaging connections even when the Host passes", async () => {

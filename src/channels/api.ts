@@ -56,19 +56,6 @@ export interface ChannelFactoryContext {
   files: ChannelFiles;
   services: ChannelServices;
 }
-/** Personal (user-identity) authorization of a connection, e.g. Feishu personal tools. */
-export interface ChannelAuthorization {
-  begin(): Promise<unknown>;
-  complete(): Promise<unknown>;
-  status(verify: boolean): Promise<unknown>;
-  /** Polled every few seconds while the runtime runs. */
-  poll(): Promise<unknown>;
-}
-/** A Host tool the connection contributes to owner conversations. `transfer` copies a file into the run's session. */
-export interface ChannelTool {
-  definition: HostTool;
-  execute(call: HostCall, transfer: (item: MediaContent) => Promise<string>): Promise<HostToolResult>;
-}
 export interface ChannelInstance {
   adapter: ChannelAdapter;
   /** A fresh adapter after the provider disconnected it; default reuses `adapter`. */
@@ -79,17 +66,11 @@ export interface ChannelInstance {
   namespace?: string;
   /** Start before Router's first receive (Matrix installs its synchronous receipt hook this way). */
   eager?: boolean;
-  authorization?: ChannelAuthorization;
-  tools?: ChannelTool[];
   /** `/link` pairing codes are accepted over this mail connection from provider-verified senders. */
   mailPairing?: boolean;
 }
 export type CheckStatus = "verified" | "needs_action" | "not_verified" | "disabled";
-export interface ChannelCheckResult {
-  status: CheckStatus; detail: string;
-  /** Separate checks of the same connection (e.g. personal authorization), reported with their own `kind`. */
-  extra?: Array<{ kind: string; status: CheckStatus; detail: string }>;
-}
+export interface ChannelCheckResult { status: CheckStatus; detail: string; }
 export interface ChannelModule<S extends ConnectionSchema = ConnectionSchema> {
   readonly kind: z.infer<S>["kind"];
   /** The connection config: `z.object({ ...connectionFields, kind: z.literal(kind), … }).strict()`. */
@@ -98,8 +79,8 @@ export interface ChannelModule<S extends ConnectionSchema = ConnectionSchema> {
   readonly singleton?: boolean;
   /** A running connection is the access check (no second consumer is started by `channels:check`). */
   readonly runningVerifies?: boolean;
-  /** Cross-field validation; returns issue codes. `agent.host` is true when the agent has a direct Host. */
-  validate?(config: z.infer<S>, agent: { host: boolean }): string[];
+  /** Cross-field validation; returns issue codes. */
+  validate?(config: z.infer<S>): string[];
   /** The provider account, unique per kind across the configuration. May read (and validate) credential files. */
   account(config: z.infer<S>, context: { agentId: string; files: ChannelFiles }): string;
   create(config: z.infer<S>, context: ChannelFactoryContext): ChannelInstance | Promise<ChannelInstance>;

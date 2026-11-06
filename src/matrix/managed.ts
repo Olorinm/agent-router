@@ -77,7 +77,6 @@ export interface ServiceExtension {
   resolve(callId: string, result: unknown): Promise<void | "accepted" | "stale">;
   reconcile(claimId: string, runId: string): Promise<void>;
   closeUnknown(claimId: string): Promise<void>;
-  authorization?(connectionId: string, action: "status" | "begin" | "complete"): Promise<unknown>;
 }
 interface Runtime { connector: MatrixConnector; app: ReturnType<typeof createConnectorApp>; token: string; extension?: ServiceExtension | undefined; }
 export interface ServiceDependencies {
@@ -728,17 +727,6 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     z.object({}).strict().parse(req.body);
     await (await observation(req.params.agentId)).cancel(req.params.taskId);
     res.json({ status: "accepted" });
-  });
-  const authorization = async (id: string, connectionId: string, action: "status" | "begin" | "complete") => {
-    const runtime = await extension(id);
-    if (!runtime.authorization) throw new WorkError("personal_authorization_not_configured", 404);
-    return runtime.authorization(connectionId, action);
-  };
-  app.get(`${root}/agents/:agentId/communication/connections/:connectionId/authorization`, async (req, res) =>
-    res.json(await authorization(req.params.agentId, req.params.connectionId, "status")));
-  app.post(`${root}/agents/:agentId/communication/connections/:connectionId/authorization/:action`, async (req, res) => {
-    const action = z.enum(["begin", "complete"]).parse(req.params.action); z.object({}).strict().parse(req.body);
-    res.json(await authorization(req.params.agentId, req.params.connectionId, action));
   });
   app.post(`${root}/agents/:agentId/communication/calls/:callId/result`, async (req, res) => {
     const body = z.object({ result: z.json() }).strict().parse(req.body);

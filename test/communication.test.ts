@@ -249,10 +249,10 @@ describe("communication receipt and routing", () => {
 describe("Host product tool execution", () => {
   function fixture() {
     const h = harness(); let executions = 0, fail = false;
-    const tools: HostTools = { definitions: [{ name: "feishu_personal", description: "fixture", inputSchema: {}, timeoutMs: 180_000 }], instructions: " personal tools",
+    const tools: HostTools = { definitions: [{ name: "product_fixture", description: "fixture", inputSchema: {}, timeoutMs: 180_000 }], instructions: " product tools",
       allowed: (conversation, task) => h.core.isOwnerTask(conversation, task),
       execute: async () => { executions++; if (fail) throw new Error("secret transport details"); return { success: true, contentItems: [{ type: "inputText", text: "calendar result" }] }; } };
-    const call: HostCall = { id: "call", runId: "run-1", kind: "tool", name: "feishu_personal", input: { args: ["calendar", "+agenda"] }, status: "pending", deadlineAt: "2999-01-01T00:00:00Z" };
+    const call: HostCall = { id: "call", runId: "run-1", kind: "tool", name: "product_fixture", input: { query: "agenda" }, status: "pending", deadlineAt: "2999-01-01T00:00:00Z" };
     return { ...h, tools, call, executions: () => executions, fail: () => { fail = true; } };
   }
   it("executes an owner's tool and reuses its saved result after a worker restart", async () => {

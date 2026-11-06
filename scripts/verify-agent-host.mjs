@@ -13,8 +13,6 @@ import { CliWork } from "../dist/execution/work.js";
 import { HostWorker } from "../dist/execution/host-worker.js";
 import { HttpAgentHost } from "../dist/execution/host.js";
 import { ServiceHttp } from "../dist/http.js";
-import { FeishuAccount, privateFile } from "../dist/services/feishu/cli.js";
-import { FeishuTools } from "../dist/services/feishu/tools.js";
 
 const hostProject = process.argv[2];
 if (!hostProject) throw new Error("Usage: node scripts/verify-agent-host.mjs AGENT_HOST_PROJECT (build both projects first)");
@@ -28,8 +26,8 @@ try {
   const productRuntime = { id: "product-fixture", kernel: "fixture", cwd: root, configurationKey: "product-fixture-v1", close() {},
     async *run(request) {
       yield { type: "turn.started", runId: request.runId };
-      const tool = request.tools.find((tool) => tool.name === "feishu_personal"); assert.ok(tool);
-      const result = await tool.execute({ args: ["calendar", "+agenda"] }, { sessionId: request.sessionId, runId: request.runId,
+      const tool = request.tools.find((tool) => tool.name === "product_fixture"); assert.ok(tool);
+      const result = await tool.execute({ query: "agenda" }, { sessionId: request.sessionId, runId: request.runId,
         threadId: "fixture-thread", turnId: request.runId, callId: "fixture-call", signal: request.signal });
       assert.equal(result.success, true);
       yield { type: "model.response", runId: request.runId, text: result.contentItems[0].text };
@@ -92,24 +90,18 @@ try {
   await input("image-only", { msgtype: "m.image", body: "photo.png", url: "mxc://example.test/image", info: { mimetype: "image/png" } });
   await until((status) => status.host.runs.length === 4 && status.host.runs[3].phase === "finished" && status.outbox.every((row) => row.state === "accepted"));
   assert.ok(sent.some((message) => message.content.body.includes(`data:image/png;base64,${imageBytes.toString("base64")}`)));
-  const accountDirectory = join(root, "feishu"); privateFile(join(accountDirectory, "app-secret"), "fixture-app-secret");
-  // Local status has no --verify: validate the pinned CLI's real config/JSON contract without platform API calls.
-  const formatAccount = new FeishuAccount({ version: 1, appId: "cli_router_format_fixture", appSecretFile: "app-secret", domain: "feishu", ownerOpenId: "ou_fixture" }, join(root, "cli-format"));
-  privateFile(join(formatAccount.directory, "app-secret"), "fixture-format-secret");
-  assert.equal((await formatAccount.status()).authorized, false);
   let commands = 0;
-  const account = new FeishuAccount({ version: 1, appId: "app", appSecretFile: "app-secret", domain: "feishu", ownerOpenId: "ou_owner" }, accountDirectory,
-    async (args) => {
-      if (args[0] === "auth") return { code: 0, stderr: "", stdout: JSON.stringify({ appId: "app", identities: { user: { available: true, openId: "ou_owner", tokenStatus: "valid" } } }) };
-      assert.deepEqual(args, ["calendar", "+agenda", "--as", "user", "--profile", "app"]); commands++;
-      return { code: 0, stderr: "", stdout: '{"ok":true,"data":{"items":["meeting fixture"]}}' };
-    });
+  // A product tool contributed through the public HostTools broker; only an owner task may run it.
+  const tools = { definition: { name: "product_fixture", description: "Fixture product tool", timeoutMs: 10_000,
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false } },
+    execute: async (call) => { assert.deepEqual(call.input, { query: "agenda" }); commands++;
+      return { success: true, contentItems: [{ type: "inputText", text: '{"ok":true,"data":{"items":["meeting fixture"]}}' }] }; } };
   toolStore = new DurableStore(join(root, "product-tools.sqlite"), "tool-agent");
   const work = new CliWork(toolStore, () => "allow"), core = new CommunicationCore("tool-agent", toolStore, work), replies = [];
   core.register({ id: "fixture", ownerAddresses: ["ou_owner"] }, { kind: "feishu", retrySafe: false, start: async () => {}, stop: async () => {},
     send: async (_route, text) => { replies.push(text); return { externalId: "fixture-reply" }; } });
-  await core.start(); const tools = new FeishuTools("personal", account);
-  const worker = new HostWorker("tool-agent", "tool-instance", toolStore, work, new HttpAgentHost(new ServiceHttp(host.url, token)), "product-fixture", "Use Feishu tools",
+  await core.start();
+  const worker = new HostWorker("tool-agent", "tool-instance", toolStore, work, new HttpAgentHost(new ServiceHttp(host.url, token)), "product-fixture", "Use the product tool",
     () => {}, (id, text) => core.saveResult(id, text), { definitions: [tools.definition], instructions: "", allowed: (context, task) => core.isOwnerTask(context, task), execute: (call) => tools.execute(call) });
   core.receive("fixture", { externalId: "agenda", sender: "ou_owner", scope: "direct", threadId: "fixture-chat", text: "show my agenda",
     reply: { target: "fixture-chat", messageId: "agenda", data: {} } });
@@ -121,8 +113,8 @@ try {
   }
   assert.equal(commands, 1); assert.ok(replies[0].includes("meeting fixture")); assert.equal(worker.status().tools[0].phase, "completed");
   await core.stop();
-  process.stdout.write(JSON.stringify({ status: "passed", nativeKernel: "Codex protocol fixture", personalTools: "public Host tool broker and isolated CLI fixture",
-    checks: ["managed service composition", "private Matrix input and reply", "stable Host session", "native question answered in chat", "image-only bytes reach native Codex via public HTTP", "owner boundary", "Feishu product tool HTTP round trip"] }) + "\n");
+  process.stdout.write(JSON.stringify({ status: "passed", nativeKernel: "Codex protocol fixture", productTools: "public Host tool broker fixture",
+    checks: ["managed service composition", "private Matrix input and reply", "stable Host session", "native question answered in chat", "image-only bytes reach native Codex via public HTTP", "owner boundary", "product tool HTTP round trip"] }) + "\n");
 } finally {
   if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
   await service?.close(); await host?.close(); toolStore?.close(); await rm(root, { recursive: true, force: true });

@@ -272,12 +272,32 @@ describe("upgrading a production store to AGENT_MATRIX=off", () => {
     expect(extension!.sessions!.getSession(prior.session).ownerConversation).toBe(true);
   }, 60_000);
 
-  it("computes the Host scope of the deployed 0.7.0-alpha.10: changing the channel tool or its instructions stops every agent with runs", async () => {
+  it("pins the Host scope of the current channel tool and instructions", async () => {
     const stateDir = state(), prior = await priorStore(stateDir);
-    // `communication_host.scope` is checked at every start and is not migrated. The fixture is the deployed definition.
-    const released = JSON.parse(readFileSync(new URL("./fixtures/host-scope-0.7.0-alpha.10.json", import.meta.url), "utf8")) as { tools: unknown[]; toolInstructions: string };
+    // `communication_host.scope` is checked at every start and is not migrated. The fixture is the current definition.
+    const current = JSON.parse(readFileSync(new URL("./fixtures/host-scope.json", import.meta.url), "utf8")) as { tools: unknown[]; toolInstructions: string };
     expect(prior.scope).toBe(digest({ agentId: prior.agent.id, instanceId: prior.instance.id, runtimeId: "fixture", instructions: "prior instructions", host: "fixture-host",
-      tools: released.tools, toolInstructions: released.toolInstructions }));
+      tools: current.tools, toolInstructions: current.toolInstructions }));
+  }, 60_000);
+
+  it("refuses a store with the 0.7.0-alpha.11 Host scope until the operator clears it, then keeps the native session", async () => {
+    const stateDir = state(), prior = await priorStore(stateDir);
+    // Up to 0.7.0-alpha.11 the tool instructions also described the removed Feishu personal tool.
+    const released = JSON.parse(readFileSync(new URL("./fixtures/host-scope-0.7.0-alpha.10.json", import.meta.url), "utf8")) as { tools: unknown[]; toolInstructions: string };
+    const legacy = digest({ agentId: prior.agent.id, instanceId: prior.instance.id, runtimeId: "fixture", instructions: "prior instructions", host: "fixture-host",
+      tools: released.tools, toolInstructions: released.toolInstructions });
+    expect(legacy).not.toBe(prior.scope);
+    const file = join(stateDir, "agents", `${prior.agent.id}.sqlite`);
+    const write = (sql: string, ...values: string[]) => { const db = new DatabaseSync(file); try { db.prepare(sql).run(...values); } finally { db.close(); } };
+    write("UPDATE documents SET value=? WHERE collection='communication_host' AND id='scope'", JSON.stringify(legacy));
+    // Router itself does not start: every agent's runtime is opened at start.
+    await expect(boot(stateDir)).rejects.toThrow("host_binding_configuration_changed");
+    // The operator step, with Router stopped and no running or unknown run: delete the stored scope.
+    write("DELETE FROM documents WHERE collection='communication_host' AND id='scope'");
+    const restarted = await boot(stateDir);
+    const { connector } = await restarted.router.service.runtime(prior.agent.id);
+    expect(connector.store.get("communication_host", "scope")).toBe(prior.scope);
+    expect(connector.store.get("execution_sessions", prior.session)).toEqual(prior.binding);
   }, 60_000);
 
   it("does not let records of the removed Matrix connection stall dispatch, results or schedule notices", async () => {

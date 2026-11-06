@@ -10,7 +10,7 @@ import (
 
 type options struct {
 	feishuAppID, domain, botTokenFile, apiKeyFile, mailService, inboxID, ownerEmail, pairingCodeFile string
-	noWait, messagingOnly                                                                            bool
+	noWait                                                                                           bool
 	profile, homeserver, passwordFile, registrationTokenFile, deviceName                             string
 	connectorURL, endpointTokenFile, connectorRuntime                                                string
 	serviceURL, outputFile                                                                           string
@@ -58,7 +58,6 @@ func parse(args []string, errOut io.Writer) (options, []string, error) {
 	f.BoolVar(&o.version, "version", false, "Show version")
 	f.StringVar(&o.feishuAppID, "app-id", "", "Authorize an existing Feishu/Lark app instead of creating one")
 	f.StringVar(&o.domain, "domain", "feishu", "Feishu or Lark")
-	f.BoolVar(&o.messagingOnly, "messaging-only", false, "Connect Feishu messaging without personal tools")
 	f.StringVar(&o.botTokenFile, "bot-token-file", "", "Read Telegram BotFather token from a private file")
 	f.StringVar(&o.apiKeyFile, "api-key-file", "", "Read mail API key from a private file")
 	f.StringVar(&o.mailService, "mail-service", "", "Operator-configured mail service ID")
@@ -95,7 +94,6 @@ const help = `Agent Router — Go CLI
     --app-id cli_...              Recover an existing Feishu/Lark app through official consent
   channel-jobs | channel-job ID   List / resume a connection and show terminal QR
   channel-pair ID                 Enter Weixin pairing code (hidden prompt)
-  channel-auth ID [status|begin|complete]  Inspect / renew personal authorization
   agents                         List Agents owned by this account
   agent-create NAME              Create and select an Agent (no new password)
   agent-use NAME | agent-current  Select an owned Agent / show current selection
@@ -141,8 +139,7 @@ Edge login: run cloudflared access login URL first, or use an Access service tok
 CF_ACCESS_CLIENT_SECRET[_FILE]); --access-token-file / CF_ACCESS_TOKEN[_FILE] pass a token.
 Setup uses the saved owner account. Platforms are optional. QR flows wait by default;
 use --no-wait for scripts. Telegram uses --bot-token-file; mail uses --api-key-file,
---mail-service, --inbox and --owner-email. Feishu includes personal authorization;
---messaging-only connects messaging alone. Weixin supports --pairing-code-file.
+--mail-service, --inbox and --owner-email. Weixin supports --pairing-code-file.
 Secrets are never accepted as argument values. bind accepts --endpoint-token-file FILE.
 The Go CLI needs no Node runtime. The separate local connector service needs Node 24.
 connect finds agent-router-connector on PATH, or accepts --connector-runtime FILE.

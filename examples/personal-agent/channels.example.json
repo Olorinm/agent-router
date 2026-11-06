@@ -12,8 +12,7 @@
         {
           "id": "feishu",
           "kind": "feishu",
-          "credentialsFile": "feishu/credentials.json",
-          "personalTools": true
+          "credentialsFile": "feishu/credentials.json"
         },
         {
           "id": "telegram",

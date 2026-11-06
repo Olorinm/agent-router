@@ -233,9 +233,10 @@ describe("managed CLI setup", () => {
     const begin = vi.spyOn(ConnectionSetup.prototype, "begin").mockReturnValue({ id: "job", kind: "feishu", state: "starting", expiresAt: new Date().toISOString() });
     expect((await b.api(path + "/connections", { kind: "feishu", appId: "cli_fixture" })).status).toBe(404);
     expect((await a.api(path + "/connections", { kind: "feishu", appId: "bad id" })).status).toBe(400);
+    expect((await a.api(path + "/connections", { kind: "feishu", personalTools: true })).status).toBe(400);
     expect(begin).not.toHaveBeenCalled();
     expect((await a.api(path + "/connections", { kind: "feishu", appId: "cli_fixture", domain: "lark" })).status).toBe(202);
-    expect(begin).toHaveBeenCalledWith(alice, agent.id, "feishu", expect.objectContaining({ appId: "cli_fixture", domain: "lark", personalTools: true }));
+    expect(begin).toHaveBeenCalledWith(alice, agent.id, "feishu", { kind: "feishu", appId: "cli_fixture", domain: "lark" });
     expect((await b.api(path + "/connection-jobs")).status).toBe(404);
   });
   it("protects another Agent's saved app even when its binding did not complete", async () => {
