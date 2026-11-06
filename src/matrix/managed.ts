@@ -16,6 +16,7 @@ import { ChannelRouter } from "../channels/router.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { OwnerHubs } from "../ledger/hub.js";
 import { PersonRegistry, personId } from "../ledger/registry.js";
+import { Identities } from "../ledger/identity.js";
 import { SynapseWhoamiAuthenticator, createWebLedger } from "../ledger/web.js";
 import { RoomFanout } from "../ledger/rooms-fanout.js";
 import { CloudflareAccessAuthenticator, CompositeAuthenticator, IdentityError, assertEdgeOwners, type EdgeIdentityConfig,
@@ -39,7 +40,10 @@ export interface ServiceConfig { serverName: string; homeserver: string; publicU
   /** ADR 0005 `groups` (phase 5, `AGENT_LEDGER_GROUPS`, needs `ledgerSend`): native hub rooms, fan-out to agents and room commands. */
   ledgerGroups?: boolean;
   /** ADR 0005 18.2: verify the Cloudflare Access JWT and map its email (or service token) to an owner. */
-  edgeIdentity?: EdgeIdentityConfig; }
+  edgeIdentity?: EdgeIdentityConfig;
+
+  /** ADR 0005 `identity` (phase 6, `AGENT_LEDGER_IDENTITY`): owner resolution by person, `/link` pairing and the identity routes (with `ledgerRead`). */
+  ledgerIdentity?: boolean; }
 export interface ServiceExtension {
   observation?: import("../execution/observation.js").RunObservation;
   sessions?: import("../execution/sessions.js").WorkSessions;
@@ -86,6 +90,7 @@ export class ManagedService {
   readonly channels: ChannelRouter;
   readonly persons: PersonRegistry;
   readonly hubs: OwnerHubs;
+  readonly identity: Identities | undefined;
   readonly web: ReturnType<typeof createWebLedger> | undefined;
   readonly edgeIdentity: CloudflareAccessAuthenticator | undefined;
   private readonly owners: CompositeAuthenticator;
@@ -122,6 +127,7 @@ export class ManagedService {
       personName: (id) => this.persons.person(id)?.displayName,
       groups: Boolean(config.ledgerRead && config.ledgerSend && config.ledgerGroups),
     });
+    this.identity = config.ledgerIdentity ? new Identities(this.persons, this.hubs) : undefined;
     this.fanout = config.ledgerRead && config.ledgerSend && config.ledgerGroups ? new RoomFanout(this.hubs, {
       owners: () => [...new Set(this.agents().filter((agent) => agent.status === "active").map((agent) => agent.owner))],
       channel: async (agentId) => this.agent(agentId).status === "active" ? (await this.runtime(agentId)).extension?.room : undefined,
@@ -134,7 +140,7 @@ export class ManagedService {
       return { personId: personId(ownerId), ownerId, via: "bearer", matrixUserId: ownerId };
     }, this.edgeIdentity);
     const whoami = new SynapseWhoamiAuthenticator((token) => this.authenticate(token));
-    this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons,
+    this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons, identity: this.identity,
       authenticator: new CompositeAuthenticator((token) => whoami.authenticate(token), this.edgeIdentity),
       send: config.ledgerSend, channel: async (agentId) => (await this.runtime(agentId)).extension?.web,
       cards: Boolean(config.ledgerSend && config.ledgerCards), reset: Boolean(config.ledgerSend && config.ledgerControl),

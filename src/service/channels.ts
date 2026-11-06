@@ -21,6 +21,7 @@ import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js"
 import { ChannelTools } from "../communication/tools.js";
 import { FeishuTools } from "../services/feishu/tools.js";
 import { personId, type IdentityProvider, type PersonRegistry } from "../ledger/registry.js";
+import { mailPairingCommand, pairingCommand, REPLIES, senderIdentities, type Identities } from "../ledger/identity.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { WEB_CONNECTION, WebChannel } from "../channels/web.js";
 import { LedgerControl } from "../ledger/control.js";
@@ -36,7 +37,9 @@ const connection = z.discriminatedUnion("kind", [
   z.object({ ...common, kind: z.literal("feishu"), appId: z.string().min(1).optional(), appSecretFile: file.optional(),
     credentialsFile: file.optional(), personalTools: z.boolean().default(false), domain: z.enum(["feishu", "lark"]).default("feishu") }).strict(),
   z.object({ ...common, kind: z.literal("telegram"), botTokenFile: file }).strict(),
-  z.object({ ...common, kind: z.literal("grove-mail"), url: z.url(), inboxId: z.email(), apiKeyFile: file, initialCursor: z.number().int().nonnegative().default(0), attachmentOrigins: z.array(z.url()).default([]) }).strict(),
+  z.object({ ...common, kind: z.literal("grove-mail"), url: z.url(), inboxId: z.email(), apiKeyFile: file, initialCursor: z.number().int().nonnegative().default(0), attachmentOrigins: z.array(z.url()).default([]),
+    /** ADR 0005 18.4 / open question 4: `/link` over mail, only for senders the provider marks verified. Off by default. */
+    pairing: z.boolean().optional() }).strict(),
   z.object({ ...common, kind: z.literal("weixin"), credentialsFile: file }).strict(),
 ]);
 export const agentChannelConfigSchema = z.object({ agentId: z.uuid(), connections: z.array(connection).max(20),
@@ -93,9 +96,36 @@ export function loadWeixinCredentials(path: string) {
   return credentials;
 }
 
+/**
+ * Owner resolution by person and the `/link` control path for one agent's channels (ADR 0005 18.1, 18.4).
+ * Pairing only matches the agent owner's codes, so it links the owner's own identities; strangers keep the
+ * visitor flow. Registry or hub errors never fail a receipt: resolution falls back to configured addresses.
+ */
+export function identityHooks(identity: Identities, ownerId: string, namespaces: Map<string, { provider: IdentityProvider; namespace: string }>,
+  mailPairing: Set<string>): NonNullable<CommunicationCore["identity"]> {
+  const scoped = (connectionId: string, source: Parameters<typeof senderIdentities>[2]) => {
+    const scope = namespaces.get(connectionId); return scope ? senderIdentities(scope.provider, scope.namespace, source) : undefined;
+  };
+  return {
+    person: (connectionId, source) => { try { const ids = scoped(connectionId, source); return ids ? identity.resolve(ids) : undefined; } catch { return undefined; } },
+    seen: (connectionId, source) => { const ids = scoped(connectionId, source); if (ids) identity.seen(ids[0]!); },
+    pair: (connectionId, source) => {
+      const scope = namespaces.get(connectionId); if (!scope) return undefined;
+      const mail = scope.provider === "grove-mail" || scope.provider === "agentmail";
+      const code = mail ? mailPairingCommand(source) : pairingCommand(source.text);
+      if (!code) return undefined;
+      // In groups the command is dropped without a reply, so a code is never confirmed in front of others.
+      if (source.scope !== "direct") return {};
+      if (mail && !(mailPairing.has(connectionId) && source.native?.senderVerified === true)) return { reply: REPLIES.unverified };
+      try { return { reply: identity.attempt(ownerId, scoped(connectionId, source)!, code).reply }; }
+      catch { return { reply: "暂时无法关联，请稍后再试。" }; }
+    },
+  };
+}
+
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
   directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort,
-  options: { ownedAgent?(matrixId: string): boolean; persons?: PersonRegistry | undefined;
+  options: { ownedAgent?(matrixId: string): boolean; persons?: PersonRegistry | undefined; identity?: Identities | undefined;
     /** The owner's hub rooms (ADR 0005 phase 5); registers the `room` connection. */
     rooms?: (() => HubRooms | undefined) | undefined;
     /** Matrix rooms imported into hub rooms (registry `matrix_room_migrations`). */
@@ -109,6 +139,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   if (options.persons) core.persons = (connectionId, sender) => {
     const scope = namespaces.get(connectionId); return scope ? options.persons!.resolve(scope.provider, scope.namespace, sender) : undefined;
   };
+  const mailPairing = new Set<string>();
+  if (options.identity) core.identity = identityHooks(options.identity, agent.owner, namespaces, mailPairing);
   for (const definition of config.connections) {
     let adapter: ChannelAdapter;
     let ownerAddresses = definition.ownerAddresses;
@@ -139,6 +171,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       }
     }
     namespaces.set(definition.id, { provider: definition.kind, namespace });
+    if (definition.kind === "grove-mail" && definition.pairing) mailPairing.add(definition.id);
     // Identity seeding is shadow data: a registry error never blocks the channel.
     try { for (const address of ownerAddresses) options.persons?.link(owner, definition.kind, namespace, address, "config"); } catch { /* Seeded again on the next start. */ }
     core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds }, adapter, () => {

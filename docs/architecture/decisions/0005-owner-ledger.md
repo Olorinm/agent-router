@@ -2234,3 +2234,59 @@ Final shapes:
 // The reply: { "kind": "message", "role": "assistant", "sender": { "type": "agent", … }, "agentId": "<agentId-1>",
 //              "turnId": "…", "replyTo": "<origin eventId>", "final": true, "text": "…" }
 ```
+
+## Implementation notes (phase 6: identities and pairing)
+
+Phase 6 is split. This part covers persons, owner resolution and pairing (`src/ledger/identity.ts`, `identity-web.ts`).
+`CloudflareAccessAuthenticator` (18.2, 18.3, `src/auth/edge-identity.ts`) shipped separately, before this part; an edge login
+links its `cloudflare-access` identity (`verifiedBy: "login"`, service tokens `"config"`). These choices fill gaps in the text
+above or deviate from it:
+
+1. **Flag.** `ServiceConfig.ledgerIdentity` (`AGENT_LEDGER_IDENTITY=1`). It enables owner resolution by person and `/link`
+   in every channel runtime, and, together with `ledgerRead`, the identity routes and `GET /me` → `limits.features.identity:
+   true`. Flag off: the routes are 404, `identity` is `false`, owner decisions use the configured `ownerAddresses` only, and
+   `/link` from an unknown sender is ignored as `sender_not_allowed` without a reply. Embedders pass
+   `{ identity: service.identity }` to `createChannelRuntime`.
+2. **Owner check.** `CommunicationCore.isOwner(connection, message)` = configured `ownerAddresses` (kept for one release, and
+   still seeded as `config` identities at every start) or `resolve(provider, namespace, sender) === personId(agent.owner)`.
+   Feishu also resolves `("feishu-union", tenant_key, union_id)` from the raw event, so a person paired through one Mau Feishu
+   app is recognised through another. Resolutions are cached until the next link or revocation; a registry error falls back
+   to the configured addresses and never fails a receipt. `isOwnerInput`/`isOwnerTask` honor a person-resolved owner only in
+   owner-main: earlier peer inputs of a sender that became the owner keep peer rights. Its first owner message gets a new
+   owner-main conversation (`thread_id` suffixed `owner-main`), so the peer conversation does not move. Weixin keeps
+   namespace `''` as seeded in phase 1 (section 18.1 names the account id).
+3. **Ingress hook.** In `receive`, after the duplicate check and before the sender check, for every non-web connection and
+   messages without event, action or attachments. Direct: the reply is a legacy outbox notice on the message's own route.
+   It has no `ledger_deliveries` row (that table requires a conversation, and strangers get none, note 4 of phases 1–2);
+   the authoritative flush sends it through the outbox fallback. Group: ignored without a reply, the code stays pending.
+   Both: the claim is `ignored`/`pairing`, no conversation, session, event or turn, and the legacy inbox record keeps the
+   hash but stores `/link ********` and no `native`/`quoted`. A registry or hub error replies "暂时无法关联，请稍后再试。".
+4. **Attempts.** Only pending codes of the receiving agent's owner match, so pairing only links the owner's own identities;
+   other senders keep the visitor flow (section 9). Order: lockout, code, link. A wrong, expired, reused or foreign code is a
+   failure; the fifth failure within an hour replies with the lockout text and locks for one hour. An identity of another
+   person: "此账号已关联到其他用户。", not a failure, and the code stays pending. Success clears the failures. A redelivered
+   `/link` whose code was consumed by the same identity replies success again. A revoked identity can be paired again.
+5. **Mail.** Pairing over `grove-mail` needs the connection option `pairing: true` **and** `native.senderVerified === true`;
+   no adapter sets that verdict yet (open question 4), so mail pairing stays off in practice. Otherwise "无法验证发件人，未关联。".
+   The command may stand alone in the body, or in the subject with an empty body.
+6. **Schema.** `REGISTRY_V2` adds `last_seen_at` (skipped if the column already exists). The hub tables of 18.6 plus
+   `hub_pairing_codes.code_id` (a random id for listing and cancelling; codes are stored hashed only) are versioned under
+   their own meta row `hub_identity_schema_version`, independent of the phase 4 and 5 hub steps. `last_seen_at` is written
+   at most once a minute per identity for person-resolved owner messages.
+7. **Routes** (under `/_agent-router/v1/web`, owner-scoped):
+
+```jsonc
+// GET /identities
+{ "data": [ { "identityId": "idn_…", "personId": "prs_…", "provider": "feishu", "namespace": "cli_…", "subject": "ou_…",
+  "verifiedBy": "pairing", "createdAt": "…", "lastSeenAt": "…" | null, "removable": true },
+  { "identityId": "idn_…", "provider": "matrix", "verifiedBy": "config", "removable": false, "fixed": "identity_from_config", … } ] }
+// DELETE /identities/:identityId → 204 | 404 identity_not_found | 409 identity_from_config | 409 identity_in_use
+//   (in use: the `cloudflare-access` identity whose subject is the edge principal's `email`, i.e. the login of this
+//   request; bearer principals have no email, so nothing is in use for them. Another `cloudflare-access` identity can be
+//   removed, but while `edgeIdentity.owners` still maps its email the next edge login links it again.)
+// POST /identities/pairing-codes {} → 201
+{ "id": "pc_…", "code": "7KQ4-M2XD", "expiresAt": "…", "instructions": "在要关联的渠道里私聊你的任一 Agent，发送：/link 7KQ4-M2XD" }
+//   429 { "error": "pairing_codes_pending_limit" }
+// GET /identities/pairing-codes → { "data": [ { "id": "pc_…", "createdAt": "…", "expiresAt": "…" } ] }  (pending, never the code)
+// DELETE /identities/pairing-codes/:codeId → 204 | 404 pairing_code_not_found
+```

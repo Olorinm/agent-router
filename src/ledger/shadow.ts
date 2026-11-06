@@ -1,5 +1,5 @@
 import type { InboxRecord, OutboxRecord } from "../communication/core.js";
-import type { AgentLedger, DeliveryPurpose, DeliveryStatus, EventInput, SessionKind, TurnState } from "./ledger.js";
+import { conversationKey, type AgentLedger, type DeliveryPurpose, type DeliveryStatus, type EventInput, type SessionKind, type TurnState } from "./ledger.js";
 
 /** What the channel core knows about a connection, without exposing provider secrets to the ledger. */
 export interface ShadowContext {
@@ -54,8 +54,11 @@ export function shadowReceive(ledger: AgentLedger, ctx: ShadowContext, record: I
   const channel = ctx.channel(connectionId), who = sender(ctx, record, facts.owner);
   const session = sessionOf(record, channel, facts.owner);
   ledger.ensureSession(record.conversationId, session.kind, session.label, at, session.roomId);
-  const conversationId = ledger.ensureConversation(conversationOf(ctx, record, who.senderType === "person" ? who.senderId : undefined, at),
-    session.kind === "owner_main" && channel !== "web" ? "participant" : "primary");
+  const conversation = conversationOf(ctx, record, who.senderType === "person" ? who.senderId : undefined, at);
+  // A sender that became the owner (pairing) keeps its earlier peer conversation there; owner-main gets a new one.
+  const prior = session.kind === "owner_main" ? ledger.conversationSession(conversationKey(conversation)) : undefined;
+  if (prior && prior !== record.conversationId) conversation.threadId = conversation.threadId ? `${conversation.threadId}:owner-main` : "owner-main";
+  const conversationId = ledger.ensureConversation(conversation, session.kind === "owner_main" && channel !== "web" ? "participant" : "primary");
   if (record.state === "ignored") {
     ledger.settleClaim(connectionId, source.externalId, "ignored", { reason: record.reason ?? "input_empty", conversationId });
     if (facts.oversized && facts.noticeId) {

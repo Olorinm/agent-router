@@ -43,6 +43,21 @@ export interface OutboxRecord {
   activity?: { key: string; active: boolean };
   attempts: number; nextAt: number; externalId?: string; error?: string;
 }
+/**
+ * Person identity for a channel core (ADR 0005 phase 6, `features.identity`). Owner resolution looks the sender up
+ * by person; `/link` pairing runs at receipt, before the sender check, and writes nothing to any transcript.
+ */
+export interface CoreIdentity {
+  /** The sender's person, or undefined for an unknown identity. */
+  person(connectionId: string, source: ChannelMessage): string | undefined;
+  /**
+   * Pairing control path. Undefined: not a pairing command. Otherwise the reply to send on the message's own route
+   * (none for a command in a group, so a code is never confirmed in front of others).
+   */
+  pair(connectionId: string, source: ChannelMessage): { reply?: string | undefined } | undefined;
+  /** Called for each accepted owner message resolved by person (`last_seen_at`). */
+  seen?(connectionId: string, source: ChannelMessage): void;
+}
 interface Connection { definition: ConnectionDefinition; adapter: ChannelAdapter; reload?: () => ChannelAdapter; lastError: string; connected: boolean; failures: number; nextStart: number; }
 
 /** Channel-neutral receipt, conversation mapping and delivery over the existing work ledger. */
@@ -56,6 +71,7 @@ export class CommunicationCore {
   ledger: AgentLedger | undefined;
   ownerPersonId: string | undefined;
   persons: ((connectionId: string, sender: string) => string | undefined) | undefined;
+  identity: CoreIdentity | undefined;
   constructor(readonly agentId: string, readonly store: DurableStore, readonly work: CliWork, private readonly validate: () => void = () => {}) {
     this.ledger = AgentLedger.attached(store);
   }
@@ -153,7 +169,10 @@ export class CommunicationCore {
       if (existing.hash !== hash) throw new Error("channel_event_id_reused_with_different_payload");
       return existing;
     }
-    const owner = definition.ownerAddresses.includes(source.sender);
+    const pairing = adapter.kind !== "web" && !source.event && !source.action && !source.attachments?.length ? this.identity?.pair(connectionId, source) : undefined;
+    if (pairing) return this.receivePairing(connectionId, id, hash, source, pairing.reply);
+    const owner = this.isOwner(connectionId, source);
+    if (owner && !definition.ownerAddresses.includes(source.sender)) { try { this.identity?.seen?.(connectionId, source); } catch { /* Bookkeeping only. */ } }
     // An owner addressing this agent (or everyone) in a group starts work without a group allowlist.
     const addressed = source.scope === "group" && owner && Boolean(source.mentions?.self || source.mentions?.all);
     const allowed = source.scope === "direct" ? owner || Boolean(definition.peerAddresses?.includes(source.sender)) :
@@ -179,6 +198,37 @@ export class CommunicationCore {
     // Matrix invokes receipt inside its existing transaction; other channels create their own.
     if (this.store.db.isTransaction) commit(); else this.store.transaction(commit);
     return record;
+  }
+  /**
+   * A `/link` command (ADR 0005 18.4): the claim is `ignored` with reason `pairing`, no conversation, event or turn is
+   * created, and the code is not kept (the legacy record stores a placeholder; the hash still dedupes redelivery).
+   * The reply is a notice on the message's own route without a transcript event.
+   */
+  private receivePairing(connectionId: string, id: string, hash: string, source: z.infer<typeof messageSchema>, reply: string | undefined): InboxRecord {
+    const { native: _native, quoted: _quoted, ...rest } = source;
+    const record: InboxRecord = { id, connectionId, source: { ...rest, text: "/link ********" }, hash, receivedAt: new Date().toISOString(),
+      conversationId: `c-${digest(key(this.agentId, key(connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`,
+      replyRoute: { connectionId, ...source.reply }, state: "ignored", reason: "pairing" };
+    this.atomic(() => {
+      this.store.set("communication_inbox", id, record);
+      if (reply) {
+        const noticeId = digest(key(id, "pairing"));
+        this.store.insert("communication_outbox", noticeId, { id: noticeId, taskId: null, route: record.replyRoute, text: reply, state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
+      }
+      this.shadow((ledger) => {
+        if (!ledger.claim({ connectionId, externalId: source.externalId, inputId: id, hash }).duplicate)
+          ledger.settleClaim(connectionId, source.externalId, "ignored", { reason: "pairing" });
+      });
+    });
+    return record;
+  }
+  /**
+   * Owner check (ADR 0005 18.1): the sender resolves to the agent owner's person. Configured `ownerAddresses` are
+   * still honored directly for one release; they are also seeded as `config` identities.
+   */
+  isOwner(connectionId: string, source: ChannelMessage): boolean {
+    if (this.connection(connectionId).definition.ownerAddresses.includes(source.sender)) return true;
+    return Boolean(this.identity && this.ownerPersonId && this.identity.person(connectionId, source) === this.ownerPersonId);
   }
   async dispatch(): Promise<void> {
     if (this.dispatching) return;
@@ -314,14 +364,13 @@ export class CommunicationCore {
   private sessionOf(contextId: string): string { return this.ledger?.sessionForContext(contextId) ?? contextId; }
   isOwnerTask(conversationId: string, taskId: string): boolean {
     const input = this.input(taskId);
-    return Boolean(input && input.conversationId === this.sessionOf(conversationId) && input.source.scope === "direct" &&
-      this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
+    return Boolean(input && input.conversationId === this.sessionOf(conversationId) && this.isOwnerInput(input));
   }
   /** The owner's turn in a group of only the owner and the owner's agents, as reported at receipt. */
   isPrivateGroupOwnerTask(conversationId: string, taskId: string): boolean {
     const input = this.input(taskId);
     return Boolean(input && input.conversationId === this.sessionOf(conversationId) && input.source.scope === "group" && input.source.privateGroup === true &&
-      this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
+      this.isOwner(input.connectionId, input.source));
   }
   async flush(now = Date.now()): Promise<void> {
     if (this.flushing) return;
@@ -441,7 +490,15 @@ export class CommunicationCore {
   }
   capabilities(taskId: string) { const input = this.input(taskId); if (!input) return undefined;
     const adapter = this.connection(input.connectionId).adapter; return adapter.capabilitiesFor?.(input.replyRoute) ?? adapter.capabilities; }
-  isOwnerInput(input: InboxRecord) { return input.source.scope === "direct" && this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender); }
+  /**
+   * An owner's direct input. A sender that became the owner by pairing is the owner only in owner-main; its earlier
+   * peer conversations keep their peer rights (ADR 0005 18.1: a conversation never moves).
+   */
+  isOwnerInput(input: InboxRecord) {
+    if (input.source.scope !== "direct") return false;
+    if (this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender)) return true;
+    return input.conversationId === `c-${digest(key(this.agentId, "owner-main")).slice(0, 40)}` && this.isOwner(input.connectionId, input.source);
+  }
   queueContent(taskId: string, content: ChannelContent, sendKey: string, options: { notice?: string } = {}): string {
     const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
     const adapter = this.connection(input.connectionId).adapter;

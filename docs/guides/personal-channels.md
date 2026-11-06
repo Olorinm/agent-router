@@ -188,6 +188,8 @@ Agent 需要发文件或 Router 需要转移飞书下载产物时，在 Host 配
 
 Grove Mail 的 `public_url` 与 API 地址不同时，在连接配置中增加 `attachmentOrigins: ["https://mail-public.example"]`；附件下载不携带邮箱 API key。
 
+开启 `AGENT_LEDGER_IDENTITY=1` 后，Owner 可在控制台生成关联码，再从新渠道私聊 Agent 发送 `/link <code>`，把该渠道账号关联到自己。邮件默认不支持关联：只有连接配置 `pairing: true` 且邮件服务标记发件人已验证时才会关联（目前 Grove Mail 尚未提供该标记）。
+
 ## 已验证范围
 
 `npm test` 覆盖跨渠道主会话、原路径回复、群聊隔离、游标、去重、分片回执、未知结果、实例撤销和重启恢复、纯附件往返、原生按钮/自由回答、取消/补充、流式更新与丢失回答响应重试，以及个人身份校验、并发授权续接、用户 scope 恢复、工具执行账本和只读接入检查。现有 Matrix/A2A 回归测试继续运行。

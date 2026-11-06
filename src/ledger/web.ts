@@ -14,6 +14,8 @@ import type { LedgerControl } from "./control.js";
 import { isRoomChat } from "./rooms.js";
 import { mountRoomRoutes } from "./rooms-web.js";
 import type { OwnerAuthenticator, OwnerPrincipal, OwnerRequest } from "../auth/edge-identity.js";
+import type { Identities } from "./identity.js";
+import { identityRoutes } from "./identity-web.js";
 
 export type { OwnerPrincipal, OwnerAuthenticator, OwnerRequest } from "../auth/edge-identity.js";
 /** Wraps the service's whoami check and caches the result for 60 s by token hash. Tokens are never stored. */
@@ -49,6 +51,8 @@ export interface WebLedgerDependencies {
   groups?: boolean | undefined;
   /** Wakes the room fan-out worker after a room message. */
   kick?(): void;
+  /** ADR 0005 `identity` (phase 6, `AGENT_LEDGER_IDENTITY`): the identity page and pairing codes. */
+  identity?: Identities | undefined;
 }
 /** The request's credentials, kept in memory with a socket ticket so the socket can be re-checked. */
 const credentials = (req: IncomingMessage): OwnerRequest => ({ headers: Object.fromEntries(["authorization", "cf-access-jwt-assertion"]
@@ -93,7 +97,7 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   const send = Boolean(dependencies.send && dependencies.channel);
   const cards = send && Boolean(dependencies.cards && dependencies.control), reset = send && Boolean(dependencies.reset && dependencies.control);
   const groups = send && Boolean(dependencies.groups);
-  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: false, reset, groups } };
+  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: false, reset, groups, identity: Boolean(dependencies.identity) } };
   const router = express.Router();
   // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
@@ -301,6 +305,7 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     }
   }
   mountRoomRoutes(router, { principal, hub, owned: dependencies.owned, open: dependencies.open, enabled: groups, kick: () => dependencies.kick?.() });
+  if (dependencies.identity) identityRoutes(router, dependencies.identity, principal);
   /** Phase 1 diffing aid: ledger counts beside the legacy and Matrix mirror counts, per owned agent. */
   router.get("/debug/ledger", async (_req, res) => {
     const data = [];
