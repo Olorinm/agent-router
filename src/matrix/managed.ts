@@ -18,6 +18,8 @@ import { OwnerHubs } from "../ledger/hub.js";
 import { PersonRegistry, personId } from "../ledger/registry.js";
 import { SynapseWhoamiAuthenticator, createWebLedger } from "../ledger/web.js";
 import { RoomFanout } from "../ledger/rooms-fanout.js";
+import { CloudflareAccessAuthenticator, CompositeAuthenticator, IdentityError, assertEdgeOwners, type EdgeIdentityConfig,
+  type OwnerPrincipal, type OwnerRequest } from "../auth/edge-identity.js";
 
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export interface ManagedAgent {
@@ -35,7 +37,9 @@ export interface ServiceConfig { serverName: string; homeserver: string; publicU
   /** ADR 0005 `reset` (phase 4, `AGENT_LEDGER_CONTROL`, needs `ledgerSend`): cancel, steer, reset ("新对话") and purge. */
   ledgerControl?: boolean;
   /** ADR 0005 `groups` (phase 5, `AGENT_LEDGER_GROUPS`, needs `ledgerSend`): native hub rooms, fan-out to agents and room commands. */
-  ledgerGroups?: boolean; }
+  ledgerGroups?: boolean;
+  /** ADR 0005 18.2: verify the Cloudflare Access JWT and map its email (or service token) to an owner. */
+  edgeIdentity?: EdgeIdentityConfig; }
 export interface ServiceExtension {
   observation?: import("../execution/observation.js").RunObservation;
   sessions?: import("../execution/sessions.js").WorkSessions;
@@ -55,6 +59,8 @@ export interface ServiceExtension {
 interface Runtime { connector: MatrixConnector; app: ReturnType<typeof createConnectorApp>; token: string; extension?: ServiceExtension | undefined; }
 export interface ServiceDependencies {
   authenticate?: (token: string) => Promise<string>;
+  /** Replaces `<teamDomain>/cdn-cgi/access/certs` (tests). */
+  edgeIdentityCerts?: URL;
   provision?: (agent: ManagedAgent) => Promise<void>;
   transport?: (agent: ManagedAgent, inbox: ApplicationInbox) => MatrixTransport;
   configure?: (agent: ManagedAgent, connector: MatrixConnector) => Promise<ServiceExtension | undefined>;
@@ -81,6 +87,8 @@ export class ManagedService {
   readonly persons: PersonRegistry;
   readonly hubs: OwnerHubs;
   readonly web: ReturnType<typeof createWebLedger> | undefined;
+  readonly edgeIdentity: CloudflareAccessAuthenticator | undefined;
+  private readonly owners: CompositeAuthenticator;
   private readonly ledgers = new Map<string, AgentLedger>();
   /** The hub room fan-out worker (phase 5); present with `ledgerGroups`. */
   readonly fanout: RoomFanout | undefined;
@@ -118,8 +126,16 @@ export class ManagedService {
       owners: () => [...new Set(this.agents().filter((agent) => agent.status === "active").map((agent) => agent.owner))],
       channel: async (agentId) => this.agent(agentId).status === "active" ? (await this.runtime(agentId)).extension?.room : undefined,
     }) : undefined;
+    if (config.edgeIdentity) assertEdgeOwners(config.edgeIdentity, config.serverName);
+    this.edgeIdentity = config.edgeIdentity ? new CloudflareAccessAuthenticator(config.edgeIdentity, { persons: this.persons,
+      ...(dependencies.edgeIdentityCerts ? { certsUrl: dependencies.edgeIdentityCerts } : {}) }) : undefined;
+    this.owners = new CompositeAuthenticator(async (token) => {
+      const ownerId = await this.authenticate(token);
+      return { personId: personId(ownerId), ownerId, via: "bearer", matrixUserId: ownerId };
+    }, this.edgeIdentity);
+    const whoami = new SynapseWhoamiAuthenticator((token) => this.authenticate(token));
     this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons,
-      authenticator: new SynapseWhoamiAuthenticator((token) => this.authenticate(token)),
+      authenticator: new CompositeAuthenticator((token) => whoami.authenticate(token), this.edgeIdentity),
       send: config.ledgerSend, channel: async (agentId) => (await this.runtime(agentId)).extension?.web,
       cards: Boolean(config.ledgerSend && config.ledgerCards), reset: Boolean(config.ledgerSend && config.ledgerControl),
       control: async (agentId) => (await this.runtime(agentId)).extension?.control,
@@ -152,6 +168,11 @@ export class ManagedService {
     if (agent.owner !== owner) throw new WorkError("agent_not_found", 404);
     return agent;
   }
+  /**
+   * The one entry point for owner-authenticated requests (ADR 0005 18.2): the Cloudflare Access JWT when edge identity is
+   * configured and the assertion is present, otherwise the bearer token. `authenticate(token)` stays for token-only callers.
+   */
+  authenticateRequest(request: OwnerRequest): Promise<OwnerPrincipal> { return this.owners.authenticate(request); }
   async authenticate(token: string): Promise<string> {
     if (!token || token.startsWith("ari_")) throw new WorkError("account_login_required", 401);
     if(token.startsWith("ars_")){if(!this.externalIdentity)throw new WorkError("account_session_invalid",401);return this.externalIdentity.authenticate(token);}
@@ -448,13 +469,16 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
       if (!read && !write && !a2a) throw new WorkError("owner_permission_required", 403);
       res.locals.workerId = instance.id;
       res.locals.validateWorker = () => service.instance(token, agentId);
-    } else service.owned(agentId, await service.authenticate(token));
+    } else service.owned(agentId, (await service.authenticateRequest(req)).ownerId);
     const runtime = await service.runtime(agentId);
     req.headers.authorization = `Bearer ${runtime.token}`;
     runtime.app(req, res, next);
   });
   if (service.web) app.use(`${root}/web`, service.web.router);
-  app.use(root, async (req, res, next) => { res.locals.owner = await service.authenticate(bearer(req)); next(); });
+  app.use(root, async (req, res, next) => {
+    const principal = await service.authenticateRequest(req);
+    res.locals.principal = principal; res.locals.owner = principal.ownerId; next();
+  });
   app.get(`${root}/agents`, (_req, res) => res.json({ data: service.agents(res.locals.owner) }));
   app.post(`${root}/agents`, async (req, res) => {
     const { name } = z.object({ name: agentName }).strict().parse(req.body);
@@ -594,7 +618,8 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     res.status(error instanceof WorkError ? error.status : error instanceof z.ZodError ? 400 : 500)
       .json({ error: error instanceof WorkError ? error.message : error instanceof z.ZodError ? "invalid_request" : "operation_failed",
         ...(error instanceof WorkError && error.nativeError !== undefined ? { nativeError: error.nativeError } : {}),
-        ...(error instanceof WorkError && error.fields ? error.fields : {}) });
+        ...(error instanceof WorkError && error.fields ? error.fields : {}),
+        ...(error instanceof IdentityError ? error.details : {}) });
   });
   return app;
 }

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { externalIdentityConfigSchema } from "../matrix/external-identity.js";
+import { loadEdgeIdentityConfig } from "../auth/edge-identity.js";
 import type { ServiceConfig } from "../matrix/managed.js";
 
 /** Operator configuration shared by the standalone Router and embedding products. */
@@ -17,6 +18,7 @@ export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): Service
     ...(["1", "true"].includes(env.AGENT_LEDGER_CONTROL ?? "") ? { ledgerControl: true } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_GROUPS ?? "") ? { ledgerGroups: true } : {}),
     ...(env.AGENT_TRUST_PROXY ? { trustedProxies: env.AGENT_TRUST_PROXY.split(",").map(v => v.trim()).filter(Boolean) } : {}),
+    ...(env.AGENT_EDGE_IDENTITY_FILE ? { edgeIdentity: loadEdgeIdentityConfig(env.AGENT_EDGE_IDENTITY_FILE) } : {}),
     ...(env.AGENT_IDENTITY_CONFIG_FILE ? { externalIdentity: externalIdentityConfigSchema.parse({
       providers: JSON.parse(readFileSync(env.AGENT_IDENTITY_CONFIG_FILE, "utf8")), adminToken: token("MATRIX_ADMIN_TOKEN_FILE"),
     }) } : {}),
