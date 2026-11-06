@@ -1,8 +1,10 @@
 # ADR 0005: Router-owned conversation ledger and web channel
 
-- Status: proposed; phases 1–3 implemented behind flags (see "Implementation notes")
-- Date: 2026-11-05
-- Affects: ADR 0002 (Matrix stops being the record of conversation history), ADR 0004 (login is unchanged until phase 6)
+- Status: accepted; phases 1–3 implemented behind flags (see "Implementation notes"); phases 4–7 decided and
+  specified (sections 15–19); phase 8 (Durable Objects) later
+- Date: 2026-11-05; phases 3–7 decisions 2026-11-06
+- Affects: ADR 0002 (Matrix stops being the record of conversation history and becomes an optional adapter),
+  ADR 0004 (from phase 6 owners log in through the edge identity, not a Matrix password)
 - Scope: agent-router (ledger, delivery, web API), Mau web console (`mau/web`), Matrix adapter
 
 ## 1. Context
@@ -32,7 +34,8 @@ Product direction (agreed with the product owner):
 
 1. Router becomes the single source of truth, with one ledger, one identity model and one delivery service.
 2. The web console talks to Router/Mau directly.
-3. Matrix becomes one more channel adapter. Synapse keeps running for now and can be removed later.
+3. Matrix becomes one more channel adapter. Synapse keeps running until phase 7 and can then be removed
+   from a deployment; the adapter stays supported for operators who enable it (section 15).
 4. The design must map onto Cloudflare Durable Objects later: one DO per agent with SQLite, alarms and
    hibernating WebSockets.
 
@@ -72,12 +75,12 @@ view, owner-only groups with mention routing, or cross-channel person identity.
    Frames are `req`/`res`/`event`. `chat.send` requires an `idempotencyKey`. Durable events carry
    `(chatId, generation, seq)`. Clients catch up by seq gap through history `after=`. A changed generation
    or an oversized gap gives `reset`/`snapshot_required`.
-8. **Login keeps using Synapse whoami for now**, behind an `OwnerAuthenticator` interface. Native login
-   comes in a later phase.
+8. **Login keeps using Synapse whoami until phase 6**, behind an `OwnerAuthenticator` interface. Phase 6 adds
+   the edge identity (Cloudflare Access JWT, section 18.2) and keeps a bearer path for service callers.
 9. **Migration ships in phases.** Phase 1 shadow-writes the ledger and backfills the about 922 existing
    events. After that, the web console switches one feature at a time (history, then send, then cards,
    then attachments, then groups) behind flags. The old records are dual-written until each consumer has
-   moved.
+   moved. Phases 3–7 ship now; phase 8 (Durable Objects) later.
 
 ## 3. Vocabulary
 
@@ -302,7 +305,7 @@ CREATE TABLE hub_commands(person_id TEXT NOT NULL, idempotency_key TEXT NOT NULL
 CREATE TABLE hub_pairing_codes(code_hash TEXT PRIMARY KEY, person_id TEXT NOT NULL, created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL, consumed_at INTEGER, consumed_identity TEXT);
 CREATE TABLE hub_blobs(sha256 TEXT PRIMARY KEY, size INTEGER NOT NULL, content_type TEXT NOT NULL,
-  uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL);   -- bytes live in state/blobs/sha256/<aa>/<hex>
+  uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL);   -- bytes live in the BlobStore under o/<ownerKey>/sha256/<aa>/<hex> (16.5)
 ```
 
 `hub_chats` for `dm`/`observed` chats is an index. Its `last_seq` mirrors the agent session's `last_seq`
@@ -396,8 +399,9 @@ The hub learns about new events through publication (section 6.6), never inside 
 
 The dispatcher reads `ledger_pending_due` in order. It does not scan every inbox document.
 
-1. **Control first.** Card answers by text or button, `/cancel`, `/steer`, `/link <code>` and stale
-   actions are handled as today (`HostWorker.handleInput`). The input's state becomes `control`, and any
+1. **Control first.** Card answers by text or button, `/cancel`, `/steer`, `/new` and stale
+   actions are handled as today (`HostWorker.handleInput`). `/link <code>` runs earlier, at ingress and
+   before authorization (section 18.4). The input's state becomes `control`, and any
    notice becomes a `notice` event.
 2. Otherwise set the state to `starting` (commit), then call `work.send` with the stable message id
    `channel-<input_id>`, as today. After a crash the same id is sent again, and `CliWork` returns the
@@ -444,7 +448,8 @@ from Hermes' "deliver then record" because the ledger, not the channel, is the r
 1. `POST …/messages` on a room chat runs one hub transaction: idempotency check, `hub_room_events` append
    (seq), and `hub_fanout` rows for each addressed agent. An agent is addressed if it is in
    `mentions.agentIds ∩ member agents`, or if `mentions.all` is set (then every member agent is).
-   **Only the owner's messages fan out.** An agent's message never triggers another agent, as today.
+   **Only the owner's messages fan out.** An agent's message never triggers another agent, as today, even
+   if its text contains `@name` (decided, section 15). Section 17 has the full phase 5 specification.
 2. The fan-out worker calls each agent's ingress through the `RoomChannel` adapter
    (`connection_id:"room"`, `external_id:"<roomId>:<seq>"`, `scope:"group"`,
    `mentions:{self:true,all}`, `privateGroup:true`). It is retry-safe because of the claim.
@@ -472,16 +477,17 @@ Mau's proactive rules already choose either a fresh `w-…` session or a target 
 run is recorded as a turn with `admission:'schedule'`, and the input is recorded as a `system` event
 (`kind:"message"`, `role:"user"`, `sender_type:"system"`, `body.origin:"schedule"`). A notice that Mau
 decides to deliver (`ProactivePort.deliver`) is appended to the target session as an assistant `notice`
-with idempotency `schedule:<eventId>`. It reaches the web through the DM chat. A channel delivery is
-added only for the session's configured push conversation (open question 2). Fresh schedule sessions
-appear as `observed` chats.
+with idempotency `schedule:<eventId>`. It always reaches the web through the DM chat. In addition, one
+channel delivery goes to the rule's configured channel (`notify.channel`, section 16.6); `"web"` means no
+channel delivery. Fresh schedule sessions appear as `observed` chats.
 
 ### 6.8 Session reset
 
 `POST …/reset` closes the current window, opens window *n+1* with `context_id = <key>.w<n+1>`, and
 appends a `window` event. New turns start a new Host session. `seq` continues, so a chat stays one
 scrollable history with a divider. Reset of `owner_main` affects every owner channel, because they
-share the session.
+share the session (decided, section 15). The `/new` control command does the same from any owner channel.
+Section 16.3 has the exact endpoint.
 
 ## 7. Existing records: migrate or deprecate
 
@@ -496,7 +502,7 @@ share the session.
 | `communication/tasks` API (`replyMessageIds`, `interactionMessageIds`) | Gains `turnId`, `inputEventIds`, `finalEventId`, `cardIds`, and is deprecated in favor of `GET /web/chats/:chatId/turns/:turnId`. | When the console stops calling it |
 | Matrix `timeline`, `room_info`, `read_markers` (agent side) | Read only by the Matrix CLI/social API. The console stops using them after phase 2. | With Synapse |
 | Mau `memory_history` (FTS) | Stays a derived search index. It can later be fed from ledger final events in place of completed-turn hooks. | Not in scope |
-| `src/channels/router.ts` visitor ledger | Untouched (open question 9). | — |
+| `src/channels/router.ts` visitor ledger | Untouched through phase 7 (section 15.2, open question 3). | — |
 
 ## 8. Web channel API
 
@@ -504,10 +510,12 @@ share the session.
 
 - Base path: `/_agent-router/v1/web`. Every route is owner-scoped. Agent ids appear only inside chat ids
   and bodies.
-- Authentication: `Authorization: Bearer <Matrix access token>`, verified by
+- Authentication: phases 1–5 use `Authorization: Bearer <Matrix access token>`, verified by
   `OwnerAuthenticator.authenticate(token) → { personId, ownerId, matrixUserId }`. The current
   implementation is `SynapseWhoamiAuthenticator`, which wraps `service.authenticate`, caches the result
-  by token hash for 60 s, and never stores tokens. Phase 6 adds a native implementation.
+  by token hash for 60 s, and never stores tokens. Phase 6 changes the interface to take the request and
+  adds `CloudflareAccessAuthenticator` (the `Cf-Access-Jwt-Assertion` header) ahead of the bearer path
+  (section 18.2).
 - Errors use the existing shape: `{ "error": "snake_code", "retryAfterMs"?: number }` with HTTP
   400/401/403/404/409/413/422/429/503.
 - Ids are opaque strings. Clients must URL-encode `chatId`, because it contains `:`.
@@ -531,6 +539,7 @@ type CardStatus = "pending" | "answered" | "approved" | "rejected" | "expired" |
 interface Card {
   cardId: string; agentId: string; turnId: string; claimId: string; callId: string;
   kind: "question" | "approval" | "connector_approval" | "sensitive";
+  source: "host" | "mau-approval" | "mau-handoff"; // from the callId prefix (phase 4)
   text: string;                                  // the same text interaction() produces today
   choices: Array<{ choiceId: string; label: string; style?: "primary" | "danger" }>;
   freeText: boolean;                             // a text answer is accepted
@@ -544,6 +553,7 @@ type ChatEvent = {
 } & (
   | { kind: "message"; role: "user" | "assistant"; text: string; html?: string; attachments?: AttachmentRef[];
       mentions?: { agentIds: string[]; all: boolean }; replyTo?: string; final?: boolean; possibleDuplicate?: boolean;
+      steer?: boolean /* phase 4: steered into a running turn */; redacted?: boolean /* phase 4: text and attachments removed */;
       deliveries?: DeliveryState[] /* current state, history responses only */ }
   | { kind: "notice"; text: string; level: "info" | "warning" }
   | { kind: "action"; targetCardId: string; label: string }
@@ -586,11 +596,10 @@ Folding rules for clients:
 | `GET /chats/:chatId` | — | `ChatSummary & { members: Actor[] }` |
 | `GET /chats/:chatId/events` | query below | `EventPage` |
 | `POST /chats/:chatId/messages` | `SendRequest` | `SendResponse` |
-| `POST /chats/:chatId/messages/:eventId/redact` | `{ idempotencyKey }` | `{ status:"accepted" \| "duplicate", event: ChatEvent /* kind "redaction" */ }` (phase 3) |
-| `POST /chats/:chatId/reset` | `{ idempotencyKey }` | `{ window, event: ChatEvent }` |
+| `POST /chats/:chatId/reset` | `{ idempotencyKey, cancelActive? }` | `{ window, event: ChatEvent }` |
 | `POST /chats/:chatId/read` | `{ seq }` | `{ readSeq, unread }`. Monotonic: a lower seq is ignored. |
 | `GET /chats/:chatId/turns/:turnId` | — | `TurnDetail` |
-| `POST /chats/:chatId/turns/:turnId/cancel` | `{}` | `{ status:"accepted" }` |
+| `POST /chats/:chatId/turns/:turnId/cancel` | `{}` | `{ status:"accepted" \| "already_finished" }` |
 | `POST /chats/:chatId/turns/:turnId/steer` | `{ idempotencyKey, text }` | `{ status:"accepted" \| "unsupported" }` |
 | `POST /chats/:chatId/cards/:cardId/answer` | `AnswerRequest` | `{ status:"accepted" \| "duplicate" \| "stale", card: Card }` |
 | `POST /attachments` | raw body | `AttachmentRef` |
@@ -599,6 +608,9 @@ Folding rules for clients:
 | `PATCH /groups/:roomId` | `{ title?, archived? }` | `ChatSummary` |
 | `POST /groups/:roomId/members` | `{ agentId }` | `{ members: Actor[] }` |
 | `DELETE /groups/:roomId/members/:agentId` | — | `{ members: Actor[] }` |
+| `GET /chats/:chatId/cards/:cardId` | — | `Card` (phase 4, section 16.1) |
+| `POST /chats/:chatId/events/:eventId/redact` | `{ idempotencyKey }` | `{ status:"accepted" \| "duplicate", event: ChatEvent, dropped: boolean }` (phase 4; served from phase 3 with `send`, implementation note 12 of phase 3) |
+| `POST /chats/:chatId/purge` | `{ idempotencyKey, confirm }` | `{ generation, purgedEvents }` (phase 4) |
 | `POST /identities/pairing-codes` | `{}` | `{ code, expiresAt }` |
 | `DELETE /identities/:identityId` | — | 204 |
 
@@ -692,7 +704,7 @@ type AnswerRequest = { idempotencyKey: string } & ({ choiceId: string } | { text
 - `X-File-Name` (RFC 5987 encoded)
 - `X-Sha256` (optional, verified)
 
-Bytes are stored content-addressed. `GET /attachments/:id` checks one of two conditions: the caller
+Bytes are stored content-addressed in the `BlobStore` (section 16.5 has the full phase 4 specification). `GET /attachments/:id` checks one of two conditions: the caller
 uploaded the attachment, or the attachment is referenced by an event in a chat the caller can read. The
 response sets `Content-Disposition` and `Cache-Control: private, max-age=31536000, immutable`, plus
 `X-Content-Type-Options: nosniff`. Attachments that came in from a channel are fetched lazily through
@@ -779,6 +791,10 @@ authentication, rate limiting, idempotency and retry behavior as every other req
   The `/link` message itself is never written to a transcript.
 - Strangers (non-owner senders on open channels) keep using today's visitor decision flow. Pairing is
   only for linking a person's own identities.
+- **Login identity.** From phase 6 the console's person comes from the edge identity: a verified Cloudflare
+  Access JWT whose email the operator maps to an owner id. The email is linked as an identity
+  `("cloudflare-access", <team domain>, <lowercased email>)` with `verified_by='login'`. Section 18 has
+  the authenticator, the pairing control path per channel and owner resolution by person.
 
 ## 10. Backfill from Synapse and `timeline`
 
@@ -824,14 +840,15 @@ feature with flags from `GET /me` → `limits.features`.
 | 1. Shadow ledger | Ingress, dispatch, observation and flush write the ledger alongside the legacy records. Backfill. `GET /web/chats` and `/events` exist behind `ledger_read` for diffing. A debug endpoint compares ledger and timeline counts. | Unchanged (Matrix) | Ignore the tables |
 | 2. Read via Router | Hub, socket, read markers. DM chats and observed chats are served from the ledger. | `history`: chat list, history and live updates for DMs come from Router. Sending still goes through Matrix (`PUT …/send`); the Matrix adapter ingests the message and it comes back on the socket. Run cards are keyed by `turnId` through `TurnDetail`. | Flag off, back to `/sync` |
 | 3. Send via Router | `WebChannel` adapter. The dispatcher and flush read `ledger_pending_inputs`/`ledger_deliveries`. Legacy inbox and outbox are written for compatibility only. | `send`: `POST …/messages` with `idempotencyKey`. DMs no longer create Matrix rooms. | Flag off. Matrix send still works. |
-| 4. Cards, attachments, control | Card events and the answer endpoint. Blob store and attachment endpoints. Cancel, steer and reset over HTTP. Questions and actions move to `ledger_cards`. | `cards`, `attachments`, `reset` | Flag off. Matrix text answers still work. |
-| 5. Native groups | Hub rooms, fan-out, `RoomChannel`, group context. `ai.mau.room` groups are imported as rooms. The Matrix room receives a final "已迁移到 Mau" notice, and its new messages are ignored for that room. | `groups`: create, members, mentions | Flag off. Rooms already created stay readable. |
-| 6. Identity | Persons and identities. Owner resolution by person. Pairing codes. A native `OwnerAuthenticator` (for example the existing `auth/exchange` OIDC bridge) beside Synapse whoami. | Identity settings page | Keep whoami |
-| 7. Matrix optional | Matrix becomes an adapter per agent that can be disabled. Agents are created without Matrix accounts when it is off. `timeline` mirror is dropped. Synapse can be removed once no agent uses Matrix. | No Matrix code | — |
+| 4. Cards, attachments, control | Card events and the answer endpoint. Blob store (R2, local fallback) and attachment endpoints. Cancel, steer, reset, redaction and purge over HTTP. Schedule notices to web plus the rule's channel. Questions and actions move to `ledger_cards`. Section 16. | `cards`, `attachments`, `reset` | Flag off. Matrix text answers still work. |
+| 5. Native groups | Hub rooms, fan-out, `RoomChannel`, group context. `ai.mau.room` groups are imported as rooms. The Matrix room receives a final "已迁移到 Mau" notice, and its new messages are ignored for that room. Section 17. | `groups`: create, members, mentions | Flag off. Rooms already created stay readable. |
+| 6. Identity | Persons and identities. Owner resolution by person. Pairing codes across Feishu and mail. `CloudflareAccessAuthenticator` ahead of the bearer path; Mau's `/_mau/v1` uses the same check. Section 18. | No login page; identity settings page | Unset the edge config: whoami bearer again |
+| 7. Matrix optional | Deployment switch plus per-agent Matrix state. Agents are created without Matrix accounts when it is off; Synapse-calling paths are gated. `timeline` mirror is dropped. Export, then remove Synapse and Postgres. Section 19. | Zero Matrix code paths when `features.matrix` is false | `AGENT_MATRIX=on` until Synapse data is deleted |
 | 8. Durable Objects | Port (section 12). | No change (same API) | — |
 
 The console's Matrix login stays in use for phases 1–5 because it supplies the bearer token. The
-console needs its Matrix client only for login after phase 5.
+console needs its Matrix client only for login after phase 5, and not at all after phase 6 in a deployment
+with an edge identity.
 
 ## 12. Durable Object mapping
 
@@ -843,7 +860,7 @@ console needs its Matrix client only for login after phase 5.
 | In-process publication signal | AgentDO → OwnerHubDO RPC `publish(sessionKey, fromSeq)`. The hub pulls and acknowledges, and `published_seq` advances. |
 | Room fan-out | OwnerHubDO alarm → AgentDO RPC `ingest(roomMessage)`, idempotent by claim |
 | `registry.sqlite` | **RegistryDO** (or D1): persons, identities, agents, routing aliases, connection → agent |
-| `state/blobs` | R2, content-addressed (`sha256/<hex>`) |
+| `BlobStore` (local disk or R2 over the S3 API, section 16.5) | R2 binding, same keys (`o/<ownerKey>/sha256/<aa>/<hex>`) |
 | Channel pollers and webhooks | Worker → AgentDO, chosen by the connection → agent lookup in the registry. Pollers (Telegram, mail) run on AgentDO alarms. |
 | Matrix AS transactions | Worker → per-agent AgentDO journal while Matrix exists |
 | Host (external) | Unchanged. AgentDO polls or streams Host events, keeps the in-flight text in memory and in `communication_run_events`, and forwards `chat.stream` to the hub over RPC (not durable). |
@@ -873,32 +890,1027 @@ Rules that make the port mechanical, applied from phase 1:
 
 ## 14. Open questions
 
-1. **Merged owner DM.** The web DM chat shows the owner's Feishu, mail and Matrix messages to that agent
-   (one `owner_main` session, with channel badges). This is assumed here. Confirm it.
-2. **Where proactive notices go.** Web only (the default here), or also the owner's preferred external
-   channel? If both, should the push channel be per owner or per agent?
-3. **Mirroring web messages into Matrix** for owners who also use Element. The default here is off, and
-   mirroring would only be a per-chat option.
-4. **Reset scope.** Resetting `owner_main` from the web also resets the Feishu owner DM, because the
-   session is shared. Is that acceptable, or should reset be web-only (which would need a separate web
-   session)?
-5. **Group context budget** (30 messages / 8 KB). Should agents be able to address each other in groups,
-   with loop limits? Today they cannot.
-6. **Edit and delete of the owner's own web messages.** Proposed for v1: neither. Should a message be
-   retractable before its turn starts?
-7. **Retention.** Transcript retention and purge policy (a purge bumps `generation`). Tombstones expire
-   after 30 days; is that enough for every channel's redelivery window?
-8. **Read markers.** Per person (as proposed), or per device?
-9. **The public visitor ledger** (`src/channels/router.ts`, entries/visitors/decisions). Should it
-   converge onto the same ingress, claim and transcript path in phase 6, or stay separate?
-10. **The first native login provider**: the existing OIDC `auth/exchange`, Feishu OAuth, or email
-    magic link.
-11. **Feishu identity scope.** `open_id` is per app. Should `union_id` be used to link several Mau
-    Feishu apps to one person?
-12. **Shared agents.** An agent used by people other than its owner (team members) is out of scope. The
-    `person_id`/`owner_person_id` split leaves room for an `agent_grants` table later.
-13. **Mau's derived stores** (`memory_history`, completed turns). Should they move to consuming ledger
-    final events, and if so, in which phase?
+The first draft's questions are settled in section 15:
+- 1–7 and 10 were decided by the product owner on 2026-11-06 (15.1): the merged owner DM, the proactive
+  notice target, Matrix mirroring, reset scope, agent-to-agent addressing in groups, edit and delete,
+  retention, and the first login provider.
+- 8 (read markers), 9 (visitor ledger) and 11 (Feishu `union_id`) were decided in this ADR (15.2).
+
+Still open:
+
+1. **Shared agents.** An agent used by people other than its owner (team members) is out of scope. The
+   `person_id`/`owner_person_id` split leaves room for an `agent_grants` table later.
+2. **Mau's derived stores** (`memory_history`, completed turns). Should they move to consuming ledger
+   final events, and if so, in which phase? Not required by phases 3–7.
+3. **The public visitor ledger** (`src/channels/router.ts`, entries/visitors/decisions). It stays separate
+   through phase 7 (section 15.2). Converging it onto the ledger ingress is a phase 8 candidate.
+4. **Mail sender authentication.** Pairing and owner resolution over mail trust the provider's sender
+   address. Whether each mail provider exposes a DKIM/SPF verdict Router can require is unverified
+   (section 18.4).
+
+## 15. Phases 3–7 decisions
+
+### 15.1 Decided by the product owner (2026-11-06)
+
+| # | Decision | Specified in |
+| --- | --- | --- |
+| 1 | **Scope.** Phases 3–7 are built now. Phase 8 (Durable Objects) comes later; the rules of section 12 still apply to every phase. | 11 |
+| 2 | **Matrix is off in our deployment but stays a supported, optional channel adapter.** Operators can enable it per deployment and per agent. Agent creation works without a Matrix account when it is off. Existing agents' Matrix identities may stay dormant. After phase 7, Synapse and its Postgres can be removed from our deployment. Mirroring web messages into Matrix (old open question 3) is not built. | 19 |
+| 3 | **Login uses the edge identity from Cloudflare Access.** Router verifies the `Cf-Access-Jwt-Assertion` JWT and maps the verified email to an owner through operator config. The console has no login page and holds no token. A bearer path stays for service and ops callers; Access service tokens map to an owner only when configured. Mau's `/_mau/v1` routes authenticate the same way. | 18.2, 18.3 |
+| 4a | **The web DM merges the owner's messages from all channels** to that agent (one `owner_main` session), each with a channel badge. | 5, 8.2 |
+| 4b | **"New chat" resets the shared owner session for all channels.** | 6.8, 16.3 |
+| 4c | **Schedule results go to the web plus the rule's configured channel.** | 6.7, 16.6 |
+| 4d | **Agents cannot trigger each other in groups.** Only the owner's `@agent` or `@all` fans out. No loop limits are needed. | 6.5, 17 |
+| 4e | **The owner can redact (not edit) their own web messages.** | 16.4 |
+| 4f | **Transcripts are kept forever.** The owner can purge a chat manually. Ingress tombstones keep their 30-day expiry. | 16.4 |
+| 5 | **Attachments live in Cloudflare R2**, content-addressed by sha256, with size caps, a per-owner key prefix and a local-disk store for tests and development. | 16.5 |
+
+### 15.2 Decided in this ADR (not by the product owner)
+
+These choices were needed to make the specs implementable. Each can be revisited without changing the rest.
+
+1. **R2 access from the VM uses the S3-compatible API** with a bucket-scoped access key, signed with
+   `aws4fetch` (no AWS SDK). A Worker binding was rejected for now: it adds a second deployment and its own
+   authentication between the VM and the Worker. In phase 8 the same `BlobStore` interface gets an R2
+   binding implementation.
+2. **Downloads are proxied through Router**, same-origin, never as signed R2 URLs. A signed URL works for
+   anyone who holds it, bypasses Access and leaks through history, logs and `Referer`. Proxying keeps the
+   per-request permission check, and with the edge identity a plain `<img src>` works, because the browser
+   sends the Access cookie and Cloudflare adds the JWT.
+3. **Blob keys are per owner** (`o/<ownerKey>/sha256/<aa>/<hex>`). Deduplication only happens inside one
+   owner, so the store cannot tell one owner that another owner holds the same file.
+4. **Person ids stay derived from owner ids** (`personId(ownerId)`, implementation note 7). Owner ids stay
+   strings of the form `@<local>:<serverName>` even without Synapse, so agent addresses, Mau records and
+   hub file names do not change.
+5. **Read markers stay per person** (old open question 8), not per device.
+6. **Card answers through the web reuse `RunObservation.resolve`**, so Mau's synthetic `mau-approval:` and
+   `mau-handoff:` calls work without new Mau endpoints, and Mau keeps the authority over its own calls.
+7. **Reset refuses while a turn is active** unless the request sets `cancelActive: true`.
+8. **Purge implies reset**: the purged chat continues in a new window, so the model context goes with the
+   transcript.
+9. **Redaction never reaches the model.** An unstarted input is dropped; a started one is only hidden in
+   the transcript.
+10. **`/link` pairing is accepted only in direct conversations** and runs before authorization, so an
+    unknown sender can use it. It writes nothing to any transcript.
+11. **Feishu `union_id`**: when Feishu supplies it, pairing also links `("feishu-union", <tenant key>,
+    union_id)`, so one person can be recognized across several Mau Feishu apps (old open question 11).
+12. **The public visitor ledger stays separate** through phase 7.
+13. **The per-agent runtime keeps `MatrixConnector` and its store** when Matrix is off. A dormant transport
+    replaces Synapse. Renaming the runtime away from "Matrix" is a refactor for phase 8.
+14. **The browser handoff URL is not stored in the transcript.** The stored card text has the private
+    link replaced. The live text is served only while the card is pending (section 16.1).
+
+### 15.3 Phase 3 (send via Router)
+
+Phase 3 is specified by sections 6, 8.3 ("Send") and 11, with no changes beyond decision 4a.
+- Flag: `AGENT_LEDGER_SEND=1` sets `features.send`.
+- The `WebChannel` adapter (`kind:"web"`, `retrySafe:true`, no deliveries) writes into the `owner_main`
+  session through the `web` conversation.
+- With the flag off, the console keeps sending through Matrix while Matrix is enabled. With Matrix off
+  (phase 7), `send` must be on.
+
+## 16. Phase 4: cards, control and attachments
+
+Flags (each sets the matching `limits.features` entry):
+
+| Env | Feature | Requires |
+| --- | --- | --- |
+| `AGENT_LEDGER_CARDS=1` | `cards` | `send` |
+| `AGENT_LEDGER_CONTROL=1` | `reset` (also covers cancel, steer, redaction, purge) | `send` |
+| `AGENT_LEDGER_ATTACHMENTS=1` | `attachments` | `send` and a blob store (16.5) |
+
+### 16.1 Card answers
+
+```http
+POST /_agent-router/v1/web/chats/dm%3A<agentId>/cards/cd_7f3a…/answer
+{ "idempotencyKey": "01JC9W2Q8E5ZK3V4R6T7Y8U9I0", "choiceId": "0" }
+{ "idempotencyKey": "01JC9W2Q8E5ZK3V4R6T7Y8U9I1", "text": "用 staging 环境" }
+{ "idempotencyKey": "01JC9W2Q8E5ZK3V4R6T7Y8U9I2", "result": { "answers": { "env": { "answers": ["staging"] } } } }
+
+200 { "status": "accepted" | "duplicate" | "stale", "card": Card }
+```
+
+`Card` gains `source: "host" | "mau-approval" | "mau-handoff"`, taken from the `callId` prefix. Steps:
+
+1. **Scope.** Resolve the chat. The card must belong to the chat's session, or, for a room chat, be mirrored
+   into that room (section 17). It is then handled by the card's agent. Otherwise 404 `card_not_found`. An
+   `observed` chat gives 403 `chat_read_only`.
+2. **Idempotency.** `hub_commands(personId, idempotencyKey)`: the same request hash returns the stored
+   response with `status:"duplicate"`. A different hash gives 409 `idempotency_key_reused`.
+3. **State.** A card that is not `pending` returns `status:"stale"` with the current card. A `sensitive`
+   card gives 422 `sensitive_input_requires_native_entry`.
+4. **Build the native result.**
+   - `choiceId`: from `ledger_card_tokens(card_id, choice_id)`. Unknown gives 422 `choice_not_found`.
+   - `text`: read the live call from `RunObservation.run(claimId).calls` (for Mau this goes through
+     `BusinessHost.calls`, which lists the synthetic calls). Then apply `interaction(call).answer(text)`,
+     exactly as a chat answer does. A thrown code gives 422 `invalid_answer` with `detail` set to that code
+     (`structured_answers_required`, `question_answer_missing`, `interaction_choice_required`). A call that
+     is no longer pending makes the card `expired` and returns `stale`.
+   - `result`: accepted only for `source:"host"` cards of kind `question` (the native result built by
+     `@olorinm/agent-host/interactions`). Synthetic cards need `choiceId` or `text`, which gives 422
+     `choice_or_text_required`, because Mau validates their result shape narrowly.
+5. **Plan.** In one agent-ledger transaction, set `answer_key = web:<personId>:<idempotencyKey>`, `result`,
+   `answered_by = personId` and `answer_surface = 'web'`. The status stays `pending`.
+6. **Resolve.** Call `RunObservation.resolve(claimId, callId, result)`, which checks the call scope as
+   today.
+   - For `mau-approval:` the call lands in `ConnectorApprovals.decide` (`{choice:"once"|"deny"}`).
+   - For `mau-handoff:` it lands in `answerHandoff`. "取消接管" ends the handoff. Any free text is steered
+     to the run, as Mau does for a chat reply.
+   - Every other call goes to the Host.
+   - `interaction_not_found` (404) makes the card `expired` and returns `stale`.
+   - A Host or network failure returns 503 and leaves the planned answer in place. The worker re-resolves
+     planned cards (`status='pending' AND answer_key IS NOT NULL`) on each tick. The Host arbitrates
+     repeated identical answers, and Mau ignores decided cards.
+7. **Commit.** Set the card status and append `card.update` with `answeredBy` (the person) and `summary`
+   (the choice label, or the first 140 characters of the text). If the card's origin conversation is an
+   external channel, also queue a `notice` delivery "已在网页回答。" there.
+
+Status mapping:
+- `connector_approval`: `once` → `approved`, `deny` → `rejected`.
+- `approval`: the first (allow) choice of `approval`, `permission` or `*requestApproval` → `approved`; the
+  deny choice → `rejected`. For `session/request_permission`, an option whose `kind` starts with `allow` →
+  `approved`, and one that starts with `reject` → `rejected`.
+- Anything else → `answered`.
+
+**One record for every answer surface.** All of the following go through one
+`CardLedger.recordAnswer(cardId, { surface, by, result, summary })`:
+- chat text and buttons (`HostWorker.handleInput`)
+- the run surface (`POST …/runs/:claimId/calls/:callId/result`)
+- Mau's `POST …/communication/calls/:callId/result`
+- the web endpoint
+
+The worker's call observation closes the rest. A call that leaves `pending` without a Router answer becomes
+`answered` (resolved in the Host's own UI), `expired` (deadline) or `canceled` (run ended). The first answer
+wins, and later ones get `stale`. `communication_questions`, `_actions` and `_control_receipts` stop being
+read in this phase: control receipts become the planned-answer columns, and button tokens become
+`ledger_card_tokens`.
+
+**Handoff cards.** For `mau-handoff:` the stored `card` event text has every `https://` URL replaced by
+`[私密链接，仅在卡片待处理时显示]`. `GET /chats/:chatId/cards/:cardId` returns the live `Card`. While the
+card is pending, its `text` is rebuilt from the live call. Once it is closed, the text is the stored
+(redacted) one. External channel deliveries of the card keep today's text, because they go only to the
+owner's own conversation.
+
+### 16.2 Cancel and steer
+
+```http
+POST /_agent-router/v1/web/chats/:chatId/turns/:turnId/cancel
+{}
+200 { "status": "accepted" } | { "status": "already_finished", "state": "completed" }
+
+POST /_agent-router/v1/web/chats/:chatId/turns/:turnId/steer
+{ "idempotencyKey": "01JC…", "text": "顺便把结论写成表格" }
+200 { "status": "accepted", "event": ChatEvent } | { "status": "unsupported" }
+409 { "error": "turn_not_running" }
+```
+
+Both endpoints share these rules:
+- The turn must belong to the chat's session, or, in a room chat, to a member agent's room session.
+  Otherwise 404 `turn_not_found`. `observed` chats give 403 `chat_read_only`.
+
+Cancel:
+- Calls `work.cancel(turnId)`. The Host cancel follows through the worker, as today, and the turn becomes
+  `canceled` through the normal turn event.
+- Appends `notice` "正在停止当前任务。" with idempotency `cancel:<turnId>`.
+- `RunObservation.cancel` switches its scope check from the inbox scan to `ledger_turns`, so work and
+  schedule turns can be canceled too.
+
+Steer:
+- A `hub_commands` row is planned before the Host call.
+- Requires the turn's active binding to be `running` with a `runId`, then calls `host.steer`. Through Mau,
+  this passes Mau's own owner-admission check.
+- On success the ledger appends a `message` with `role:"user"`, `body.steer: true` and the turn's
+  `turn_id`, with idempotency `web:<personId>:<key>`. The console renders it inside the run surface.
+- `host_steer_unsupported` (or a kernel refusal) returns `unsupported` and appends nothing.
+- A retry after a crash may steer the same text twice. Kernels treat steer text as additive, so this is
+  accepted.
+
+### 16.3 Reset ("新对话")
+
+```http
+POST /_agent-router/v1/web/chats/:chatId/reset
+{ "idempotencyKey": "01JC…", "cancelActive": false }
+200 { "window": 3, "event": ChatEvent /* kind:"window", reason:"reset" */ }
+409 { "error": "session_busy", "activeTurns": ["t…"], "queuedInputs": 1 }
+```
+
+- Allowed for `dm` and `group` chats (for a group, see section 17.5).
+- If the session has a `queued`/`running`/`waiting` turn or `queued` pending inputs, the reset is refused
+  unless `cancelActive` is true. In that case it cancels the turns, sets queued inputs to `dropped` (reason
+  `reset`), and resets. Late events of a canceled turn still land, tagged with the old `window`.
+- One agent-ledger transaction does the reset:
+  - close the window (`reason:'reset'`)
+  - open `context_id = <key>.w<n+1>`
+  - increment `ledger_sessions.window`
+  - append the `window` event
+- The dispatcher passes the window's `context_id` to `work.send` from then on, so the next turn opens a new
+  Host session. Mau's per-session records (`business_session_instructions` and others) are keyed by session
+  id and therefore start fresh too.
+- **Every owner channel is affected** (decision 4b).
+- From any owner channel, the control commands `/new`, `/reset` and `新对话` run the same reset (with
+  `cancelActive:false`). They reply with a `notice` "已开始新对话。" (or "当前任务进行中，请先停止。") to
+  that conversation only. A web reset sends nothing to external channels; the `window` event is shown in the
+  web.
+
+### 16.4 Redaction and purge
+
+```http
+POST /_agent-router/v1/web/chats/:chatId/events/ev_01JC…/redact
+{ "idempotencyKey": "01JC…" }
+200 { "status": "accepted" | "duplicate", "event": ChatEvent /* kind:"redaction" */, "dropped": true }
+403 { "error": "redaction_not_allowed" }
+```
+
+Redaction:
+- Only `message` events that the caller sent through the `web` conversation (or into a room) can be
+  redacted. Messages that entered through Feishu, mail or Matrix, and agent messages, give 403.
+- One transaction:
+  - The target body becomes `{ "redacted": true, "redactedAt": "<iso>" }`. Text, HTML and attachment
+    references are removed. Attachment rows lose their `event_id`, and blob references are released (16.5).
+  - A `redaction` event is appended.
+  - If the target's pending input is still `queued`, it becomes `dropped` (reason `redacted`) and the
+    response has `dropped: true`. In a room, its `queued` `hub_fanout` rows are deleted.
+- A started input is not withdrawn from the model (decision 15.2.9).
+- History responses return the redacted body, so a client that never saw the original still shows "已撤回".
+
+```http
+POST /_agent-router/v1/web/chats/:chatId/purge
+{ "idempotencyKey": "01JC…", "confirm": "dm:<agentId>" }
+200 { "generation": 4, "purgedEvents": 1832, "window": 5 }
+```
+
+Purge (manual, decision 4f):
+- `confirm` must equal the `chatId`. Otherwise 422 `purge_confirmation_required`.
+- In the agent ledger (or the hub for a room), one transaction:
+  - deletes all events of the session, their `ledger_platform_messages`, attachment rows and event-bound
+    deliveries
+  - turns every `ledger_ingress` claim of the session into a `tombstone` (the hash is kept, and it expires
+    after 30 days), so a redelivered channel message does not come back
+  - bumps `generation`, resets `published_seq`, and opens a new window (purge implies reset)
+- Clients get `reset`.
+- Execution records (`communication_runs`, run archives, Host sessions) are kept, because they are the
+  audit trail of what ran. Mau's derived memory is not purged either. The console's confirm dialog says
+  so: "聊天记录将被永久删除；Agent 已经写入的记忆不会被删除。"
+- The merged DM includes the owner's Feishu, mail and Matrix messages to that agent. Purging the DM purges
+  them as well.
+
+### 16.5 Attachments and the blob store
+
+```ts
+interface BlobStore {
+  /** Idempotent. Bytes come from a verified temp file; the key is content-addressed. */
+  put(key: BlobKey, file: { path: string; size: number; sha256: string; md5: string; contentType: string }): Promise<void>;
+  head(key: BlobKey): Promise<{ size: number } | null>;
+  get(key: BlobKey, range?: { start: number; end?: number }): Promise<{ body: Readable; size: number; start: number; end: number }>;
+  delete(key: BlobKey): Promise<void>;
+}
+type BlobKey = { ownerKey: string; sha256: string };     // object key "o/<ownerKey>/sha256/<aa>/<hex>"
+```
+
+Implementations:
+- `LocalBlobStore`: `state/blobs/o/<ownerKey>/sha256/<aa>/<hex>`. Atomic rename from a temp file in the
+  same directory. Used for tests and development, and as the default when no R2 is configured.
+- `R2BlobStore`: S3 API over HTTPS with `aws4fetch` (region `auto`).
+  - `PutObject` sends `If-None-Match: *` and `Content-MD5`. R2 checks the MD5, and a 412 (already present)
+    counts as success.
+  - `HeadObject`, `GetObject` with `Range`, and `DeleteObject`.
+- Config:
+
+  ```
+  AGENT_BLOB_STORE=r2
+  AGENT_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+  AGENT_R2_BUCKET=agent-router-blobs
+  AGENT_R2_ACCESS_KEY_ID_FILE=…
+  AGENT_R2_SECRET_ACCESS_KEY_FILE=…
+  ```
+
+  The key is an R2 API token limited to "Object Read & Write" on that one bucket. The bucket has no public
+  access and no custom domain.
+- Phase 8: `R2BindingBlobStore` on `env.BUCKET`, with the same keys.
+
+Upload:
+
+```http
+POST /_agent-router/v1/web/attachments
+Content-Type: image/png
+Content-Length: 482113
+X-File-Name: UTF-8''%E6%88%AA%E5%9B%BE.png
+X-Sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08     (optional)
+
+201 { "attachmentId": "at_01JC…", "name": "截图.png", "contentType": "image/png", "size": 482113,
+      "sha256": "9f86…0a08", "url": "/_agent-router/v1/web/attachments/at_01JC…" }
+```
+
+- Requires `features.attachments` and a `Content-Length` of at most 25 MiB (`411`/`413
+  attachment_too_large`). The body streams to a temp file while sha256 and md5 are computed. A body longer
+  than its `Content-Length` is cut off and rejected. A mismatched `X-Sha256` gives 422 `sha256_mismatch`.
+- Per-owner quota: `limits.attachmentQuotaBytes` (default 5 GiB, counted over distinct blobs). Over quota:
+  413 `attachment_quota_exceeded`.
+- The upload rate limit is 60 per minute per person.
+- If `head` misses, the bytes are `put`. Then one hub transaction upserts `hub_blobs` and inserts a
+  `hub_uploads` row plus the reference `upload:<attachmentId>`.
+- Uploads that no message references within 24 h are deleted with their reference.
+
+Send binding:
+- `SendRequest.attachments` (at most 10, 30 MiB total) must be the caller's own unbound uploads.
+  Otherwise 422 `attachment_not_found`.
+- The send transaction copies them into `ledger_attachments` (DM: locator `{"blob":"sha256:<hex>"}`,
+  `event_id` set) or into `hub_room_attachments` (room). The `upload:` reference is replaced by
+  `agent:<agentId>:<attachmentId>` or `room:<roomId>:<attachmentId>`.
+- The model sees them as today. `WebChannel.readAttachment` and `RoomChannel.readAttachment` read the blob
+  (cap `MAX_MEDIA_BYTES`) into `MediaContent`.
+- Agent outbound media (`ChannelContent.media`) on a web or room turn is written to the blob store under
+  the owner's prefix and attached to the final event.
+
+Download:
+
+```http
+GET /_agent-router/v1/web/attachments/at_01JC…          (Range supported)
+200/206  Content-Type: <stored type, or application/octet-stream>
+         Content-Disposition: inline; filename*=UTF-8''…    (images, audio, video, PDF only; otherwise attachment)
+         Cache-Control: private, max-age=31536000, immutable
+         X-Content-Type-Options: nosniff
+         Content-Security-Policy: sandbox; default-src 'none'
+```
+
+- Permission: the caller uploaded it, or it is referenced by an event in a chat the caller can read.
+  Otherwise 404.
+- Channel attachments (`{"channel":…}` locators) are read lazily through `adapter.readAttachment`, then
+  promoted to the blob store, and the locator is rewritten.
+- Before phase 6 the console fetches attachments with its bearer token and shows them through
+  `URL.createObjectURL`. With the edge identity, plain same-origin URLs work.
+
+Reference counting:
+- `hub_blob_refs(sha256, ref)` holds one row per upload, agent attachment and room attachment.
+- Redaction and purge delete references. A sweeper deletes a blob from the store, and its `hub_blobs` row,
+  when no reference has been left for 7 days. The delay covers in-flight sends and backups.
+
+### 16.6 Schedule notice targets
+
+Mau's proactive rule gains `notify: { channel: "web" | "<connectionId>" }`. The default for new rules is
+`"web"`. Existing rules are migrated to the connection of their target session's most recent owner
+conversation, or to `"web"` if that is Matrix and Matrix is off.
+
+Router's `WorkSessions.deliver` gains `connectionId?: string`:
+- It always appends the `notice` (`schedule:<eventId>`) to the target session. That is the web delivery.
+- If `connectionId` is set, it queues one `content` delivery to the session's conversation on that
+  connection with the latest `last_inbound_at`.
+- Without such a conversation, the delivery is `suppressed` with error `no_conversation_on_connection`. The
+  web still has the notice.
+- The receipt Mau stores (`status`, `externalId`) is the channel delivery's, or `{status:"web"}` when
+  there is none.
+
+### 16.7 Console (Mau `web/`)
+
+| Feature | Change |
+| --- | --- |
+| `cards` | Card events render as cards in the run surface. Buttons call `answer` with `choiceId`. Free-text cards have an input that calls `answer` with `text`. Connector approvals use the existing approval view (`native.params`), answering through `answer` in place of `runApi().answer`. Handoff cards fetch `GET …/cards/:cardId` for the live link while pending. `card.update` folds into the card. |
+| `reset` | "新对话" button. On `session_busy` a dialog "当前任务进行中" offers "停止并开始新对话" (`cancelActive:true`). The run surface gets "停止" (cancel) and "补充" (steer). Own web messages get "撤回" (redact). Chat settings get "清空聊天记录" (purge, with a typed confirmation). |
+| `attachments` | The composer accepts files and paste. Each file is uploaded as a `Blob` body (never a `ReadableStream`; client contract 8) with a progress bar, and then the `attachmentIds` are sent. Images render inline. |
+
+`runApi().answer` and `runApi().cancel` stay for the Matrix-sourced console until phase 7.
+
+### 16.8 Schema
+
+```sql
+-- AGENT_LEDGER_V3
+ALTER TABLE ledger_cards ADD COLUMN source TEXT NOT NULL DEFAULT 'host';      -- host | mau-approval | mau-handoff
+ALTER TABLE ledger_cards ADD COLUMN answer_surface TEXT;                      -- web | channel | run-api | host
+CREATE INDEX ledger_cards_planned ON ledger_cards(updated_at) WHERE status = 'pending' AND answer_key IS NOT NULL;
+-- OWNER_HUB_V2
+CREATE TABLE hub_uploads(attachment_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, name TEXT NOT NULL, content_type TEXT NOT NULL,
+  size INTEGER NOT NULL, uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL, bound_at INTEGER);
+CREATE TABLE hub_blob_refs(sha256 TEXT NOT NULL, ref TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(sha256, ref));
+CREATE TABLE hub_room_attachments(attachment_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, event_id TEXT, name TEXT NOT NULL,
+  content_type TEXT NOT NULL, size INTEGER, sha256 TEXT, locator TEXT NOT NULL, created_at INTEGER NOT NULL);
+ALTER TABLE hub_blobs ADD COLUMN unreferenced_at INTEGER;
+```
+
+### 16.9 Tests
+
+- `test/ledger-cards.test.ts`:
+  - choice, text and native answers for each `interaction()` family
+  - `mau-approval:` through a `BusinessHost` stub: `once` → `approved`, `deny` → `rejected`, and the result
+    shape Mau parses
+  - `mau-handoff:` cancel and free-text steer
+  - sensitive gives 422
+  - duplicate and stale answers, a different key after an answer elsewhere
+  - crash between plan and resolve: the worker re-resolves once
+  - an answer from the run API or chat updates the same card
+  - handoff URL redaction in history, live text from `GET …/cards/:cardId`
+- `test/ledger-control.test.ts`:
+  - cancel of channel, work and schedule turns
+  - steer accepted and unsupported
+  - reset: busy, `cancelActive`, the next turn's `contextId` is `<key>.w2`, `/new` from a Feishu owner DM
+    resets the web DM
+  - redaction: queued input dropped, started input kept, a foreign-channel message refused
+  - purge: generation bump, tombstoned claims ignore a redelivery, the chat continues in a new window
+- `test/ledger-attachments.test.ts`, against `LocalBlobStore` and an `R2BlobStore` pointed at a fake S3
+  server:
+  - 411, 413, sha mismatch, quota
+  - dedupe per owner, no dedupe across owners
+  - permission on download, Range
+  - inline versus attachment disposition and the CSP header
+  - lazy promotion of a channel attachment
+  - refcount sweep after redaction
+- `test/ledger-web.test.ts`: `/me` features follow the flags.
+- Mau: `web/src/api/ledger.test.ts` for the answer, reset and upload clients; a console test that a `cards`
+  console never calls `runApi().answer`.
+
+### 16.10 Risks
+
+- **Two answer paths race.** A chat text answer and a web answer can arrive together. The Host arbitrates,
+  and the ledger keeps the first `card.update`. The loser sees `stale`.
+- **Purge is irreversible and wide** (the merged DM covers all channels). It needs a typed confirmation and
+  no undo. Backups follow the operator's state backup policy.
+- **Proxying downloads costs VM bandwidth** (at most 25 MiB per file). Phase 8 serves from the R2 binding.
+- **The R2 key on the VM** can read every owner's blobs. It is stored as a file readable only by the
+  service user and is bucket-scoped, and the bucket is private.
+
+## 17. Phase 5: native groups
+
+Flag: `AGENT_LEDGER_GROUPS=1` sets `features.groups`. It requires `send`. With the flag off, room chats
+stay readable, and room commands give 403 `feature_disabled`.
+
+### 17.1 API
+
+```http
+POST /_agent-router/v1/web/groups
+{ "idempotencyKey": "01JC…", "title": "周报小组", "agentIds": ["<agentId-1>", "<agentId-2>"] }
+201 ChatSummary & { "members": Actor[] }          // chatId "room:rm_01JC…", kind "group"
+422 { "error": "agent_not_found" }                // not owned or not active
+429 { "error": "room_limit_reached" }             // 100 rooms per owner
+
+PATCH /_agent-router/v1/web/groups/rm_01JC…
+{ "title": "周报", "archived": false }
+200 ChatSummary                                   // appends member{action:"rename"} on a title change
+
+POST /_agent-router/v1/web/groups/rm_01JC…/members
+{ "agentId": "<agentId-3>" }
+200 { "members": Actor[] }                        // appends member{action:"add"}
+
+DELETE /_agent-router/v1/web/groups/rm_01JC…/members/<agentId-3>
+200 { "members": Actor[] }                        // appends member{action:"remove"}
+
+POST /_agent-router/v1/web/chats/room%3Arm_01JC…/messages
+{ "idempotencyKey": "01JC…", "text": "@研究助理 帮我查一下", "mentions": { "agentIds": ["<agentId-1>"], "all": false } }
+200 { "status": "accepted", "event": ChatEvent,
+      "addressed": [ { "agentId": "<agentId-1>", "state": "queued" }, { "agentId": "<agentId-2>", "state": "not_addressed" } ] }
+```
+
+Validation and membership:
+- `title` is 1–64 characters. `agentIds` has 1–20 unique agents, all owned and active.
+- The owner is the only person member.
+- The client resolves mentions; the server never parses `@` from the text. `mentions.agentIds` must be
+  members, otherwise 422 `mention_not_member`. A message with no mention is stored and fans out to nobody.
+
+Removal:
+- Removing an agent deletes its `queued` fan-out rows and archives its room session.
+- Deleting an agent removes it from every room (a `member` event).
+- A room with no agents stays readable.
+
+### 17.2 Fan-out
+
+One hub transaction appends the room event and one `hub_fanout` row per addressed agent:
+- `mentions.agentIds ∩ members`, or every member agent with `all`
+- only when the sender is the owner person (decision 4d)
+
+Agent messages, cards and notices never create fan-out rows, whatever their text says.
+
+The fan-out worker:
+- takes due rows in `(room_id, agent_id, seq)` order
+- delivers one agent's rows strictly in order; a failing row blocks that agent's later rows in that room
+- calls the agent's ingress through `RoomChannel` (it opens the runtime if needed):
+
+```ts
+{ externalId: `${roomId}:${seq}`, sender: ownerId, scope: "group", groupId: `room:${roomId}`,
+  threadId: room.matrixRoomId ?? `room:${roomId}`,          // see 17.6: imported rooms keep their session
+  text, attachments, mentions: { self: true, all }, privateGroup: true,
+  reply: { target: roomId, messageId: eventId, data: { roomId } } }
+```
+
+- The ledger claim `(room, <roomId>:<seq>)` makes redelivery harmless.
+- Backoff is 1 s × 2ⁿ, capped at 5 min. After 24 h the row is `failed`, and the room gets a `notice`
+  (`level:"warning"`) "未能送达 <agent>：<error>".
+- Room turns use the same owner admission as Matrix private groups do today (`privateGroup: true`, owner
+  sender).
+
+### 17.3 Group context
+
+`hub_room_cursors(room_id, agent_id, context_seq)` records how far each agent has seen the room. When the
+dispatcher starts a room turn, `RoomChannel.context(roomId, agentId, originSeq)` returns room `message`
+events with `context_seq < seq < originSeq`. It skips redacted events, the agent's own messages and inputs
+already addressed to it. In the same transaction as the turn start, the cursor moves to `originSeq`.
+
+The context is prefixed to the model input:
+
+```
+群聊上下文（自你上次参与以来 12 条，省略 4 条）：
+[10:42] 主人: 这周的数据出来了吗
+[10:43] 写作助理: 初稿已经放在共享文件夹
+[附件: 周报.docx]
+```
+
+Caps:
+- the newest 30 messages and 8 KB in UTF-8, oldest dropped first
+- each message cut to 1 KB
+- attachments listed by name only
+
+### 17.4 Replies, cards, turns and streams
+
+`RoomChannel` has `kind:"room"` and `retrySafe:true`.
+- Capabilities: receive `text`, `image`, `file`, `quote`; send `text`, `html`, `image`, `file`;
+  `buttons:true`, `stream:true`.
+- `send(route, text, deliveryId)` appends an assistant `message` to the room with idempotency
+  `delivery:<agentId>:<deliveryId>`, `replyTo` = origin event, `turnId` and `final`. The room `eventId` is
+  the platform message id, and the delivery is `sent` at once. `sendContent` writes media to the blob store
+  first.
+- The agent's `card`, `card.update` and `turn` events are mirrored into the room with idempotency
+  `card:<cardId>`, `card.update:<cardId>:<status>` and `turn:<turnId>:<state>`. The mirrored bodies carry
+  `agentId`.
+- `POST /chats/room:<id>/cards/:cardId/answer` resolves through the card's agent (16.1), and
+  `GET /chats/room:<id>/turns/:turnId` resolves through the turn's agent.
+- `chat.stream` frames use the room `chatId` and carry `agentId`. Several agents can stream at once.
+
+### 17.5 Room reset
+
+`POST /chats/room:<id>/reset` resets the room session of every member agent (the 16.3 rules; the busy check
+covers all of them). It appends one `window` event to the room and moves every cursor to the current
+`last_seq`.
+
+### 17.6 Importing `ai.mau.room` Matrix groups
+
+The import is an explicit command, run once per deployment while Synapse and the service are running:
+`agent-router ledger import-rooms (--owner <ownerId> | --all) [--dry-run]`. For each Matrix room with
+`ai.mau.room {kind:"group"}` state whose joined members are exactly the owner and the owner's agents:
+
+1. **Hub room.** `importRoom` creates the hub room and its members. This is already implemented, and the
+   id is derived from the Matrix room id.
+2. **History.** Live Matrix ingress since the phase 1 backfill wrote only agent-side sessions, not the hub
+   room. The import pages Synapse `/messages` backwards (as an agent's virtual user, with the AS token)
+   until it reaches a known `matrix:<event_id>`, and appends the missing events in order.
+3. **Session continuity.** `RoomChannel` messages for an imported room use the Matrix room id as `threadId`.
+   The legacy formula therefore gives each agent the session key its Matrix group session already had, so
+   the model context continues. The import sets that `ledger_sessions` row to `kind='room'` and fills in
+   `room_id`.
+4. **Freeze.** The registry document `matrix_room_migrations[<matrixRoomId>] = { roomId, at }` is written.
+   From then on `MatrixChannel` claims messages from that room as `ignored` (`room_migrated`): no transcript
+   event and no turn.
+5. **Final notice.** The member agent with the lowest id sends one `m.notice`: "此群聊已迁移到 Mau
+   网页端，这里的新消息不会再被处理。" Its transaction id is `digest(["room-migrated", matrixRoomId])`, so a
+   rerun never sends it twice. Agents stay joined, so Element users can still read the old history.
+6. **Late messages.** Steps 2–5 are idempotent. A rerun imports anything that arrived before the freeze.
+
+Groups that include anyone outside the owner and the owner's agents are not imported. They stay Matrix
+groups (observed chats) while Matrix is enabled, and become read-only history in phase 7. The dry run
+lists every room as `import`, `skip:has_outsiders`, `skip:not_group` or `skip:unknown_members`.
+
+### 17.7 Console
+
+The `groups` feature adds:
+- a "新建群聊" dialog (title and agent picker)
+- a member panel (add, remove and rename)
+- an `@` picker listing member agents plus "@所有人"
+- a hint while composing a message without a mention: "未 @ 任何 Agent，消息只记录"
+- the `addressed` state under the sent message
+- per-agent run surfaces inside the room
+
+Matrix group creation (`MauConversations` `createRoom` with `ai.mau.room`) is hidden when `groups` is on.
+
+### 17.8 Schema (`OWNER_HUB_V3`)
+
+```sql
+CREATE TABLE hub_room_cursors(room_id TEXT NOT NULL, agent_id TEXT NOT NULL, context_seq INTEGER NOT NULL,
+  PRIMARY KEY(room_id, agent_id));
+CREATE INDEX hub_fanout_due ON hub_fanout(next_at) WHERE status = 'queued';
+CREATE INDEX hub_room_members_agent ON hub_room_members(member_id) WHERE member_type = 'agent';
+```
+
+### 17.9 Tests (`test/ledger-rooms.test.ts`)
+
+- Group create is idempotent; limits; non-owned agents are refused; membership events.
+- Mention validation. Only the owner fans out: an agent reply containing `@另一个Agent` reaches nobody.
+  `@all` addresses every member.
+- Fan-out order per agent, retry after a crash (the claim dedupes), the failure notice after 24 h.
+- Group context: caps, the cursor, exclusion of own inputs and messages, redacted messages skipped.
+- Replies land in the room with `replyTo`. Card mirror and an answer from the room chat. Room reset.
+- Import:
+  - a private group is imported, a group with outsiders is skipped
+  - the history gap is filled
+  - the session key is unchanged
+  - the final notice is sent exactly once
+  - a later Matrix message is ignored with `room_migrated`
+- With the flag off: reads work, commands give 403.
+
+### 17.10 Risks
+
+- **Cost of `@all`** in a 20-agent room. Rooms are capped at 20 agents, and turns are queued through each
+  agent's normal capacity.
+- **Owners still posting in Element** after the import get no reply. The final notice is the only signal.
+- **The context cap** loses detail in busy rooms. The cap values live in `limits` and can be tuned.
+
+## 18. Phase 6: identity and edge login
+
+Flags:
+
+| Env | Effect |
+| --- | --- |
+| `AGENT_LEDGER_IDENTITY=1` | Sets `features.identity`: owner resolution by person, pairing codes and the identity page. |
+| `AGENT_EDGE_IDENTITY_FILE=<path>` | Enables `CloudflareAccessAuthenticator` (18.2). |
+
+The two can be turned on separately.
+
+### 18.1 Persons and owner resolution
+
+- Owner ids stay strings (15.2.4), and `personId(ownerId)` stays the person id. Every agent's
+  `owner_person_id` is `personId(agent.owner)`.
+- The owner check in `CommunicationCore` and `HostWorker` becomes:
+
+  ```
+  persons.resolve(provider, namespace, sender) === personId(agent.owner)
+  ```
+
+  For one release after phase 6, `|| connection.ownerAddresses.includes(sender)` is kept as well. The
+  configured `ownerAddresses` are still seeded at every start as `verified_by='config'` identities, so
+  operator config keeps working.
+- Provider and namespace per channel:
+
+  | Channel | Provider | Namespace |
+  | --- | --- | --- |
+  | Feishu | `feishu` | `app_id` |
+  | Feishu, when `union_id` is supplied | also `feishu-union` | `tenant_key` |
+  | grove-mail / agentmail | the channel kind | `''` (subject lowercased) |
+  | Telegram | `telegram` | `''` |
+  | Weixin | `weixin` | the account id |
+  | Matrix | `matrix` | the server name |
+  | Edge login | `cloudflare-access` | the team domain host |
+
+- `DELETE /identities/:identityId` revokes the identity (`revoked_at`). The sender stops being the owner
+  from its next message on. Errors:
+  - revoking a `config` identity: 409 `identity_from_config` (change the config instead)
+  - revoking the login identity of the current request: 409 `identity_in_use`
+- A sender that becomes the owner keeps its earlier `peer` sessions as observed chats. Its new messages
+  enter `owner_main` as a `participant` conversation. A conversation never moves (section 5).
+
+### 18.2 `CloudflareAccessAuthenticator`
+
+The interface changes to take the request:
+
+```ts
+interface OwnerPrincipal {
+  personId: string; ownerId: string;
+  via: "edge" | "edge-service" | "bearer";
+  email?: string; matrixUserId?: string; expiresAt?: number;
+}
+interface OwnerAuthenticator { authenticate(request: { headers: IncomingHttpHeaders }): Promise<OwnerPrincipal> }
+```
+
+`ManagedService.authenticateRequest(req)` is the one entry point for every owner-authenticated route:
+- the `/_agent-router/v1` owner middleware
+- the web router
+- the gateway's owner (non-`ari_`) branch
+- Mau
+
+`authenticate(token)` stays for callers that only hold a token.
+
+Operator config (a JSON file, outside the repository):
+
+```json
+{ "edgeIdentity": {
+    "provider": "cloudflare-access",
+    "teamDomain": "https://example-team.cloudflareaccess.com",
+    "audiences": ["0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"],
+    "clockSkewSeconds": 60,
+    "bearer": "allow",
+    "owners": {
+      "owner@example.test": "@owner:example.test",
+      "second@example.test": { "owner": "@second:example.test", "sub": "6f1c2d3e-0000-4000-8000-000000000000" }
+    },
+    "serviceTokens": { "1a2b3c4d5e6f.access": "@owner:example.test" }
+} }
+```
+
+Config validation at start (zod; a bad config fails the start):
+- `teamDomain` is an `https` origin without a path.
+- `audiences` has 1–10 non-empty tags.
+- `owners` keys are lowercased emails. Values are owner ids, or `{owner, sub}` to pin the identity
+  provider's subject.
+- Owner ids follow today's rule: a Matrix-shaped id ending in `:<serverName>`, never `@_ar_…`.
+- `clockSkewSeconds` is 0–300.
+- The config is reloaded only on restart.
+
+Verification, using `jose` (no hand-written JWT code):
+1. Read `Cf-Access-Jwt-Assertion` (at most 8 KB). Router never reads `Cf-Access-Authenticated-User-Email`
+   or the `CF_Authorization` cookie. Only the signed assertion counts.
+2. Verify with these settings:
+   - `jwtVerify(token, jwks, { algorithms: ["RS256"], issuer: teamDomain, audience: audiences,
+     clockTolerance: clockSkewSeconds, requiredClaims: ["exp", "iat"] })`
+   - `nbf` is checked when present, and a present `type` must be `"app"`
+   - `jwks = createRemoteJWKSet(new URL("/cdn-cgi/access/certs", teamDomain), { timeoutDuration: 5000,
+     cooldownDuration: 30000, cacheMaxAge: 3600000 })`
+   - an unknown `kid` refetches at most once per cooldown, which covers key rotation
+   - if the keys cannot be fetched and none are cached: 503 `identity_provider_unavailable`
+3. Map the identity:
+   - A non-empty `email` is NFC-normalized, lowercased and looked up in `owners`. No entry gives 403
+     `owner_not_configured`, and the error body includes `email` so the console can show it. A pinned
+     `sub` that differs gives 403 `owner_subject_mismatch`.
+   - Otherwise a `common_name` (an Access service token's client id) is looked up in `serviceTokens`. No
+     entry gives 403 `service_token_not_configured`.
+   - With neither: 401 `edge_identity_invalid`.
+4. Cache the principal by `digest(token)` until `min(exp, now + 60 s)`.
+5. On first sight per cache entry:
+   - `persons.ensurePerson(ownerId, <email local part>)`
+   - `persons.link(person, "cloudflare-access", <teamDomain host>, email, "login")`; a service token links
+     `service:<common_name>` with `config`
+   - update `last_seen_at`
+
+Order of checks (`CompositeAuthenticator`):
+1. With an edge config and the header present, the edge result decides. A bad JWT is a 401 and never falls
+   back to the bearer path, so a broken edge session cannot be downgraded silently.
+2. Otherwise a bearer token uses today's path (Synapse whoami, `ars_` sessions), unless `bearer:"deny"`,
+   which gives 401 `edge_identity_required`.
+3. With neither: 401 `account_login_required`.
+4. If both an edge JWT and a bearer token are present and resolve to different owners: 401
+   `principal_conflict`.
+
+`ari_` instance tokens on the gateway are unchanged.
+
+Socket tickets:
+- `POST /socket-tickets` works for every principal.
+- The ticket keeps the authenticating credential (the bearer token or the JWT) in memory only, as today.
+- The 10-minute re-check re-verifies it, and an edge principal's socket closes with 4401 at its `exp`.
+  Cloudflare Access also applies to the WebSocket upgrade, so the ticket request and the upgrade carry the
+  same cookie.
+
+`GET /me` gains `"auth": { "via": "edge", "email": "owner@example.test", "expiresAt": "…" }`.
+
+### 18.3 Mau and the console
+
+Mau (`src/app.ts`):
+- The `/_mau/v1` product middleware calls `router.service.authenticateRequest(req)` in place of
+  `authenticate(<bearer>)`. `attachSsh` passes the upgrade request the same way.
+- `GET /_mau/v1/info` returns `{ "login": "edge", "logoutUrl": "/cdn-cgi/access/logout", "matrix": false }`,
+  or the legacy `{ "login": "matrix", "homeserver": "https://matrix.example.test", "matrix": true }`.
+- `GET /_mau/v1/account` returns `{ owner, person: { id, name }, via }`.
+
+Console (`web/src/api/session.ts`, `http.ts`):
+- With `login:"edge"` there is **no login page**. Boot calls `/_mau/v1/info`, removes any stored
+  `mau.session`, then calls `GET /_agent-router/v1/web/me` (same-origin credentials, no `Authorization`).
+  - 200: the app starts with that principal. Every later request is sent without a token; Cloudflare adds
+    the JWT from the Access cookie.
+  - 403 `owner_not_configured`: a full-page "此账号未开通 Mau（<email>）" with "切换账号" → `logoutUrl`.
+  - `access_session_expired`: `request()` already turns an edge redirect into this code. The console shows a
+    banner "登录已过期" with "重新登录", which saves unsent composer text per chat in `sessionStorage` and
+    then calls `location.reload()`. Access signs the owner in again and returns to the same URL.
+  - A socket close 4401 asks for a new ticket. If that request gives `access_session_expired`, the banner
+    is shown.
+- The menu's "退出登录" goes to `logoutUrl`. The Matrix password form and token paste are shown only for
+  `login:"matrix"`.
+- CLIs (`mau`, the Go `agent-router`) get an edge mode. The owner runs `cloudflared access login
+  https://mau.example.test`, and the CLI sends the token as the `cf-access-token` header (Access validates
+  it and injects the JWT). Automation uses an Access service token (`CF-Access-Client-Id` and
+  `CF-Access-Client-Secret`) mapped in `serviceTokens`.
+
+### 18.4 Pairing codes
+
+```http
+POST /_agent-router/v1/web/identities/pairing-codes
+{}
+201 { "code": "7KQ4-M2XD", "expiresAt": "2026-11-06T09:00:00.000Z",
+      "instructions": "在要关联的渠道里私聊你的任一 Agent，发送：/link 7KQ4-M2XD" }
+429 { "error": "pairing_codes_pending_limit" }
+```
+
+The code rules of section 9 apply: 8 Crockford base32 characters shown with a hyphen, stored as
+`digest(["pairing", ownerKey, normalized])`, 1 h, at most 3 pending, single use. Input is
+case-insensitive, hyphens and spaces are ignored, and `I`/`L` → `1`, `O` → `0`.
+
+Ingress hook. It runs after the claim and **before** authorization, so an unknown sender can pair:
+- **Match.** Only `scope:"direct"` messages whose whole text matches
+  `^\s*(?:/link|绑定)\s+[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}\s*$`. In groups, `/link` is ignored without a reply,
+  so a code is never confirmed in front of others.
+- **Lockout.** `hub_pairing_failures` is keyed by `digest(provider, namespace, subject)` in the hub of the
+  receiving agent's owner. Five failures in 1 h lock the sender for 1 h: "尝试次数过多，请一小时后再试。"
+- **Match the code** against the agent owner's pending codes. On success, `persons.link(person, provider,
+  namespace, subject, "pairing")`. For Feishu, `feishu-union` is linked as well when supplied. Then
+  `consumed_at` and `consumed_identity` are set.
+  - Reply: "已关联到 <name>。之后在这里发给 Agent 的消息会进入你的主对话。"
+  - An identity already linked to another person is left unchanged, with the reply "此账号已关联到其他用户。"
+  - A wrong or expired code counts as a failure: "关联码无效或已过期。"
+- **Mail** pairs only when the adapter marks the sender as verified (`native.senderVerified === true`, from
+  the provider's DKIM/SPF/DMARC verdict). Otherwise: "无法验证发件人，未关联。" Whether each mail provider
+  exposes this is open question 4. Until it is confirmed, mail pairing is off for that provider.
+- **No transcript.** The claim becomes `ignored` with reason `pairing`, with no event and no turn. The reply
+  is a `notice` delivery with `event_id` NULL on the message's own route.
+
+### 18.5 Identity page (console, `identity` feature)
+
+The page:
+- lists identities with provider, subject, `verified_by` and last seen
+- offers "解除关联" (DELETE; config and in-use identities are shown as fixed)
+- offers "生成关联码", showing the code, a countdown and per-channel instructions
+
+### 18.6 Schema (`REGISTRY_V2`, `OWNER_HUB_V4`)
+
+```sql
+ALTER TABLE reg_person_identities ADD COLUMN last_seen_at INTEGER;
+-- hub
+CREATE TABLE hub_pairing_failures(sender_key TEXT PRIMARY KEY, failures INTEGER NOT NULL, window_start INTEGER NOT NULL,
+  locked_until INTEGER);
+CREATE INDEX hub_pairing_pending ON hub_pairing_codes(person_id) WHERE consumed_at IS NULL;
+```
+
+### 18.7 Tests
+
+- `test/edge-identity.test.ts`. A local RSA key pair is created with `jose`, and the JWKS is served from a
+  local HTTP server.
+  - Accepted: a valid user JWT.
+  - Rejected: wrong `aud`, wrong `iss`, `exp` and `nbf` outside the skew, `alg` `HS256`/`none`, a forged
+    signature.
+  - Keys: an unknown `kid` refetches once; rotation; JWKS down with a cache (accepted) and without (503).
+  - Identity: email case and NFC; unmapped email (403, with `email` in the body); pinned `sub` mismatch;
+    service token mapped and unmapped.
+  - Ordering: bearer `allow` and `deny`; `principal_conflict`; a forged `Cf-Access-Authenticated-User-Email`
+    without a JWT is ignored.
+  - Sockets: a ticket from an edge principal; a 4401 close at `exp`.
+- `test/pairing.test.ts`:
+  - success: a Feishu DM links (with `union_id`); a Matrix DM links
+  - ignored: `/link` in a group
+  - failures: an expired, reused or wrong code; lockout after five failures; an identity already linked to
+    another person; an unverified mail
+  - no event or turn is written
+  - the linked sender becomes the owner on the next message; revoking takes owner rights away again; config
+    identities cannot be revoked
+- Mau: `/_mau/v1` with an edge principal; `/info` in both modes; the console in edge mode shows no login
+  form, shows the `access_session_expired` banner and reloads, and shows the `owner_not_configured` screen.
+
+### 18.8 Risks
+
+- **Access coverage.** `/_agent-router/v1/*`, `/_mau/v1/*`, the socket path and the console must sit
+  behind one Access application with the configured AUD. A bypass policy on a sub-path would send requests
+  there without a JWT, and they fall back to the bearer path. Use `bearer:"deny"` once no bearer callers
+  remain.
+- **Email reuse at the identity provider.** A recycled address would inherit the owner. Pin `sub` for each
+  owner where possible.
+- **A leaked service token** gives owner access. Scope the Access policy for service tokens to the paths
+  they need, and rotate them.
+- **Spoofed mail** already grants owner rights through `ownerAddresses` today. Requiring verified mail for
+  pairing does not fix the existing `ownerAddresses` trust. The same verdict should later gate mail owner
+  resolution.
+
+## 19. Phase 7: Matrix optional
+
+### 19.1 Switches
+
+**Deployment.** `AGENT_MATRIX=on|off` (`ServiceConfig.matrix.enabled`).
+- The default is `on`, so existing deployments do not change. Ours sets `off`.
+- With `off`, `homeserver`, `asToken` and `hsToken` are optional and unused. `serverName` stays required,
+  because it is the owner-id namespace (15.2.4).
+- `GET /me` → `limits.features.matrix` reports the deployment switch explicitly (client contract 1).
+
+**Per agent.** `ManagedAgent.matrix` is one of three states. A missing value counts as `active` (legacy
+records).
+
+| State | Meaning |
+| --- | --- |
+| `none` | Never had an account. Agents created while Matrix is off get this. |
+| `dormant` | Has an Application Service account that is not used. |
+| `active` | Provisioned, and the Matrix adapter runs. |
+
+Agent API responses gain `"matrix": { "state": "none", "userId": null }`. `matrixId` stays in the
+response for compatibility (the Go CLI reads it). It is the agent's runtime identity whether or not it is
+registered.
+
+```http
+PUT /_agent-router/v1/agents/<agentId>/matrix          (deployment on only)
+{ "enabled": true }
+200 { "state": "active", "userId": "@_ar_<id>:example.test" }
+409 { "error": "matrix_disabled" }                      // deployment off
+409 { "error": "agent_has_active_or_unknown_run" }
+```
+
+`enabled:true`:
+- registers the AS user (`M_USER_IN_USE` is fine)
+- swaps the runtime's transport (the `configureRuntime` sequence)
+- sets a new Matrix `activation` checkpoint, so Matrix events queued during the dormant period are ignored
+- lets Mau add the `matrix` connection
+
+`enabled:false` makes the agent `dormant`: the adapter stops, the account is kept, and its rooms stay
+joined but are ignored.
+
+### 19.2 Gated paths
+
+| Path | Matrix on (agent `active`) | Matrix off, or agent `none`/`dormant` |
+| --- | --- | --- |
+| `ManagedService.create` | registers the AS user, `matrix_agents` row | no Synapse call. `matrix:"none"`, no `matrix_agents` row. |
+| `ManagedService.open` | `ApplicationTransport`, owner contact, display name | `DormantTransport`: `identity()` returns `matrixId`, `dormant = true`. `MatrixConnector.start` runs no sync loop when the transport is dormant. Send, room and state calls give `matrix_disabled`. Contacts are local. The display name is skipped (`meta.matrix_initialized` is kept separate from `managed_initialized`). |
+| `ManagedService.delete` | deactivates the account | skipped. A dormant account is listed by `agent-router matrix forget`. |
+| `/_matrix/app/v1/*` | mounted | not mounted (generic 404) |
+| `authenticate(<Matrix token>)` | Synapse whoami | 401 `matrix_disabled`. `ars_` sessions still work. |
+| `ExternalIdentitySessions.provision` | Synapse admin account | an `external_owners` record only, active at once |
+| `GET /directory` | `matrixId` | `matrixId: null` |
+| Connection API, `kind:"matrix"` | allowed | 409 `matrix_disabled`. Existing Matrix `ConnectionDefinition`s are kept but not registered; their status shows `disabled: "matrix_off"`. |
+| Gateway Matrix social API (`/api/contacts`, `/api/conversations`) | as today | 409 `matrix_disabled` |
+| `ledger backfill --synapse`, `ledger import-rooms` | as today | error `matrix_disabled` |
+| Mau `environments.ts` | adds the `{id:"matrix", kind:"matrix"}` connection | adds nothing (`router.service.matrixEnabled(agentId)` is false) |
+| Mau `/_mau/v1/info` | `login:"matrix"` unless edge is configured | `login:"edge"` (an edge config is required when Matrix is off) |
+
+The per-agent runtime keeps `MatrixConnector`, its `ConnectorStore`, `CliWork` and the per-agent SQLite
+file (15.2.13). `timeline`, `room_info` and `read_markers` are no longer written when nothing syncs.
+
+### 19.3 Console with `features.matrix = false`
+
+- `api/conversations.ts` (`MauConversations`), the Matrix password login, the Matrix chat source and the
+  `mau.chatSource` toggle load only through a dynamic `import()` behind `features.matrix` or
+  `login:"matrix"`.
+- With Matrix off:
+  - the chat source is always the ledger
+  - nothing requests `/_matrix/…` or `/info.homeserver`
+  - Matrix and Element wording and links are hidden
+- Observed chats that came from Matrix sessions still render as history, with the badge "Matrix（已停用）".
+
+### 19.4 Migration and removal of Synapse
+
+Preconditions:
+1. Phases 3–6 have been on for at least one release, and owners use only the ledger console.
+2. `agent-router ledger import-rooms --all` has run, and every imported group shows the final notice.
+3. Every owner has logged in through the edge identity. `GET /web/debug/identity` (operator only) lists
+   owners with the `last_seen_at` of their login identity.
+4. No live dependency on Matrix remains. Check `delegation` sessions, and `peer`/`group` sessions on
+   Matrix connections, with inbound traffic in the last 30 days. A2A delegation over Matrix rooms stops; the
+   HTTP A2A gateway keeps working. Affected owners are told.
+
+Export, with Synapse still running:
+
+5. **Final backfill.** With the service stopped: `npm run ledger:backfill -- --all --synapse`. Check
+   `/debug/ledger`: unmatched counts are zero or explained.
+6. **Media.** `agent-router ledger promote-media --all --channel matrix` copies every `mxc://` attachment
+   referenced by ledger events into the blob store (AS token) and rewrites the locators. The check: zero
+   channel locators remain for Matrix connections. **Once `media_store` is deleted, unpromoted media is
+   lost.**
+7. **Manifest.** `agent-router matrix export --all --out <dir>` writes JSON with:
+   - agents with their Matrix ids and states
+   - owner ids
+   - rooms with name, members and the `ai.mau.room` flag
+   - room → conversation or hub room mappings
+   - per-room event counts
+8. **Synapse data.**
+   - `pg_dump --format=custom` of the Synapse database, test-restored into a scratch Postgres
+   - an archive of `media_store/`
+   - `homeserver.yaml`, the server signing key and the AS registration file, kept for a possible
+     re-enable under the same server name
+
+   All of it is encrypted and stored offline, indefinitely (the original record; decision 4f).
+
+Switch:
+
+9. Set `AGENT_MATRIX=off` and an edge config, then restart. Verify:
+   - a new test agent gets `matrix:"none"`
+   - web and Feishu send and receive
+   - `features.matrix` is false
+   - the service makes no connections to the homeserver
+10. **Soak for at least 7 days.** Rollback during the soak: `AGENT_MATRIX=on` and restart. Agents resume
+    with a new activation checkpoint, so Matrix events from the off period are not processed late. Web
+    messages from the off period are not in Matrix (one-way).
+
+Removal:
+
+11. Stop Synapse and Postgres, and delete their volumes once item 8 has been verified.
+12. Remove the AS registration, and delete `asToken`, `hsToken` and the Synapse admin token from the
+    secrets.
+13. Remove `/_matrix` and `/.well-known/matrix` from the edge (Access application, tunnel ingress, DNS).
+14. `agent-router matrix forget --all [--dry-run]` deletes:
+    - the per-agent `timeline`, `room_info`, `read_markers`, `rooms` and `meta.sync` documents
+    - the registry's `as_queue:*`, `as_members`, `matrix_agents` and `matrix_room_migrations`
+    It then sets every agent to `matrix:"none"`.
+
+### 19.5 Tests
+
+- `test/managed.test.ts`, with Matrix off:
+  - `create` makes no homeserver request; the runtime starts; `CliWork` accepts work; a web DM turn
+    completes
+  - `delete` skips deactivation
+  - `/_matrix/app/v1` gives 404, a Matrix bearer gives 401 `matrix_disabled`, `ars_` works
+  - a Matrix connection is refused; a configured one is skipped with its status
+  - `ExternalIdentitySessions.exchange` works without Synapse
+- With Matrix on:
+  - the per-agent toggle switches between `active` and `dormant`
+  - re-enabling ignores Matrix events from before the new activation checkpoint
+- `matrix forget --dry-run` counts. `promote-media` rewrites locators and is idempotent.
+- Mau:
+  - `environments.ts` adds no Matrix connection when Router reports Matrix off
+  - in a console test with `features.matrix=false`, a fetch mock fails on any `/_matrix/` URL, and a build
+    assertion checks that the entry chunk does not contain `conversations.ts`
+
+### 19.6 Risks
+
+- **Hidden Matrix dependencies.** `matrixId` appears in agent cards, contacts and the Go CLI. Every
+  remaining use is either listed in 19.2 or must work with an unregistered id. The test suite runs once
+  with Matrix off.
+- **Irreversible export gaps.** Media that was not promoted, or rooms that were not backfilled, are lost
+  with Synapse. Items 5–8 are preconditions of removal, not cleanup.
+- **External Matrix peers** lose the channel. They are found in item 4.
+- **CLI login** depends on Matrix today. The CLI edge mode (18.3) must ship before Synapse is removed.
 
 ## Implementation notes (phases 1–2)
 
@@ -968,8 +1980,11 @@ deviate from it where the code required:
 
 These answers are normative for clients; the Router and the Mau console (`web/src/api/ledger.ts`) both test them.
 
-1. **Features.** `GET /me` → `limits.features` is a map `{ history, send, cards, attachments, reset, groups }` of
-   booleans. A missing or non-`true` entry means off. Clients use the ledger console only when `history` is on.
+1. **Features.** `GET /me` → `limits.features` is a map `{ history, send, cards, attachments, reset, groups, identity,
+   matrix }` of booleans. A missing or non-`true` entry means off. Clients use the ledger console only when `history`
+   is on. `identity` and `matrix` are added in phases 6 and 7 (sections 18.6 and 19.1). One exception to "missing
+   means off": every Router from phase 7 reports `matrix` explicitly, so a client that finds no `matrix` entry is
+   talking to an older Router and keeps its Matrix behavior.
 2. **Subscribe.** See 8.4 "Subscribe result": per-chat `errors`, `mode` `live | delta | reset`, reload only on
    `snapshot_required`, `ok:false` only for request-level errors.
 3. **Latest page.** A request without `before`/`after` returns the newest events, ending at the chat's last event,
@@ -1052,10 +2067,12 @@ and redaction endpoints. These choices fill gaps in the text above or deviate fr
     body is `{ "error": "rate_limit_exceeded", "retryAfterMs": n }`.
 11. **`POST /chats/dm`** now creates the owner-main session and the web conversation when they do not exist, and indexes the
     chat (it appears in `GET /chats` with `lastSeq: 0`). It needs no flag.
-12. **Redaction (open question 6).** The owner may withdraw own web messages; there is no edit.
-    `POST /chats/:chatId/messages/:eventId/redact` with `{ idempotencyKey }` goes through ingress as a `message-redaction`
+12. **Redaction (decision 15.1.4e, section 16.4), served early.** The owner may withdraw own web messages; there is no edit.
+    Phase 3 serves the section 16.4 endpoint with the `send` flag; phase 4 moves it under `AGENT_LEDGER_CONTROL` (`reset`).
+    `POST /chats/:chatId/events/:eventId/redact` with `{ idempotencyKey }` goes through ingress as a `message-redaction`
     (`externalId = <personId>:redact:<idempotencyKey>`) and appends a `redaction` event (`ref_event_id` = target). The target's
-    stored body becomes `{ text: "", redacted: true, channel: "web" }`, and the legacy inbox text is cleared (its hash is kept).
+    stored body becomes `{ text: "", redacted: true, redactedAt, channel: "web" }` (`channel` keeps the badge; there are no
+    attachments before phase 4), and the legacy inbox text is cleared (its hash is kept). The response has `dropped`.
     If no turn has taken the input yet (`queued`), it is `dropped` (legacy reason `redacted_before_start`); a turn already
     started is not canceled. Same key: the stored redaction (`duplicate`); same key for another target: 409
     `idempotency_key_reused`; another key for a redacted target: the existing redaction (`duplicate`). Only `message` events
@@ -1078,13 +2095,14 @@ Final shapes:
   "addressed": [ { "agentId": "<agentId>", "state": "queued" } ] }
 // 409 { "error": "idempotency_key_reused" }
 
-// POST /_agent-router/v1/web/chats/dm%3A<agentId>/messages/<eventId>/redact
+// POST /_agent-router/v1/web/chats/dm%3A<agentId>/events/<eventId>/redact
 { "idempotencyKey": "01JC9Z7Q4M0000000000000002" }
 // 200
 { "status": "accepted",                       // or "duplicate"
   "event": { "chatId": "dm:<agentId>", "seq": 6, "generation": 1, "eventId": "ev_…", "at": "…",
     "sender": { "type": "person", "id": "prs_…", "name": "alice" }, "channel": { "kind": "web" },
-    "kind": "redaction", "targetEventId": "<eventId>" } }
+    "kind": "redaction", "targetEventId": "<eventId>" },
+  "dropped": true }                           // the input had not started; false for a duplicate
 // History afterwards: { "eventId": "<eventId>", "kind": "message", "role": "user", "text": "", "redacted": true, … }
 ```
 
