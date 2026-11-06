@@ -27,9 +27,10 @@ agent-router channel-connect matrix
 Run only the commands for the platforms you want.
 
 - **Feishu:** the terminal displays the official app setup QR/link. App consent
-  connects messaging; personal tools request personal consent separately when
-  needed (or through `channel-auth`). Use `--domain lark` for Lark, or
-  `--messaging-only` to omit personal tools. Personal tools require a direct Host.
+  connects messaging through the app's bot. Use `--domain lark` for Lark. Router
+  has no personal (user-identity) Feishu tools; the app credentials it saves in
+  the Agent directory (`feishu/credentials.json`, `feishu/app-secret`) can be
+  reused by a separate connector for that.
 - **Weixin:** scan the terminal QR in WeChat. If Tencent requires a pairing code,
   the CLI prompts without echo. This is Tencent iLink private chat support.
 - **Telegram:** create a bot with BotFather and supply its token using a file
@@ -76,22 +77,13 @@ page. No App Secret needs to be copied:
 agent-router channel-connect feishu --app-id cli_YOUR_EXISTING_APP_ID
 ```
 
-Use the original `--domain` and `--messaging-only` choices when retrying. A saved
+Use the original `--domain` choice when retrying. A saved
 credential is reused after a binding failure. An uncertain creation result blocks
 creating another app until an existing App ID is supplied; never delete the pending
 marker merely to retry. Apps already assigned to another Agent are rejected.
 Connecting an already configured platform does not silently replace it.
 The API accepts optional `appId` on the Feishu connection request. Failed jobs
-include a `recovery` object (`action`, optional `appId`, `domain`, `personalTools`).
-
-For Feishu personal authorization:
-
-```sh
-agent-router channel-auth feishu status
-agent-router channel-auth feishu begin
-# After consenting to the printed link:
-agent-router channel-auth feishu complete
-```
+include a `recovery` object (`action`, optional `appId`, `domain`).
 
 ## Check and chat
 
@@ -102,8 +94,7 @@ agent-router connection-check
 
 Checks verify configuration, access and connection startup. They do not consume
 new messages, send a test message or run a model. An empty connections list is
-reported explicitly. Feishu bot access and personal authorization have separate
-check entries; missing personal consent does not fail the bot check. Send a real message in your
+reported explicitly. Send a real message in your
 chosen platform to verify a complete round trip.
 
 The existing CLI `send/get` path also works without an IM connection. Select a

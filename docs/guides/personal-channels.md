@@ -1,6 +1,6 @@
 # 多渠道个人对话
 
-当前源码实现五渠道对话、媒体双向传输、引用、原生提问和渠道支持的流式输出，以及飞书扫码配置、个人授权和官方 CLI 工具调用；尚未发布到 v0.6.0。Router 负责统一收发、连接凭据和会话映射，Agent Host 负责原生 Agent 执行。
+当前源码实现五渠道对话、媒体双向传输、引用、原生提问和渠道支持的流式输出，以及飞书扫码配置；尚未发布到 v0.6.0。Router 负责统一收发、连接凭据和会话映射，Agent Host 负责原生 Agent 执行。
 
 ```text
 飞书 / Telegram / 微信 / 邮件 / Matrix
@@ -32,13 +32,13 @@ agent-router connection-check
 
 | 渠道 | 复用实现 | 必填连接配置 | 已接入能力 |
 | --- | --- | --- | --- |
-| 飞书 | [官方 Channel](https://github.com/larksuite/node-sdk/blob/main/docs/channel.md)，SDK 1.74.0；[官方 CLI](https://github.com/larksuite/cli/blob/main/README.zh.md) 1.0.97 | `credentialsFile`；个人资源开启 `personalTools` | 文字、图片、文件、音视频、引用、流式卡片、交互按钮、表情和评论；个人授权后调用官方工具；群聊需要 @机器人 |
+| 飞书 | [官方 Channel](https://github.com/larksuite/node-sdk/blob/main/docs/channel.md)，SDK 1.74.0 | `credentialsFile` | 文字、图片、文件、音视频、引用、流式卡片、交互按钮、表情和评论；群聊需要 @机器人 |
 | Telegram | [grammY](https://grammy.dev/)，1.46.0 | `botTokenFile` | 文字、图片、文件、音视频、贴纸、引用、原生草稿流、按钮、表情和结构化消息；私聊和群组 topic；一个 bot 只有一个收信进程 |
 | 微信 | [腾讯插件](https://github.com/Tencent/openclaw-weixin) 2.4.9 的协议与扫码登录代码 | `credentialsFile` | iLink 私聊；文字、媒体、已有语音转写、引用和输入状态；保留原 `context_token`；不支持群回复、按钮或已验证的流式编辑 |
 | 邮件 | 现有 Grove Mail 服务 | `url`、`inboxId`、`apiKeyFile` | 持久化收信、文字/HTML、附件和原邮件引用回复；不自动 reply-all |
 | Matrix | 现有 Application Service / Connector | 无额外 token | 原同步进程；文字/HTML、媒体、引用、线程、流式编辑、表情与撤回；不支持加密房间 |
 
-### 飞书：扫码配置与个人授权
+### 飞书：扫码配置
 
 在实际运行 Router 的机器上执行：
 
@@ -46,13 +46,7 @@ agent-router connection-check
 npm run feishu:setup -- /absolute/private/path/feishu
 ```
 
-第一次使用有两个确认步骤：官方 `registerApp` 二维码创建 PersonalAgent 应用，取得机器人身份；官方 CLI Device Flow 二维码授予该应用访问个人资源。应用配置沿用平台默认模板，并增加收发资源、卡片权限与消息、卡片交互、表情、评论事件。第二步默认 `--domains all`，授权页展示实际申请的个人权限；可以使用 `--domains calendar,docs,drive` 缩小业务范围。Lark 使用 `--domain lark`。
-
-非交互终端或 `--no-wait` 会输出个人授权链接和 PNG 路径后退出。用户确认后续接同一流程：
-
-```sh
-npm run feishu:setup -- /absolute/private/path/feishu --complete
-```
+官方 `registerApp` 二维码创建 PersonalAgent 应用，取得机器人身份。应用配置沿用平台默认模板，并增加收发资源、卡片权限与消息、卡片交互、表情、评论事件。Lark 使用 `--domain lark`。
 
 成功时输出 `status: ready` 和可复制的连接配置：
 
@@ -60,12 +54,11 @@ npm run feishu:setup -- /absolute/private/path/feishu --complete
 {
   "id": "feishu",
   "kind": "feishu",
-  "credentialsFile": "/absolute/private/path/feishu/credentials.json",
-  "personalTools": true
+  "credentialsFile": "/absolute/private/path/feishu/credentials.json"
 }
 ```
 
-将它放进已有 Agent 的 `connections` 数组。`ownerOpenId` 从扫码结果绑定，默认不用手抄用户 ID。个人工具还需要前面的 `host` 配置。目录保留应用凭据、待完成授权、CLI 配置和工作文件，私有文件以 0600 写入。Linux 授权密文和密钥位于该目录的 `cli-data/lark-cli/`；macOS 使用官方 CLI 的系统 Keychain。不要把 macOS 配置复制到 Linux 后当作已完成授权，应在服务实际运行环境重新授权。
+将它放进已有 Agent 的 `connections` 数组。`ownerOpenId` 从扫码结果绑定，默认不用手抄用户 ID。目录保存应用凭据 `credentials.json`（appId、appSecretFile、domain、ownerOpenId）和 `app-secret`，私有文件以 0600 写入。
 
 Compose 已启动节点时，可在可写状态挂载里配置：
 
@@ -73,11 +66,9 @@ Compose 已启动节点时，可在可写状态挂载里配置：
 docker compose exec agent-service node dist/services/feishu/setup.js /state/connections/feishu
 ```
 
-容器里的连接配置引用 `/state/connections/feishu/credentials.json`；相应宿主目录需由容器用户拥有写权限。更新镜像后再运行此命令。保留整份目录，尤其 Linux 的 `cli-data`，才能在重启后刷新授权。
+容器里的连接配置引用 `/state/connections/feishu/credentials.json`；相应宿主目录需由容器用户拥有写权限。
 
-Agent Host 获得一个按连接命名的飞书工具，通过 Router 调用项目内固定版本的官方 CLI。日历、文档、云盘、通讯录等使用官方 `skills`、`schema` 和命令实现。CLI 自动刷新 token；授权缺失、失效或缺少用户 scope 时，工具返回原样授权链接，Router 自动续接用户确认。应用或管理员层面的权限缺失保留官方控制台指引，不通过重复个人授权解决。平台实际开放的能力仍以该应用和租户为准。
-
-个人工具仅给明确绑定的所有者私聊任务；从其他已绑定渠道发来的本人私聊也能使用。群聊、其他联系人和 A2A 请求不获得它。本地已登录的全局 `lark-cli` 配置不会自动迁移到 Router；它们是独立连接。
+Router 只以应用机器人身份收发消息，不提供以所有者用户身份访问日历、文档等个人资源的工具。需要时，由单独的连接器读取上述应用凭据并完成用户授权。旧配置里的 `personalTools` 字段仍可加载，但已被忽略。
 
 已有手动创建的机器人仍可以用 `appId`、`appSecretFile`、`domain`、`ownerAddresses` 配置纯聊天；它与 `credentialsFile` 互斥。手动应用需要启用机器人、长连接事件订阅、实际聊天范围所需的收信和发信权限。Router 使用官方 Channel 的规范化消息与发送接口，自己的队列负责执行串行。
 
@@ -105,7 +96,7 @@ Matrix 复用托管节点的 Application Service 身份和原同步进程；所�
 
 暂不知道飞书或 Telegram 用户 ID 时，先保持 `ownerAddresses: []`，给机器人发私聊，再读取状态的 `inbox[].sender`，核对身份后写入配置并重启。未绑定身份的消息会保存为 `ignored`，不会启动模型，也不会在后来修改绑定时自动重跑。
 
-飞书机器人加入群后，任何群成员 @机器人即可对话，不需要登记群或发送者。`groupIds` 和 `peerAddresses` 不限制飞书 IM 群聊；旧配置中的群 ID 也不会继续限制接收范围。群聊/话题不会共享私人主会话，不获得所有者的个人工具授权。
+飞书机器人加入群后，任何群成员 @机器人即可对话，不需要登记群或发送者。`groupIds` 和 `peerAddresses` 不限制飞书 IM 群聊；旧配置中的群 ID 也不会继续限制接收范围。群聊/话题不会共享私人主会话。
 
 飞书私聊和群聊在任务开始执行时，会从官方完整表情清单中均匀随机选一个，回应在原消息上；不按表情含义筛选。每轮选择持久保存，重试和重启不会重新抽取。表情作为回执保留在原消息上，完成、失败、取消或等待用户补充时都不撤回；重要进度、问题和正式答案仍正常发送。表情接口失败不会阻止答案投递。官方清单更新后可运行 `node scripts/update-feishu-emojis.mjs` 同步。
 
@@ -123,16 +114,6 @@ GET /_agent-router/v1/agents/{agentId}/communication
 
 返回连接启动状态与错误、最近 100 条 Inbox/Outbox 记录、Host 运行和待处理的原生交互；不返回平台 token。`started` 表示适配器启动成功，实时错误看 `error`，不能把它当成平台实时在线证明。首次连接失败和轮询登录过期会按 2–60 秒退避重试，并重读凭据；修复原凭据文件后可恢复。修改身份绑定或连接配置仍需要重启。邮件过期游标不会被自动重置。
 
-飞书个人授权沿用同一所有者认证：
-
-```text
-GET  .../communication/connections/{connectionId}/authorization
-POST .../communication/connections/{connectionId}/authorization/begin     {}
-POST .../communication/connections/{connectionId}/authorization/complete  {}
-```
-
-`begin` 返回完整授权链接和过期时间，device code 保存在私有目录；服务自动轮询，也可在用户确认后主动 `complete`。`status` 核对配置的 app 和扫码所有者，返回授权状态与 scope，不返回 token。这些接口不能用 worker 实例凭据调用。
-
 ## 接入检查
 
 配置完成后执行只读检查，不开始收信、不发消息、不调用模型：
@@ -144,7 +125,7 @@ npm run channels:check -- /absolute/path/channels.json \
   --node https://router.example --owner-token-file /absolute/private/path/owner-token
 ```
 
-输出逐项说明 `verified`、`needs_action`、`not_verified`。Host 验证服务和 runtime；飞书分别验证 bot 与个人授权；Telegram 验证 bot 和 webhook 冲突；邮件验证具体 inbox。微信不启动第二个收信进程，凭据文件检查后通过现有 Router 状态确认启动；Matrix 同样需要运行节点的状态。`verified` 仅表示该项说明中的检查通过，最终仍需本人发一条消息并收到回复，才能证明真实往返。存在 `needs_action` 时进程退出码为 1。
+输出逐项说明 `verified`、`needs_action`、`not_verified`。Host 验证服务和 runtime；飞书验证 bot；Telegram 验证 bot 和 webhook 冲突；邮件验证具体 inbox。微信不启动第二个收信进程，凭据文件检查后通过现有 Router 状态确认启动；Matrix 同样需要运行节点的状态。`verified` 仅表示该项说明中的检查通过，最终仍需本人发一条消息并收到回复，才能证明真实往返。存在 `needs_action` 时进程退出码为 1。
 
 Host 发起原生提问时，在同一认证范围下调用：
 
@@ -159,9 +140,9 @@ POST .../communication/calls/{callId}/result
 
 ## 恢复与发送语义
 
-Router 保存收到的消息、原始回复路径、执行绑定与发送记录；重启后观察已有 Host run，不重新提交模型请求。保留 Router SQLite、Host 服务状态和原生 Agent 会话存储才能延续原会话。runtime、稳定 instructions、工具定义、实例或 Host 地址变更需要显式迁移/新 Agent，不能直接改配置后把旧上下文接到另一个执行环境。这次新增稳定的 `channel` 工具，已有旧版 Host 绑定升级时需要显式迁移或新 Agent；首次添加 `personalTools` 同样如此。日后 token 刷新或重新授权不改变工具定义，可以继续原会话。
+Router 保存收到的消息、原始回复路径、执行绑定与发送记录；重启后观察已有 Host run，不重新提交模型请求。保留 Router SQLite、Host 服务状态和原生 Agent 会话存储才能延续原会话。runtime、稳定 instructions、工具定义、实例或 Host 地址变更需要显式迁移/新 Agent，不能直接改配置后把旧上下文接到另一个执行环境。这次新增稳定的 `channel` 工具，已有旧版 Host 绑定升级时需要显式迁移或新 Agent。
 
-工具调用按 Host run/call ID 保存执行与结果。已完成调用只重复回传保存的结果；CLI 写操作中断后不自动执行第二次。官方 CLI 的 `confirmation_required` 原样交给 Agent，只有所有者明确确认具体操作后才允许其加 `--yes`；Router 不代替 Agent 作业务决定。
+工具调用按 Host run/call ID 保存执行与结果。已完成调用只重复回传保存的结果；写操作中断后不自动执行第二次。
 
 Host 提交响应丢失或运行结果未知会标成 `unknown`，暂停该固定实例的领取，等待人工确认：
 
@@ -194,7 +175,7 @@ Grove Mail 的 `public_url` 与 API 地址不同时，在连接配置中增加 `
 
 ## 已验证范围
 
-`npm test` 覆盖跨渠道主会话、原路径回复、群聊隔离、游标、去重、分片回执、未知结果、实例撤销和重启恢复、纯附件往返、原生按钮/自由回答、取消/补充、流式更新与丢失回答响应重试，以及个人身份校验、并发授权续接、用户 scope 恢复、工具执行账本和只读接入检查。现有 Matrix/A2A 回归测试继续运行。
+`npm test` 覆盖跨渠道主会话、原路径回复、群聊隔离、游标、去重、分片回执、未知结果、实例撤销和重启恢复、纯附件往返、原生按钮/自由回答、取消/补充、流式更新与丢失回答响应重试，以及工具执行账本和只读接入检查。现有 Matrix/A2A 回归测试继续运行。
 
 真实 Agent Host 服务与 Codex 协议测试程序的集成验证：
 
@@ -203,4 +184,4 @@ npm run build
 node scripts/verify-agent-host.mjs /absolute/path/agent-host
 ```
 
-Host 项目需要先构建；脚本走其公开服务接口，验证托管 Router 装配、连续两轮、原生提问和原聊天回复，并用独立的 CLI 测试替身验证飞书工具请求/结果通过实际 Host HTTP broker 往返。测试不连接真实模型或 IM 账号；各平台真实凭据、应用权限、网络与账号可用性还需上线联调。
+Host 项目需要先构建；脚本走其公开服务接口，验证托管 Router 装配、连续两轮、原生提问和原聊天回复，并用一个测试替身产品工具验证工具请求/结果通过实际 Host HTTP broker 往返。测试不连接真实模型或 IM 账号；各平台真实凭据、应用权限、网络与账号可用性还需上线联调。

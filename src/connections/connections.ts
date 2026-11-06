@@ -26,7 +26,6 @@ interface JobRecord {
   error?: string;
   appId?: string | undefined;
   domain?: "feishu" | "lark";
-  personalTools?: boolean;
 }
 interface Job extends JobRecord {
   controller: AbortController;
@@ -135,7 +134,7 @@ export class ConnectionSetup {
     }
     const action = existsSync(file) ? "retry_binding"
       : existsSync(join(directory, "creation-pending.json")) || appId ? "authorize_existing_app" : "retry";
-    return { action, ...(appId ? { appId } : {}), domain, personalTools: job.personalTools ?? false };
+    return { action, ...(appId ? { appId } : {}), domain };
   }
   async close() {
     for (const job of this.jobs.values()) job.controller.abort();
@@ -185,7 +184,6 @@ export class ConnectionSetup {
     kind: "feishu" | "weixin" | "telegram",
     options: {
       domain?: "feishu" | "lark";
-      personalTools?: boolean;
       token?: string;
       appId?: string | undefined;
     },
@@ -199,12 +197,6 @@ export class ConnectionSetup {
       throw new WorkError("platform_already_connected", 409);
     if (this.configuration.configuration(agent)?.connections.some(connection => connection.id === kind))
       throw new WorkError("connection_id_already_used", 409);
-    if (
-      kind === "feishu" &&
-      options.personalTools &&
-      !this.configuration.configuration(agent)?.host
-    )
-      throw new WorkError("select_host_before_personal_tools", 409);
     for (const job of this.jobs.values())
       if (job.expiresAt < Date.now()) {
         job.controller.abort();
@@ -222,7 +214,7 @@ export class ConnectionSetup {
         !["ready", "failed"].includes(job.state),
     );
     if (prior) {
-      if (kind === "feishu" && ((options.appId && prior.appId !== options.appId) || prior.domain !== (options.domain ?? "feishu") || prior.personalTools !== (options.personalTools ?? false)))
+      if (kind === "feishu" && ((options.appId && prior.appId !== options.appId) || prior.domain !== (options.domain ?? "feishu")))
         throw new WorkError("connection_setup_in_progress", 409);
       return this.status(owner, agentId, prior.id);
     }
@@ -234,7 +226,7 @@ export class ConnectionSetup {
       state: "starting",
       expiresAt: Date.now() + 600_000,
       controller: new AbortController(),
-      ...(kind === "feishu" ? { domain: options.domain ?? "feishu", personalTools: options.personalTools ?? false, ...(options.appId ? { appId: options.appId } : {}) } : {}),
+      ...(kind === "feishu" ? { domain: options.domain ?? "feishu", ...(options.appId ? { appId: options.appId } : {}) } : {}),
     };
     this.jobs.set(job.id, job);
     this.save(job);
@@ -273,7 +265,7 @@ export class ConnectionSetup {
   private async feishu(
     owner: string,
     job: Job,
-    options: { domain?: "feishu" | "lark"; personalTools?: boolean; appId?: string | undefined },
+    options: { domain?: "feishu" | "lark"; appId?: string | undefined },
   ) {
     const directory = join(this.configuration.agentDirectory(job.agentId), "feishu"),
       file = join(directory, "credentials.json"), marker = join(directory, "creation-pending.json");
@@ -333,10 +325,8 @@ export class ConnectionSetup {
       delete job.url;
       job.expiresAt = Date.now() + 600_000;
       this.save(job);
-      // Personal tools keep stable definitions; personal consent happens on demand.
       await this.configuration.edit(owner, job.agentId, (config) => {
-        config.connections.push({ id: "feishu", kind: "feishu", credentialsFile: file,
-          personalTools: options.personalTools ?? false, domain,
+        config.connections.push({ id: "feishu", kind: "feishu", credentialsFile: file, domain,
           ownerAddresses: [], peerAddresses: [], groupIds: [] });
       }, this.signal(job));
     } finally {

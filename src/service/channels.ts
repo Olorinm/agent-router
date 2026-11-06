@@ -10,7 +10,7 @@ import { HttpAgentHost, type HostPort } from "../execution/host.js";
 import { RunObservation } from "../execution/observation.js";
 import { HostWorker } from "../execution/host-worker.js";
 import { WorkSessions } from "../execution/sessions.js";
-import { digest, key } from "../execution/protocol.js";
+import { key } from "../execution/protocol.js";
 import { ChannelTools } from "../communication/tools.js";
 import { personId, type IdentityProvider, type PersonRegistry } from "../ledger/registry.js";
 import { mailPairingCommand, pairingCommand, REPLIES, senderIdentities, type Identities } from "../ledger/identity.js";
@@ -19,7 +19,7 @@ import { LedgerControl } from "../ledger/control.js";
 import { ROOM_CONNECTION, WEB_CONNECTION } from "../ledger/surfaces.js";
 import type { HubRooms } from "../ledger/rooms.js";
 import type { OwnerAttachments } from "../ledger/blobs-hub.js";
-import type { ChannelAuthorization, ChannelFiles, ChannelTool } from "../channels/api.js";
+import type { ChannelFiles } from "../channels/api.js";
 import { channelModule, connectionSchema, findChannelModule, RoomChannel, WebChannel } from "../channels/registry.js";
 
 const file = z.string().min(1);
@@ -38,7 +38,7 @@ export const channelConfigSchema = z.object({ agents: z.array(agentChannelConfig
     if (agent.connections.some((item) => item.id === WEB_CONNECTION)) context.addIssue({ code: "custom", message: "connection_id_reserved_for_web" });
     if (agent.connections.some((item) => item.id === ROOM_CONNECTION)) context.addIssue({ code: "custom", message: "connection_id_reserved_for_room" });
     for (const item of agent.connections)
-      for (const message of findChannelModule(item.kind)?.validate?.(item, { host: Boolean(agent.host) }) ?? []) context.addIssue({ code: "custom", message });
+      for (const message of findChannelModule(item.kind)?.validate?.(item) ?? []) context.addIssue({ code: "custom", message });
   }
 });
 export type AgentChannelConfig = z.infer<typeof agentChannelConfigSchema>;
@@ -101,7 +101,6 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     matrix?: boolean | undefined } = {}): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
-  const authorizations = new Map<string, ChannelAuthorization>(), personalTools = new Map<string, ChannelTool>();
   // Ledger identity (ADR 0005 section 9): who is speaking, scoped by provider and namespace. Routing is unchanged.
   const owner = personId(agent.owner), namespaces = new Map<string, { provider: IdentityProvider; namespace: string }>();
   core.ownerPersonId = owner;
@@ -118,8 +117,6 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     if (definition.kind === "matrix" && options.matrix === false) continue;
     const channel = await channelModule(definition.kind).create(definition, context);
     const { adapter } = channel, ownerAddresses = channel.ownerAddresses ?? definition.ownerAddresses, namespace = channel.namespace ?? "";
-    if (channel.authorization) authorizations.set(definition.id, channel.authorization);
-    for (const tool of channel.tools ?? []) personalTools.set(tool.definition.name, tool);
     namespaces.set(definition.id, { provider: definition.kind, namespace });
     if (channel.mailPairing) mailPairing.add(definition.id);
     // Identity seeding is shadow data: a registry error never blocks the channel.
@@ -144,18 +141,10 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     worker = new HostWorker(agent.id, instance.id, connector.store, connector.cli,
       host, config.host.runtimeId,
       config.host.instructions, () => { connector.assertLease(); instance.validate(); }, (taskId, answer) => core.saveResult(taskId, answer),
-      { definitions: [channelTools.definition, ...[...personalTools.values()].map((tools) => tools.definition)],
-        instructions: "\nUse the channel tool to inspect native communication capabilities and send files or supported native content. Use the Feishu product tool for the owner's calendar, documents and other linked resources. Read its official skills/schema/help before unfamiliar commands. Personal authorization is managed by the communication service; never ask for tokens in chat or change CLI identity/configuration. If authorization is required, tell the owner to complete the connection's authorization flow. Follow official CLI confirmation requirements. Never automatically repeat an operation with an uncertain outcome.\n",
+      { definitions: [channelTools.definition],
+        instructions: "\nUse the channel tool to inspect native communication capabilities and send files or supported native content. Never automatically repeat an operation with an uncertain outcome.\n",
         allowed: (_conversationId, taskId) => Boolean(core.input(taskId)),
-        execute: async (call) => {
-          if (call.name === channelTools.definition.name) return channelTools.execute(call);
-          const binding = worker!.status().runs.find((run) => run.runId === call.runId);
-          if (!binding || !core.isOwnerTask(binding.conversationId, binding.taskId)) return { success: false, contentItems: [{ type: "inputText", text: "personal_tools_require_owner_conversation" }] };
-          return personalTools.get(call.name)!.execute(call, async (item) => {
-            const path = `.agent-host/attachments/${call.runId}/${digest(item.data)}/${item.name.replace(/[^\p{L}\p{N}_.-]/gu, "_")}`;
-            await host.writeFile!(binding.sessionId, path, item.data); return path;
-          });
-        } }, core, instance.wake, {
+        execute: (call) => channelTools.execute(call) }, core, instance.wake, {
           // Private groups (owner plus the owner's agents) get the owner's grants; mixed groups do not.
           admission: (contextId, taskId) => core.isOwnerTask(contextId, taskId) || core.isPrivateGroupOwnerTask(contextId, taskId)
             ? { kind: "owner", owner: agent.owner, agentId: agent.id, reference: taskId } : undefined,
@@ -180,8 +169,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   };
   return {
     start: async () => { await core.start(); loops = [loop(async () => { await core.reconnect(); await core.dispatch(); await core.flush(); }, 250),
-      ...(worker ? [loop(() => worker!.tick(), 1000)] : []),
-      ...(authorizations.size ? [loop(async () => { await Promise.allSettled([...authorizations.values()].map((account) => account.poll())); }, 5000)] : [])]; },
+      ...(worker ? [loop(() => worker!.tick(), 1000)] : [])]; },
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },
     status: () => {
       const status = core.status();
@@ -199,13 +187,6 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     },
     reconcile: async (claimId, runId) => { if (!worker) throw new Error("host_not_configured"); await worker.reconcile(claimId, runId); },
     closeUnknown: async (claimId) => { if (!worker) throw new Error("host_not_configured"); await worker.closeUnknown(claimId); },
-    authorization: async (connectionId, action) => {
-      connector.assertLease(); const account = authorizations.get(connectionId);
-      if (!account) throw new Error("connection_personal_authorization_not_configured");
-      if (action === "begin") return account.begin();
-      if (action === "complete") return account.complete();
-      return account.status(true);
-    },
     readAttachment: (inputId, reference) => core.readStoredAttachment(inputId, reference),
   };
 }

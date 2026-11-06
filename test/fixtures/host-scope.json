@@ -1,0 +1,82 @@
+{
+  "tools": [
+    {
+      "name": "channel",
+      "timeoutMs": 180000,
+      "description": "Use the current conversation's native channel capabilities. Inspect capabilities and nativeArguments first. message returns the received message and native metadata. send queues text, supported HTML/cards, or files from this Host session's workspace and returns a delivery receipt. Only state=accepted confirms submission; inspect delivery with deliveryId before claiming success. native invokes an advertised operation with the described args. Never claim an unsupported channel or model capability.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "capabilities",
+              "message",
+              "send",
+              "delivery",
+              "native"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "html": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "deliveryId": {
+            "type": "string"
+          },
+          "files": {
+            "maxItems": 30,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "mediaType": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "name",
+                "mediaType"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "card": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "nativeOperation": {
+            "type": "string"
+          },
+          "args": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "toolInstructions": "\nUse the channel tool to inspect native communication capabilities and send files or supported native content. Never automatically repeat an operation with an uncertain outcome.\n"
+}

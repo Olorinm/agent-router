@@ -11,7 +11,6 @@ the npm archive integrity are recorded in `vendor/upstream.json`.
 `scripts/update-weixin-transport.py --version 2.4.9` reproduces this extraction.
 The OpenClaw runtime is not included or required.
 
-Feishu uses the official Lark SDK 1.74.0 and official [`@larksuite/cli` 1.0.97](https://github.com/larksuite/cli)
-as npm dependencies. The latter installs its upstream checksum-verified binary and retains its MIT license.
+Feishu uses the official Lark SDK 1.74.0 as an npm dependency.
 Telegram uses grammY; their licenses
 remain with their distributed packages. Matrix continues to use the existing matrix-js-sdk transport.

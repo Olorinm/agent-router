@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { registerApp } from "@larksuiteoapi/node-sdk";
 import { ConnectionSetup, qrTerminal } from "../src/connections/connections.js";
 import { DurableStore } from "../src/communication/store.js";
-import { FeishuAccount, privateFile } from "../src/services/feishu/cli.js";
+import { privateFile } from "../src/services/feishu/cli.js";
 import {
   apiGetFetch,
   apiPostFetch,
@@ -109,19 +109,10 @@ function fixture() {
     },
   };
 }
-const verified = {
-  appId: "fixture-app",
-  ownerOpenId: "ou_fixture_owner",
-  authorized: true,
-  verified: true,
-  status: "authorized",
-  scope: [],
-  userName: "Fixture",
-};
 const appResult = (appId = "cli_fixture") => ({ client_id: appId, client_secret: "fixture-app-secret",
   user_info: { open_id: "ou_fixture_owner", tenant_brand: "feishu" } }) as any;
 const status = (f: ReturnType<typeof fixture>, id: string) => f.setup.status(f.agent.owner, f.agent.id, id);
-it("connects messaging after app consent without waiting for personal consent", async () => {
+it("connects messaging after app consent", async () => {
   const f = fixture();
   let completeApp!: () => void;
   const appWait = new Promise<void>((resolve) => { completeApp = resolve; });
@@ -130,8 +121,7 @@ it("connects messaging after app consent without waiting for personal consent", 
     await appWait;
     return appResult();
   });
-  const personal = vi.spyOn(FeishuAccount.prototype, "authorizationLink");
-  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", { personalTools: true });
+  const job = f.setup.begin(f.agent.owner, f.agent.id, "feishu", {});
   expect(job.state).toBe("application");
   expect(() => f.canDelete()).toThrow("connection_setup_running");
   expect(job.qr).toMatch(/^[ █▀▄\n]+$/);
@@ -139,8 +129,8 @@ it("connects messaging after app consent without waiting for personal consent", 
   expect(() => f.setup.status("@bob:example.test", f.agent.id, job.id)).toThrow("agent_not_found");
   completeApp();
   await vi.waitFor(() => expect(status(f, job.id).state).toBe("ready"));
-  expect(personal).not.toHaveBeenCalled();
-  expect(f.current.connections[0]).toMatchObject({ kind: "feishu", personalTools: true });
+  expect(f.current.connections[0]).toMatchObject({ kind: "feishu", credentialsFile: join(f.directory, "feishu", "credentials.json") });
+  expect(f.current.connections[0]).not.toHaveProperty("personalTools");
   expect(JSON.parse(readFileSync(join(f.directory, "feishu", "credentials.json"), "utf8")).ownerOpenId).toBe("ou_fixture_owner");
   expect(statSync(join(f.directory, "feishu", "app-secret")).mode & 0o777).toBe(0o600);
   expect(registerApp).toHaveBeenCalledWith(expect.objectContaining({ createOnly: true, source: "agent-router", addons: expect.any(Object) }));
@@ -381,16 +371,10 @@ it("does not save credentials if a canceled Weixin request returns late", async 
   );
   expect(f.current.connections).toHaveLength(0);
 });
-it("renders only HTTPS authorization QR links and requires Host before personal authorization", () => {
+it("renders only HTTPS authorization QR links", () => {
   expect(() => qrTerminal("javascript:alert(1)")).toThrow(
     "invalid_authorization_url",
   );
-  const f = fixture();
-  delete f.current.host;
-  expect(() =>
-    f.setup.begin(f.agent.owner, f.agent.id, "feishu", { personalTools: true }),
-  ).toThrow("select_host_before_personal_tools");
-  expect(registerApp).not.toHaveBeenCalled();
 });
 
 it("reuses confirmed Weixin consent after an interrupted configuration without a second QR login", async () => {

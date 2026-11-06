@@ -20,19 +20,16 @@ export async function checkChannels(configuration: ChannelConfiguration, node?: 
     if (node) try { live = await node.request(`/_agent-router/v1/agents/${encodeURIComponent(agent.agentId)}/communication`); } catch { /* Each channel will report unverified service state. */ }
     if (!agent.connections.length) checks.push({ agentId: agent.agentId, kind: "connections", status: "not_verified", detail: "No messaging connection configured; Host health does not verify channel access" });
     for (const connection of agent.connections) {
-      const extra: Check[] = [], module = channelModule(connection.kind);
+      const module = channelModule(connection.kind);
       const check: Check = { agentId: agent.agentId, connectionId: connection.id, kind: connection.kind, status: "not_verified", detail: "" };
       try {
         const result = await module.check?.(connection, files);
-        if (result) {
-          check.status = result.status; check.detail = result.detail;
-          for (const item of result.extra ?? []) extra.push({ agentId: agent.agentId, connectionId: connection.id, ...item });
-        }
+        if (result) { check.status = result.status; check.detail = result.detail; }
         const running = live?.connections?.find((item: { id: string }) => item.id === connection.id);
         if (node && (!running?.started || running?.error)) { check.status = "needs_action"; check.detail += "; Router connection is not running cleanly"; }
         else if (running && module.runningVerifies) { check.status = "verified"; check.detail += "; Router reports successful startup (send/receive still needs a real message)"; }
       } catch { check.status = "needs_action"; check.detail = `${connection.kind} credential/access check failed`; }
-      checks.push(check, ...extra);
+      checks.push(check);
     }
   }
   return checks;

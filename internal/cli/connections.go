@@ -15,10 +15,9 @@ import (
 )
 
 type connectionRecovery struct {
-	Action        string `json:"action"`
-	AppID         string `json:"appId,omitempty"`
-	Domain        string `json:"domain"`
-	PersonalTools bool   `json:"personalTools"`
+	Action string `json:"action"`
+	AppID  string `json:"appId,omitempty"`
+	Domain string `json:"domain"`
 }
 
 var feishuAppID = regexp.MustCompile(`^cli_[a-zA-Z0-9_]{1,128}$`)
@@ -103,7 +102,7 @@ func connectionPath(selected *agentSelection) string {
 }
 func (a *app) connectionCommand(command string, args []string) (bool, error) {
 	switch command {
-	case "connection-options", "connection-check", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair", "channel-auth":
+	case "connection-options", "connection-check", "channels", "channel-connect", "channel-jobs", "channel-job", "channel-pair":
 	default:
 		return false, nil
 	}
@@ -137,34 +136,6 @@ func (a *app) runConnections(command string, args []string) error {
 			return err
 		}
 		return a.connectionAPI(path+"/connection-jobs/"+url.PathEscape(args[0])+"/pairing", "POST", map[string]string{"code": code})
-	case "channel-auth":
-		action := "status"
-		if len(args) == 2 {
-			action = args[1]
-		}
-		if action != "status" && action != "begin" && action != "complete" {
-			return errors.New("authorization_action_must_be_status_begin_or_complete")
-		}
-		auth := "/agents/" + url.PathEscape(selected.Agent.ID) + "/communication/connections/" + url.PathEscape(args[0]) + "/authorization"
-		method, body := "GET", any(nil)
-		if action != "status" {
-			auth += "/" + action
-			method = "POST"
-			body = map[string]any{}
-		}
-		data, err := a.connectionRequest(auth, method, body)
-		if err != nil {
-			return err
-		}
-		var view struct {
-			VerificationURL string `json:"verificationUrl"`
-		}
-		if json.Unmarshal(data, &view) == nil && view.VerificationURL != "" {
-			if err = a.consent(view.VerificationURL, ""); err != nil {
-				return err
-			}
-		}
-		return a.output(data)
 	case "channel-connect":
 		return a.connectChannel(path, args[0])
 
@@ -185,7 +156,6 @@ func (a *app) connectChannel(path, kind string) error {
 			body["appId"] = a.o.feishuAppID
 		}
 		body["domain"] = a.o.domain
-		body["personalTools"] = !a.o.messagingOnly
 	case "telegram":
 		token, err := a.channelSecret(a.o.botTokenFile, "Telegram bot token")
 		if err != nil {
@@ -277,9 +247,6 @@ func (a *app) finishConnection(path string, data json.RawMessage) error {
 				}
 				if job.Recovery.Domain == "lark" {
 					command += " --domain lark"
-				}
-				if !job.Recovery.PersonalTools {
-					command += " --messaging-only"
 				}
 				fmt.Fprintln(a.errOut, "Recover the selected Agent with:", command)
 			}

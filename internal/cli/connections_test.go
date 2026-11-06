@@ -159,15 +159,15 @@ func TestFeishuRecoveryUsesExistingAppAndRetainsFailureInstructions(t *testing.T
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		if body["appId"] != "cli_fixture" || body["domain"] != "lark" || body["personalTools"] != false {
+		if body["appId"] != "cli_fixture" || body["domain"] != "lark" || body["personalTools"] != nil {
 			t.Errorf("wrong recovery request %v", body)
 		}
 		jsonResponse(w, 202, connectionJob{ID: "recovery", Kind: "feishu", State: "failed", Error: "feishu_authorization_expired",
-			Recovery: &connectionRecovery{Action: "authorize_existing_app", AppID: "cli_fixture", Domain: "lark", PersonalTools: false}})
+			Recovery: &connectionRecovery{Action: "authorize_existing_app", AppID: "cli_fixture", Domain: "lark"}})
 	})
 	store.selectAgent(selected)
-	out, diag, err := run(t, "--profile", "owner", "--allow-http", "channel-connect", "feishu", "--app-id", "cli_fixture", "--domain", "lark", "--messaging-only")
-	if err == nil || err.Error() != "feishu_authorization_expired" || !strings.Contains(out, "authorize_existing_app") || !strings.Contains(diag, "channel-connect feishu --app-id cli_fixture --domain lark --messaging-only") {
+	out, diag, err := run(t, "--profile", "owner", "--allow-http", "channel-connect", "feishu", "--app-id", "cli_fixture", "--domain", "lark")
+	if err == nil || err.Error() != "feishu_authorization_expired" || !strings.Contains(out, "authorize_existing_app") || !strings.Contains(diag, "channel-connect feishu --app-id cli_fixture --domain lark") {
 		t.Fatalf("%s %s %v", out, diag, err)
 	}
 	if _, _, err := run(t, "channel-connect", "matrix", "--app-id", "cli_fixture"); err == nil || err.Error() != "app_id_requires_feishu_channel_connect" {

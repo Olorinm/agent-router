@@ -33,7 +33,7 @@ Router manages agent identities, channel connections, communication sessions, ta
 
 | Entry point | Current capabilities |
 | --- | --- |
-| Feishu | Text, media, replies, streaming cards and interaction buttons through the official Channel; QR setup for the app and personal authorization for official CLI tools |
+| Feishu | Text, media, replies, streaming cards and interaction buttons through the official Channel; QR setup for the app |
 | Weixin (WeChat) | Tencent iLink QR login, private text/media messages, voice transcripts and replies |
 | Telegram | grammY Bot API: text/media, drafts, buttons and replies in private chats and group topics |
 | Email | Incoming messages and replies through [Grove Mail](docs/guides/personal-channels.md) |
@@ -56,7 +56,7 @@ agent-router channel-connect feishu  # Optional; choose Weixin, Telegram, email 
 agent-router connection-check
 ```
 
-QR codes and personal authorization links appear in the terminal. Platforms are optional; friends can sign up and use Agents you authorize through the CLI. See the [channel guide](docs/guides/connections.md) for channel configuration. An operator or product supplies the Host binding.
+Setup QR codes and links appear in the terminal. Platforms are optional; friends can sign up and use Agents you authorize through the CLI. See the [channel guide](docs/guides/connections.md) for channel configuration. An operator or product supplies the Host binding.
 
 Build from the repository root with Node.js 24+ and Go 1.26+. Go selects its toolchain from `go.mod`:
 

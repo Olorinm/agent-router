@@ -16,6 +16,24 @@ in the version-bump commit before tagging.
   adapters use only the public `src/channels/api.ts`; a test enforces these import boundaries. The
   connection configuration format, channel behavior and the `ServiceHttp`/`ChannelHttpError` exports
   are unchanged. See `docs/guides/adding-a-channel.md`.
+- Removed the Feishu personal (user-identity) tools. Router no longer runs the official Lark CLI,
+  contributes a Feishu product tool to Host runs, or polls personal authorization. Removed: the
+  `GET/POST /agents/:agentId/communication/connections/:connectionId/authorization[/:action]` routes,
+  `ServiceExtension.authorization`, the `feishu_personal` check entry, the `personalTools` option of
+  `POST /agents/:agentId/connections` (now rejected) and of failed-job `recovery`, the Go CLI
+  `channel-auth` command and `--messaging-only` flag, `npm run feishu:setup` personal authorization
+  (`--domains`, `--no-wait`, `--complete`), and the `@larksuite/cli` dependency. The channel API drops
+  `ChannelInstance.authorization`/`tools`, `ChannelAuthorization`, `ChannelTool` and
+  `ChannelCheckResult.extra`. Feishu messaging is unchanged; `credentials.json` and `app-secret` are
+  still written to the Agent's Feishu directory, so a separate connector can reuse the app.
+  `personalTools` in `channels.json` is still accepted and ignored.
+- **Upgrade: the Host scope changes for every Agent with a Host.** The tool instructions no longer
+  describe the Feishu tool, and Agents that had `personalTools: true` lose that tool definition.
+  `communication_host.scope` is not migrated, so a store with runs makes Router fail to start with
+  `host_binding_configuration_changed`. Before starting this version, with Router stopped and no
+  `running` or `unknown` run, delete the stored scope of each such Agent
+  (`DELETE FROM documents WHERE collection='communication_host' AND id='scope'` in
+  `agents/<agentId>.sqlite`). Router writes the new scope at start; execution sessions are kept.
 
 ## [0.7.0-alpha.11] - 2026-11-06
 
