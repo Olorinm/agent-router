@@ -111,17 +111,33 @@ describe("official channel contracts", () => {
       expect(c.messages).toHaveLength(1);
     } finally { await channel.stop(); }
   });
-  it("normalizes Feishu thread routes and uses the official Channel send API", async () => {
+  it.each([{ rootId: "root", threadId: undefined, routeId: "chat", inThread: false },
+    { rootId: "root", threadId: "topic", routeId: "chat:topic", inThread: true },
+    { rootId: undefined, threadId: "topic", routeId: "chat:topic", inThread: true }])("distinguishes Feishu quote replies from topics ($inThread, $rootId)", async ({ rootId, threadId, routeId, inThread }) => {
     const c = context(), send = vi.fn(async () => ({ messageId: "reply" }));
     const native = { on: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), botIdentity: { openId: "bot" }, send } as unknown as LarkChannel;
+    const stream = vi.fn(async (_target, content, _options) => {
+      await content.markdown({ messageId: "stream-reply", setContent: async () => {} });
+      return { messageId: "stream-reply" };
+    });
+    native.stream = stream;
     const channel = new FeishuChannel({ appId: "app", appSecret: "secret" }, native); await channel.start(c.value);
     const message: NormalizedMessage = { messageId: "input", chatId: "chat", chatType: "group", senderId: "owner", content: "hello",
-      resources: [], mentions: [], mentionAll: false, mentionedBot: true, rawContentType: "text", createTime: Date.now(), rootId: "root" };
+      resources: [], mentions: [], mentionAll: false, mentionedBot: true, rawContentType: "text", createTime: Date.now(),
+      ...(rootId ? { rootId } : {}), ...(threadId ? { threadId } : {}), replyToMessageId: "quoted" };
     channel.receive(message); const received = c.messages[0]!;
-    expect(received.threadId).toBe("chat:root"); expect(received.groupId).toBe("chat");
+    expect(received.threadId).toBe(routeId); expect(received.groupId).toBe("chat");
+    expect(received.quoted).toEqual({ messageId: "quoted" });
+    expect(received.forkFromThreadId).toBe(inThread ? "chat" : undefined);
     await channel.send({ connectionId: "channel", ...received.reply }, "中文🙂".repeat(1000), "key");
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[0]).toEqual(["chat", { text: "中文🙂".repeat(500) }, { replyTo: "input", replyInThread: true }]);
+    expect(send.mock.calls[0]).toEqual(["chat", { text: "中文🙂".repeat(500) }, { replyTo: "input", replyInThread: inThread }]);
+    await channel.sendContent({ connectionId: "channel", ...received.reply }, { text: "card", card: { elements: [] } }, "card");
+    expect(send.mock.calls.at(-1)).toEqual(["chat", { card: { elements: [] } }, { replyTo: "input", replyInThread: inThread }]);
+    await channel.progress({ connectionId: "channel", ...received.reply }, "partial", "stream", false);
+    await channel.progress({ connectionId: "channel", ...received.reply }, "done", "stream", true);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(stream.mock.calls[0]![2]).toEqual({ replyTo: "input", replyInThread: inThread });
   });
   it("does not disguise a Feishu receipt failure", async () => {
     const c = context(); c.value.receive = () => { throw new Error("disk_full"); };

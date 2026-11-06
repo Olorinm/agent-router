@@ -11,6 +11,7 @@ const messageSchema = z.object({
   externalId: z.string().min(1).max(512), sender: z.string().min(1).max(512), threadId: z.string().min(1).max(1024),
   scope: z.enum(["direct", "group"]), text: z.string().max(1_000_000),
   groupId: z.string().max(1024).optional(),
+  forkFromThreadId: z.string().min(1).max(1024).optional(),
   reply: z.object({ target: z.string().min(1).max(1024), messageId: z.string().max(512), data: z.record(z.string(), z.string().max(8192)) }).strict(),
   attachments: z.array(z.object({ id: z.string().max(1024), name: z.string().max(512), mediaType: z.string().max(100), kind: z.enum(["image", "audio", "video", "file", "sticker"]).optional(), data: z.record(z.string(), z.unknown()).optional() }).strict()).max(30).optional(),
   quoted: z.object({ messageId: z.string().optional(), text: z.string().optional() }).strict().optional(),
@@ -33,6 +34,8 @@ export interface InboxRecord {
   receivedAt: string; hash: string; state: "received" | "ignored" | "submitted" | "done";
   taskId?: string;
   reason?: string;
+  /** Server-derived, same-group parent context, pinned when the topic message arrives. */
+  forkFromContextId?: string;
 }
 export interface OutboxRecord {
   id: string; taskId: string | null; route: ReplyRoute; text: string;
@@ -181,7 +184,12 @@ export class CommunicationCore {
     const oversized = Buffer.byteLength(source.text) > 24_000;
     const conversationId = `c-${digest(key(this.agentId, source.scope === "direct" && owner ? "owner-main" :
       key(connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`;
+    // A provider topic may inherit only its own group's main session, never an owner DM or another group.
+    const parentId = source.scope === "group" && source.forkFromThreadId && source.forkFromThreadId === source.groupId && source.threadId !== source.groupId
+      ? `c-${digest(key(this.agentId, key(connectionId, "group", source.groupId, "group"))).slice(0, 40)}` : undefined;
+    const forkFromContextId = parentId && this.authoritative && this.ledger!.session(parentId) ? this.ledger!.contextFor(parentId) : parentId;
     const record: InboxRecord = { id, connectionId, source, conversationId, hash, receivedAt: new Date().toISOString(),
+      ...(forkFromContextId ? { forkFromContextId } : {}),
       replyRoute: { connectionId, ...source.reply }, state: allowed && (source.text.trim() || source.attachments?.length || source.action || source.event) && !oversized ? "received" : "ignored",
       ...(oversized ? { reason: "input_too_large" } : {}) };
     const commit = () => {

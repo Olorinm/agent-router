@@ -159,6 +159,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   if (worker || control) core.control = async (input) => Boolean(await control?.command(input)) || Boolean(await worker?.handleInput(input));
   const sessions = worker ? new WorkSessions(agent.id, agent.owner, config.host!.runtimeId, worker.instanceId,
     connector.store, connector.cli, worker.host, core, () => connector.assertLease(), input => worker!.dependencyWait(input)) : undefined;
+  if (worker && sessions) worker.prepareSession = (contextId, taskId) => sessions.prepareChannelSession(contextId, taskId);
   const controller = new AbortController();
   let loops: Promise<void>[] = [];
   const loop = async (operation: () => Promise<void>, interval: number) => {

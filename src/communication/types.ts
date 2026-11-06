@@ -32,6 +32,8 @@ export interface ChannelMessage {
   threadId: string;
   scope: "direct" | "group";
   groupId?: string | undefined;
+  /** An explicit provider topic can fork its group's main conversation on first use. */
+  forkFromThreadId?: string | undefined;
   text: string;
   reply: Omit<ReplyRoute, "connectionId">;
   attachments?: AttachmentReference[] | undefined;

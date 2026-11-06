@@ -69,10 +69,12 @@ export class FeishuChannel implements ChannelAdapter {
     if (!this.channel.botIdentity) { this.context.error("feishu_identity_unavailable"); throw new Error("feishu_identity_unavailable"); }
     bindAccount(this.context, this.channel.botIdentity.openId);
     try { const received: ChannelMessage = { externalId: message.messageId, sender: message.senderId,
-      threadId: message.rootId || message.threadId ? `${message.chatId}:${message.rootId || message.threadId}` : message.chatId,
+      // rootId describes ordinary reply ancestry too; only threadId identifies an actual topic.
+      threadId: message.threadId ? `${message.chatId}:${message.threadId}` : message.chatId,
+      ...(message.threadId && message.chatType === "group" ? { forkFromThreadId: message.chatId } : {}),
       scope: message.chatType === "p2p" ? "direct" : "group", text: message.content,
       ...(message.chatType === "group" ? { groupId: message.chatId } : {}),
-      reply: { target: message.chatId, messageId: message.messageId, data: { inThread: String(Boolean(message.threadId || message.rootId)) } },
+      reply: { target: message.chatId, messageId: message.messageId, data: { inThread: String(Boolean(message.threadId)) } },
       attachments: message.resources.map((resource) => ({ id: resource.fileKey, name: resource.fileName ?? resource.type,
         kind: resource.type, mediaType: resource.type === "image" ? "image/*" : resource.type === "audio" ? "audio/ogg" : resource.type === "video" ? "video/mp4" : "application/octet-stream" })),
       ...(message.replyToMessageId ? { quoted: { messageId: message.replyToMessageId } } : {}),
@@ -87,9 +89,10 @@ export class FeishuChannel implements ChannelAdapter {
     const message = result.data?.items?.[0];
     if (!message?.chat_id || chatId && message.chat_id !== chatId) throw new Error("feishu_callback_scope_mismatch");
     const chat = await this.channel.getChatInfo(message.chat_id);
-    return { externalId: messageId, sender, threadId: message.root_id || message.thread_id ? `${message.chat_id}:${message.root_id || message.thread_id}` : message.chat_id,
+    return { externalId: messageId, sender, threadId: message.thread_id ? `${message.chat_id}:${message.thread_id}` : message.chat_id,
+      ...(message.thread_id && chat.chatType === "group" ? { forkFromThreadId: message.chat_id } : {}),
       scope: chat.chatType === "p2p" ? "direct" : "group", ...(chat.chatType === "group" ? { groupId: message.chat_id } : {}), text: "",
-      reply: { target: message.chat_id, messageId, data: { inThread: String(Boolean(message.root_id || message.thread_id)) } } };
+      reply: { target: message.chat_id, messageId, data: { inThread: String(Boolean(message.thread_id)) } } };
   }
   private remember(route: ReplyRoute, id: string) {
     const source = this.context.checkpoint<ChannelMessage>(`message:${route.messageId}`);

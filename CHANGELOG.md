@@ -4,6 +4,14 @@ Notable changes to Agent Router, newest first. Pushing a `v*` tag publishes a Gi
 notes are this file's section for that version (`.github/workflows/release.yml`), so add the section
 in the version-bump commit before tagging.
 
+## [0.7.0-alpha.13] - 2026-11-06
+
+- Keep ordinary Feishu quote replies in their existing conversation and reply normally. Only an explicit
+  provider `thread_id` selects topic routing; reply ancestry no longer creates topics or changes sessions.
+- Fork a group's existing native Host session before its first topic turn, preserving the group's context
+  while subsequent topic messages continue independently. Keep reset windows and group permission boundaries,
+  and fail closed when a native fork fails or its outcome is unconfirmed.
+
 ## [0.7.0-alpha.12] - 2026-11-06
 
 - Removed the legacy operator channel path: `ChannelRouter` with its allow/ask/deny visitor approvals,
