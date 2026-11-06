@@ -3,7 +3,7 @@ import { DurableStore } from "../communication/store.js";
 import { digest } from "../execution/protocol.js";
 import type { RunBinding } from "../execution/host-worker.js";
 import { WorkError } from "../execution/work.js";
-import { conversationKey, legacySession, ulid, type AgentLedger, type LedgerEvent, type LedgerSession } from "./ledger.js";
+import { cardSource, conversationKey, legacySession, ulid, type AgentLedger, type LedgerEvent, type LedgerSession } from "./ledger.js";
 import { WEB_CONNECTION, webAccount, webTarget } from "../channels/web.js";
 import { OWNER_HUB_V1 } from "./schema.js";
 
@@ -37,7 +37,7 @@ export interface HubSocket {
 }
 export const LIMITS = { pageEvents: 200, pageBytes: 1024 * 1024, deltaGap: 1000, socketReplayEvents: 500, socketReplayBytes: 1024 * 1024, subscriptions: 200 };
 const fields: Record<string, string[]> = {
-  message: ["text", "html", "attachments", "mentions", "replyTo", "final", "possibleDuplicate", "quoted", "media", "event", "truncated", "redacted"],
+  message: ["text", "html", "attachments", "mentions", "replyTo", "final", "possibleDuplicate", "quoted", "media", "event", "truncated", "redacted", "steer"],
   notice: ["text", "level"], action: ["targetCardId", "label"], card: ["card"], "card.update": ["cardId", "status", "answeredBy", "summary"],
   turn: ["agentId", "state", "inputEventIds", "error"], delivery: ["targetEventId", "delivery"], edit: ["targetEventId", "text"],
   redaction: ["targetEventId"], reaction: ["targetEventId", "key", "removed"], window: ["window", "reason"], member: ["action", "member", "title"],
@@ -95,8 +95,10 @@ export class OwnerHub {
     if (event.kind === "delivery" && picked.delivery) picked.delivery = deliveryState(picked.delivery as Record<string, unknown>);
     if (event.kind === "card" && picked.card) {
       const card = picked.card as Record<string, unknown>, current = history ? ledger.card(String(card.cardId)) : undefined;
-      picked.card = { ...card, status: current?.status ?? "pending" };
+      picked.card = { ...card, source: card.source ?? cardSource(String(card.callId ?? "")), status: current?.status ?? "pending" };
     }
+    if (event.kind === "card.update" && typeof picked.answeredBy === "string")
+      picked.answeredBy = this.actor(agentId, { senderType: "person", senderId: picked.answeredBy });
     if (history && event.kind === "message") {
       const deliveries = ledger.deliveriesFor(event.eventId).filter((item) => item.purpose !== "activity");
       if (deliveries.length) picked.deliveries = deliveries.map((item) => deliveryState({ deliveryId: item.deliveryId, connectionId: item.connectionId,
@@ -353,6 +355,18 @@ export class OwnerHub {
   roomEventByKey(roomId: string, idempotencyKey: string): string | undefined {
     return this.store.db.prepare("SELECT event_id FROM hub_room_events WHERE room_id=? AND idempotency_key=?").get(roomId, idempotencyKey)?.event_id as string | undefined;
   }
+  /** Idempotent HTTP commands other than send (ADR 4.2 `hub_commands`): card answers, steer, reset, purge. */
+  command(personId: string, idempotencyKey: string): { hash: string; response: Record<string, unknown> } | undefined {
+    const row = this.store.db.prepare("SELECT request_hash, response FROM hub_commands WHERE person_id=? AND idempotency_key=?").get(personId, idempotencyKey);
+    return row ? { hash: String(row.request_hash), response: JSON.parse(String(row.response)) as Record<string, unknown> } : undefined;
+  }
+  saveCommand(personId: string, idempotencyKey: string, hash: string, response: Record<string, unknown>, at = Date.now()): void {
+    this.store.db.prepare(`INSERT INTO hub_commands(person_id,idempotency_key,request_hash,response,created_at) VALUES(?,?,?,?,?)
+      ON CONFLICT(person_id,idempotency_key) DO UPDATE SET response=excluded.response WHERE request_hash=excluded.request_hash`)
+      .run(personId, idempotencyKey, hash, JSON.stringify(response), at);
+  }
+  /** After a purge the chat restarts at seq 1: read markers of the old generation are dropped. */
+  clearRead(chatId: string): void { this.store.db.prepare("DELETE FROM hub_read_markers WHERE chat_id=?").run(chatId); }
   close(): void { for (const entry of this.streams.values()) clearTimeout(entry.timer); this.store.close(); }
 }
 function deliveryState(value: Record<string, unknown>) {

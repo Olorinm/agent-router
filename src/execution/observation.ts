@@ -5,6 +5,7 @@ import type { HostPort, HostRun } from "./host.js";
 import type { ExecutionSession, RunBinding } from "./host-worker.js";
 import { CliWork, WorkError } from "./work.js";
 import { archiveRun, archivedEvents, runArchive } from "./run-archive.js";
+import { AgentLedger } from "../ledger/ledger.js";
 
 export interface TaskFilter {
   connectionId?: string | undefined;
@@ -132,7 +133,9 @@ export class RunObservation {
     await this.request(() => this.host.resolve(run.id, callId, result));
   }
   async cancel(taskId: string) {
-    if (!this.store.entries<InboxRecord>("communication_inbox").some(({ value }) => value.taskId === taskId))
+    // Turns of every admission (channel, work, schedule) are in the ledger (ADR 16.2); the inbox scan is the legacy scope.
+    const ledger = AgentLedger.attached(this.store);
+    if (!ledger?.turn(taskId) && !this.store.entries<InboxRecord>("communication_inbox").some(({ value }) => value.taskId === taskId))
       throw new WorkError("task_not_found", 404);
     await this.work.cancel(taskId);
   }

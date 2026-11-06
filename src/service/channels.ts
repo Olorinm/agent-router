@@ -23,6 +23,7 @@ import { FeishuTools } from "../services/feishu/tools.js";
 import { personId, type IdentityProvider, type PersonRegistry } from "../ledger/registry.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { WEB_CONNECTION, WebChannel } from "../channels/web.js";
+import { LedgerControl } from "../ledger/control.js";
 
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 const file = z.string().min(1);
@@ -176,9 +177,13 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
           admission: (contextId, taskId) => core.isOwnerTask(contextId, taskId) || core.isPrivateGroupOwnerTask(contextId, taskId)
             ? { kind: "owner", owner: agent.owner, agentId: agent.id, reference: taskId } : undefined,
         });
-    core.control = (input) => worker!.handleInput(input);
   }
   const observation = worker ? new RunObservation(connector.store, connector.cli, worker.host) : undefined;
+  // Phase 4 (ADR 0005 section 16): one card record for every answer surface, and owner control over the session.
+  const control = core.ledger ? new LedgerControl({ agentId: agent.id, ownerPersonId: owner, store: connector.store, ledger: core.ledger, core,
+    work: connector.cli, observation, host: worker?.host, ...(worker ? { closeUnknown: (claimId: string) => worker!.closeUnknown(claimId) } : {}) }) : undefined;
+  if (worker) worker.control = control;
+  if (worker || control) core.control = async (input) => Boolean(await control?.command(input)) || Boolean(await worker?.handleInput(input));
   const sessions = worker ? new WorkSessions(agent.id, agent.owner, config.host!.runtimeId, worker.instanceId,
     connector.store, connector.cli, worker.host, core, () => connector.assertLease(), input => worker!.dependencyWait(input)) : undefined;
   const controller = new AbortController();
@@ -195,10 +200,15 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       ...(accounts.size ? [loop(async () => { await Promise.allSettled([...accounts.values()].map((account) => account.pollAuthorization())); }, 5000)] : [])]; },
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },
     status: () => ({ ...core.status(), host: worker?.status() ?? null }),
-    communication: core, ...(web ? { web } : {}),
+    communication: core, ...(web ? { web } : {}), ...(control ? { control } : {}),
     ...(observation ? { observation } : {}),
     ...(sessions ? { sessions } : {}),
-    resolve: async (callId, result) => { if (!worker) throw new Error("host_not_configured"); await worker.resolve(callId, result); },
+    resolve: async (callId, result) => {
+      if (!worker) throw new Error("host_not_configured");
+      const call = worker.status().calls.find((item) => item.id === callId);
+      if (!control || !call) { await worker.resolve(callId, result); return "accepted"; }
+      return control.record(call.runId, callId, { by: owner, surface: "run-api", result }, () => worker!.resolve(callId, result));
+    },
     reconcile: async (claimId, runId) => { if (!worker) throw new Error("host_not_configured"); await worker.reconcile(claimId, runId); },
     closeUnknown: async (claimId) => { if (!worker) throw new Error("host_not_configured"); await worker.closeUnknown(claimId); },
     authorization: async (connectionId, action) => {

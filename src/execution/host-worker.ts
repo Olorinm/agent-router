@@ -12,6 +12,7 @@ import type { HostTools, HostToolResult } from "./tools.js";
 import type { WorkDependencyWait } from "./sessions.js";
 import { AgentLedger, type TurnState } from "../ledger/ledger.js";
 import { shadowOutbox } from "../ledger/shadow.js";
+import { cardBody, cardKind, type LedgerControl } from "../ledger/control.js";
 
 interface ToolReceipt { hash: string; phase: "executing" | "completed" | "uncertain"; result?: HostToolResult; }
 
@@ -30,6 +31,8 @@ export class HostWorker {
   private readonly pendingByRun = new Map<string, HostCall[]>();
   private readonly dependencyWaits = new Map<string, WorkDependencyWait>();
   lastError = "";
+  /** Phase 4 card and control ledger (ADR 0005 section 16); absent without an agent ledger. */
+  control?: LedgerControl | undefined;
   constructor(readonly agentId: string, readonly instanceId: string, readonly store: DurableStore, readonly work: CliWork,
     readonly host: HostPort, readonly runtimeId: string, readonly instructions = "", private readonly validate: () => void = () => {},
     private readonly saveResult: (taskId: string, answer: string) => boolean = () => false, readonly tools?: HostTools, readonly communication?: CommunicationCore,
@@ -61,6 +64,8 @@ export class HostWorker {
         throw error;
       }
       if (!this.connected) { await this.host.connect(); this.connected = true; }
+      // Planned card answers whose Host call did not complete (ADR 16.1 step 6) are resolved again.
+      await this.control?.reresolve().catch(() => undefined);
       for (const binding of uncertain) if (binding.requestKey && this.host.findRun && this.host.supportsRunLookup !== false && !this.observing.has(binding.claimId)) {
         this.launch(binding.claimId, async () => {
           const found = await this.host.findRun!(this.session(binding.contextId).runtimeId, binding.requestKey!);
@@ -235,7 +240,7 @@ export class HostWorker {
           binding = { ...binding, phase: rejected ? "finished" : "unknown", error: preparationError ?? (rejected ? "host_submission_rejected" : "host_submission_unknown") };
           this.store.set("communication_runs", claim.claimId, binding);
           this.work.update(claim.claimId, rejected ? "fail" : "progress", rejected ? "执行服务未接受本轮请求，请检查配置与运行状态。" : "本轮是否已经执行暂时无法确认，系统不会自动重复执行。", undefined, this.instanceId);
-          if (rejected) this.finishWork(claim.id, "failed"); else this.turn(claim.id, "unknown", binding.error);
+          if (rejected) this.finishWork(claim.id, "failed"); else { this.turn(claim.id, "unknown", binding.error); this.ledger(() => this.control?.unknownTurn(binding!)); }
           return;
         }
       }
@@ -263,12 +268,15 @@ export class HostWorker {
             this.launchTool(call, this.tools.allowed(binding.contextId, binding.taskId));
         }
         if (this.communication) for (const call of calls) if (call.kind === "interaction") this.present(binding, call);
+        // A call that left `pending` without a Router answer closes its card (answered in the Host, or expired).
+        this.ledger(() => this.control?.observe(binding!.runId!, calls));
         return;
       }
       for (const { id, value } of this.store.entries<any>("communication_questions")) if (value.call.runId === binding.runId) {
         this.store.set("communication_questions", id, { ...value, closed: true });
-        this.ledger((ledger) => ledger.cardStatus(HostWorker.card(value.call), "expired"));
+        if (!this.control) this.ledger((ledger) => ledger.cardStatus(HostWorker.card(value.call), "expired"));
       }
+      this.ledger(() => this.control?.ended(binding!.runId!));
       this.pendingByRun.delete(binding.runId); this.refreshPending();
       this.validate();
       const current = this.work.inspect(claim.claimId);
@@ -276,7 +284,7 @@ export class HostWorker {
       if (result.outcome?.outcomeUnknown) {
         this.store.set("communication_runs", claim.claimId, { ...binding, phase: "unknown", error: "host_outcome_unknown" });
         this.work.update(claim.claimId, "progress", "执行中断，结果尚未确认，系统不会自动重复执行。", undefined, this.instanceId);
-        this.turn(claim.id, "unknown", "host_outcome_unknown"); return;
+        this.turn(claim.id, "unknown", "host_outcome_unknown"); this.ledger(() => this.control?.unknownTurn(binding!)); return;
       }
       if (current.cancelRequested) this.work.update(claim.claimId, "cancelled", "已取消。", undefined, this.instanceId);
       else if (result.status === "completed") {
@@ -386,18 +394,23 @@ export class HostWorker {
     this.ledger((ledger) => {
       const cardId = HostWorker.card(call), sessionKey = ledger.sessionForContext(binding.contextId);
       if (!sessionKey || ledger.card(cardId)) return;
-      const kind = view.sensitive ? "sensitive" : call.id.startsWith("mau-approval:") ? "connector_approval" : view.choices.length ? "approval" : "question";
-      const deadline = Date.parse(call.deadlineAt);
+      const kind = cardKind(call, Boolean(view.sensitive)), deadline = Date.parse(call.deadlineAt);
+      const card = cardBody({ cardId, agentId: this.agentId, turnId: binding.taskId, claimId: binding.claimId, call, text: view.text,
+        choices: view.choices.map((choice) => choice.label), kind });
       const event = ledger.append(sessionKey, { kind: "card", role: "assistant", senderType: "agent", senderId: this.agentId, turnId: binding.taskId,
-        idempotencyKey: `card:${cardId}`, body: { card: { cardId, agentId: this.agentId, turnId: binding.taskId, claimId: binding.claimId, callId: call.id, kind,
-          text: view.text, choices: view.choices.map((choice, index) => ({ choiceId: String(index), label: choice.label })),
-          freeText: !view.sensitive && !view.choices.length, deadlineAt: Number.isFinite(deadline) ? new Date(deadline).toISOString() : null } } }).event;
+        idempotencyKey: `card:${cardId}`, body: { card } }).event;
       ledger.addCard({ cardId, callId: call.id, runId: call.runId, claimId: binding.claimId, turnId: binding.taskId, sessionKey, eventId: event.eventId,
         kind, deadlineAt: Number.isFinite(deadline) ? deadline : null });
       buttons.forEach((button, index) => ledger.addCardToken(button.token, cardId, String(index), view.choices[index]!.result));
       const notice = this.store.get<import("../communication/core.js").OutboxRecord>("communication_outbox", noticeId);
       if (notice) shadowOutbox(ledger, core.shadowContext, input, notice, "card", null, event.eventId);
     });
+  }
+  /** Execution contexts of later windows (`<key>.w<n>`) belong to the same session (ADR 16.3). */
+  private sessionOf(contextId: string): string { return AgentLedger.attached(this.store)?.sessionForContext(contextId) ?? contextId; }
+  private answerer(input: InboxRecord): string | null {
+    const core = this.communication;
+    return core?.isOwnerInput(input) ? core.ownerPersonId ?? null : core?.persons?.(input.connectionId, input.source.sender) ?? null;
   }
   async handleInput(input: InboxRecord): Promise<boolean> {
     const core = this.communication; if (!core) return false;
@@ -407,13 +420,14 @@ export class HostWorker {
       if (!receipt.complete) { await this.host.resolve(receipt.runId, receipt.callId, receipt.result); this.store.set("communication_control_receipts", input.id, { ...receipt, complete: true }); }
       const question = this.store.get<any>("communication_questions", receipt.callId);
       if (question) this.store.set("communication_questions", receipt.callId, { ...question, closed: true });
-      this.ledger((ledger) => ledger.cardStatus(HostWorker.card({ runId: receipt.runId, id: receipt.callId } as HostCall), "answered"));
+      this.ledger((ledger) => this.control ? this.control.commitChat({ runId: receipt.runId, id: receipt.callId }, { by: this.answerer(input), result: receipt.result })
+        : ledger.cardStatus(HostWorker.card({ runId: receipt.runId, id: receipt.callId } as HostCall), "answered"));
       core.notice(input, "已收到回答，继续执行。", "answer");
       return true;
     }
-    const active = this.store.entries<RunBinding>("communication_runs").map(({ value }) => value).reverse().find((item) => item.contextId === input.conversationId && item.phase === "running");
+    const active = this.store.entries<RunBinding>("communication_runs").map(({ value }) => value).reverse().find((item) => this.sessionOf(item.contextId) === input.conversationId && item.phase === "running");
     if (/^(\/(?:cancel|stop)(?:@\w+)?|停止|停一下|取消|取消当前任务)$/i.test(text)) {
-      const task = active?.taskId ?? this.work.list().find((item) => item.contextId === input.conversationId)?.id;
+      const task = active?.taskId ?? this.work.list().find((item) => this.sessionOf(item.contextId) === input.conversationId)?.id;
       const original = task ? core.input(task) : undefined;
       if (original && original.source.sender !== input.source.sender && !(core.isOwnerInput(input) && core.isOwnerInput(original))) { core.notice(input, "这轮任务属于另一位发送者。", "control-scope"); return true; }
       if (task) await this.work.cancel(task);
@@ -429,7 +443,7 @@ export class HostWorker {
     let action: { callId: string; result: unknown } | undefined;
     if (input.source.action) action = this.store.get("communication_actions", input.source.action.token);
     const candidates = this.store.entries<any>("communication_questions").map(({ value }) => value).filter((item) =>
-      !item.closed && item.conversationId === input.conversationId && (item.connectionId === input.connectionId && item.source.sender === input.source.sender || core.isOwnerInput(input) && core.isOwnerTask(item.conversationId, item.taskId)) &&
+      !item.closed && this.sessionOf(item.conversationId) === input.conversationId && (item.connectionId === input.connectionId && item.source.sender === input.source.sender || core.isOwnerInput(input) && core.isOwnerTask(item.conversationId, item.taskId)) &&
       (!input.source.quoted?.messageId || this.store.get<any>("communication_outbox", item.noticeId)?.externalId?.split(",").includes(input.source.quoted.messageId)) &&
       (!action || item.call.id === action.callId) && Date.parse(item.call.deadlineAt) > Date.now());
     if (!candidates.length) return false;
@@ -442,12 +456,21 @@ export class HostWorker {
     let result;
     try { result = action ? action.result : interaction(call).answer(text.replace(/^\/answer\s+/i, "")); }
     catch { core.notice(input, "答案格式不正确，请根据问题中的选项或填写说明重试。", "invalid-answer"); return true; }
+    const by = this.answerer(input);
+    const summary = action ? interaction(call).choices.find((choice) => JSON.stringify(choice.result) === JSON.stringify(result))?.label ?? "" : Array.from(text).slice(0, 140).join("");
+    // The first answer from any surface wins (ADR 16.1): a card answered in the web or run view makes this one stale.
+    let gate: string | undefined;
+    this.ledger(() => { gate = this.control?.planChat(call, { inputId: input.id, by, result, summary }); });
+    if (gate === "stale") {
+      this.store.set("communication_questions", call.id, { ...question, closed: true });
+      core.notice(input, "这个问题已在其他入口回答。", "answer-stale"); return true;
+    }
     const planned = { runId: call.runId, callId: call.id, result, complete: false };
     this.store.set("communication_control_receipts", input.id, planned);
     await this.host.resolve(call.runId, call.id, result);
     this.store.set("communication_control_receipts", input.id, { ...planned, complete: true });
     this.store.set("communication_questions", call.id, { ...question, closed: true });
-    this.ledger((ledger) => ledger.cardStatus(HostWorker.card(call), "answered", { summary: action ? "" : text.slice(0, 140) }));
+    this.ledger((ledger) => this.control ? this.control.commitChat(call, { by, result, summary }) : ledger.cardStatus(HostWorker.card(call), "answered", { summary }));
     core.notice(input, "已收到回答，继续执行。", "answer"); return true;
   }
   status() { return { instanceId: this.instanceId, runtimeId: this.runtimeId, error: this.lastError || null,
@@ -500,6 +523,7 @@ export class HostWorker {
     if (result.sessionId !== binding.sessionId || result.runtimeId !== this.session(binding.contextId).runtimeId || result.outcome?.outcomeUnknown) throw new WorkError("host_run_not_reconcilable");
     this.store.set("communication_runs", claimId, { ...binding, phase: "running", runId });
     this.turn(binding.taskId, "running");
+    this.ledger(() => this.control?.unknownSettled(binding.taskId));
   }
   /** Close a stopped, uncertain turn after owner inspection. This never submits another run. */
   async closeUnknown(claimId: string): Promise<void> {
@@ -512,5 +536,6 @@ export class HostWorker {
     this.store.set("communication_runs", claimId, { ...binding, phase: "finished", error: "unknown_run_closed_by_owner" });
     this.work.update(claimId, current.cancelRequested ? "cancelled" : "fail", "本轮执行已结束；未确认的结果需要人工检查。", undefined, this.instanceId);
     this.finishWork(binding.taskId, current.cancelRequested ? "canceled" : "failed");
+    this.ledger(() => this.control?.unknownSettled(binding.taskId));
   }
 }

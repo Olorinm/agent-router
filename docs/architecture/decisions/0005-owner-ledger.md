@@ -2109,3 +2109,66 @@ Final shapes:
 The reply arrives on the socket as `chat.event` frames: `turn` (`queued`, `running`), the assistant `message` with
 `final: true`, `channel: { kind: "web" }` and the turn's `turnId`, then `turn` `completed`.
 
+
+## Implementation notes (phase 4: cards and control)
+
+Phase 4 cards and control are implemented in `src/ledger/control.ts` (`LedgerControl`, one per agent channel runtime) and the web
+routes in `src/ledger/web.ts`. Attachments (16.5) are a separate change. These choices fill gaps in section 16 or deviate from it:
+
+1. **Flags.** `ServiceConfig.ledgerCards` (`AGENT_LEDGER_CARDS=1`) and `ServiceConfig.ledgerControl` (`AGENT_LEDGER_CONTROL=1`), each
+   effective only with `ledgerSend` (and so `ledgerRead`). They set `GET /me` → `limits.features.cards` / `.reset` and
+   `AgentLedger.features`. Off: the routes are 404, and card answers from the chat, the run API and Mau's call endpoint are still
+   recorded into the one card record after the Host accepted them (shadow), without first-answer-wins gating.
+2. **Schema.** The 16.8 agent-ledger step is migration **4** (`AGENT_LEDGER_V4`), because phase 3 shipped step 3. It also adds
+   `ledger_cards.answer_summary` (the label shown by `card.update`) and indexes on `(run_id, call_id)` and
+   `ledger_card_tokens(card_id, choice_id)`.
+3. **Card body.** `card` events now carry `source`, `native: { method, params }` (the Host call name and input, for
+   `describeInteraction` and the console's approval view) and `freeText: true` for every `question` card (including questions
+   with options). `kind` is `approval` only for `approval`, `permission`, `*requestApproval` and `session/request_permission` calls;
+   `mau-handoff:` cards are `question`. `card.update.answeredBy` is rendered as an `Actor`.
+4. **Answer flow** (16.1): scope → `hub_commands` (a `{planned:true}` row is written before the work, so a retry after a crash
+   runs again; the final response is stored only for `accepted`) → state → result → plan → `RunObservation.resolve` → commit. Host
+   errors: 404 → card `expired`, `stale`; 409 → plan dropped, `stale`; 400/422 → plan dropped, 422 `invalid_answer` with the Host
+   code as `detail`; anything else → 503 `card_answer_pending` (`retryAfterMs`), plan kept. The worker re-resolves planned cards
+   older than 5 s on each tick. A retry with the key whose planned answer the worker completed returns `accepted`, later ones
+   `duplicate`.
+5. **One record.** `LedgerControl.record` (run API `runs/:claimId/calls/:callId/result` and Mau's `calls/:callId/result`, surface
+   `run-api`), `planChat`/`commitChat` (chat text and buttons, surface `channel`) and `answer` (surface `web`) all plan into and
+   close the same `ledger_cards` row. With `cards` on, a later answer is `stale`: the run API answers `{ "status": "stale" }`, a chat
+   answer gets the notice "这个问题已在其他入口回答。". The worker closes cards whose call left `pending` without a Router answer
+   (`answered`, surface `host`), on deadline (`expired`) and at run end (`canceled`; a planned answer is committed instead).
+   **Deviation:** `communication_questions`, `_actions` and `_control_receipts` are still written and read by the chat path (they
+   remain its crash receipts); removing them is left for the release after phase 4.
+6. **Unknown turns** (6.2.4, with `cards`): a Router-native card (`source: "router"`, callId `router-retry:<turnId>`, run id
+   `router:<claimId>`, choices "重新执行" / "不用了") is appended when a turn becomes `unknown`, and sent as a notice with buttons to an
+   external origin conversation. Either choice closes the unknown run (`closeUnknown`; 409 `turn_still_running` while the Host run
+   still runs). "重新执行" then receives a copy of the original input (`externalId <original>:retry:<turnId>`) whose event has
+   `possibleDuplicate: true` and whose pending input has `retry_of`. The owner can also answer in the chat with the exact label or
+   the button. Reconciling or closing the run elsewhere cancels the card.
+7. **Reset.** `ledger_session_windows` drives execution: the dispatcher sends `contextId = contextFor(sessionKey)`, work submissions
+   into a reset ledger session use the window context too, and owner checks (`isOwnerTask`, tool admission, chat control) map
+   `<key>.w<n>` back to the session. Turns of earlier windows are never resumed. Events of a turn keep the turn's window. Busy =
+   `queued`/`running`/`waiting` turns or `queued` inputs; `cancelActive` cancels them and drops the inputs (reason `reset`).
+   `/new`, `/reset`, `新对话` are handled only for owner inputs in the `owner_main` session.
+8. **Purge** also accepts `cancelActive` (otherwise 409 `session_busy`, as reset). It restarts `seq` at 1 in the new generation,
+   deletes the session's cards and tokens, keeps queued/sending deliveries (unbound from their event), drops queued inputs, clears the
+   chat's read markers, and blanks the text of the session's legacy inbox records and settled outbox rows (`communication_media` is
+   deleted). Execution records, `communication_results`, Mau memory and Matrix `timeline` copies are kept.
+9. **Cancel** works for any non-terminal turn of the chat's session (an `unknown` turn too); `RunObservation.cancel` accepts any
+   ledger turn. **Steer** without `host.steer`, or a 4xx from the Host, is `unsupported`; a 5xx is 503 `steer_failed`.
+10. **Rate limit.** Card answers and control routes share 60 requests per minute per person (separate from sends).
+
+```jsonc
+// POST /_agent-router/v1/web/chats/dm%3A<agentId>/cards/<cardId>/answer
+{ "idempotencyKey": "…", "choiceId": "0" }            // or { "text": "…" }, or { "result": … } (host question cards only)
+// 200 { "status": "accepted" | "duplicate" | "stale", "card": Card }
+// 422 { "error": "invalid_answer", "detail": "structured_answers_required" } | choice_not_found | choice_or_text_required
+//     | sensitive_input_requires_native_entry;  503 { "error": "card_answer_pending", "retryAfterMs": 1000 }
+// GET  …/cards/<cardId>                                 → Card (live text while a handoff card is pending)
+// POST …/turns/<turnId>/cancel {}                       → { "status": "accepted" } | { "status": "already_finished", "state": "canceled" }
+// POST …/turns/<turnId>/steer { idempotencyKey, text }  → { "status": "accepted", "event": ChatEvent /* steer: true */ } | { "status": "unsupported" }
+// POST …/reset { idempotencyKey, cancelActive? }        → { "window": 2, "event": ChatEvent /* kind "window" */ }
+//      409 { "error": "session_busy", "activeTurns": ["…"], "queuedInputs": 0 }
+// POST …/purge { idempotencyKey, confirm: "<chatId>", cancelActive? } → { "generation": 2, "purgedEvents": 12, "window": 2 }
+//      422 { "error": "purge_confirmation_required" }
+```

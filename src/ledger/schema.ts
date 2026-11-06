@@ -118,3 +118,15 @@ CREATE INDEX ledger_cards_by_turn ON ledger_cards(turn_id);`;
 /** Phase 3 dispatcher: resume lookups per session read started inputs newest first. */
 export const AGENT_LEDGER_V3 = `
 CREATE INDEX ledger_pending_by_session ON ledger_pending_inputs(session_key, created_at);`;
+
+/**
+ * Phase 4 cards (ADR 16.8 `AGENT_LEDGER_V3`, numbered 4 here because phase 3 shipped step 3). The planned answer
+ * (`answer_key` + `result`) is written before the Host call; `answer_summary` keeps the label shown by `card.update`.
+ */
+export const AGENT_LEDGER_V4 = `
+ALTER TABLE ledger_cards ADD COLUMN source TEXT NOT NULL DEFAULT 'host';
+ALTER TABLE ledger_cards ADD COLUMN answer_surface TEXT;
+ALTER TABLE ledger_cards ADD COLUMN answer_summary TEXT;
+CREATE INDEX ledger_cards_planned ON ledger_cards(updated_at) WHERE status = 'pending' AND answer_key IS NOT NULL;
+CREATE INDEX ledger_cards_by_run ON ledger_cards(run_id, call_id);
+CREATE INDEX ledger_card_tokens_by_card ON ledger_card_tokens(card_id, choice_id);`;

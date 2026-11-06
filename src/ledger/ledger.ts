@@ -2,13 +2,26 @@ import { randomBytes } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { DurableStore } from "../communication/store.js";
 import { digest, key } from "../execution/protocol.js";
-import { AGENT_LEDGER_V1, AGENT_LEDGER_V2, AGENT_LEDGER_V3 } from "./schema.js";
+import { AGENT_LEDGER_V1, AGENT_LEDGER_V2, AGENT_LEDGER_V3, AGENT_LEDGER_V4 } from "./schema.js";
 
 export type SessionKind = "owner_main" | "peer" | "group" | "room" | "schedule" | "work" | "delegation";
 export type Admission = "owner" | "peer" | "group" | "schedule" | "work" | "delegation";
 export type TurnState = "queued" | "running" | "waiting" | "completed" | "failed" | "canceled" | "unknown";
 export type DeliveryStatus = "created" | "queued" | "sending" | "sent" | "suppressed" | "rejected" | "unknown" | "replied";
 export type DeliveryPurpose = "reply" | "notice" | "card" | "content" | "activity" | "mirror";
+export type CardKind = "question" | "approval" | "connector_approval" | "sensitive";
+export type CardStatus = "pending" | "answered" | "approved" | "rejected" | "expired" | "canceled";
+/** `router` marks Router-native cards (the unknown-turn retry card, ADR 6.2.4); the others come from the callId prefix. */
+export type CardSource = "host" | "mau-approval" | "mau-handoff" | "router";
+export type CardSurface = "web" | "channel" | "run-api" | "host";
+export interface CardRecord {
+  cardId: string; callId: string; runId: string; claimId: string; turnId: string; sessionKey: string; eventId: string; kind: CardKind;
+  status: CardStatus; source: CardSource; deadlineAt: number | null; answeredBy: string | null; answerKey: string | null; result: unknown;
+  surface: CardSurface | null; summary: string | null; updatedAt: number;
+}
+export const RETRY_CALL_PREFIX = "router-retry:";
+export const cardSource = (callId: string): CardSource => callId.startsWith("mau-approval:") ? "mau-approval" : callId.startsWith("mau-handoff:") ? "mau-handoff" :
+  callId.startsWith(RETRY_CALL_PREFIX) ? "router" : "host";
 export type InputState = "queued" | "starting" | "started" | "control" | "dropped" | "unknown";
 export interface EventInput {
   kind: string; role: "user" | "assistant" | "system"; senderType: "person" | "agent" | "external" | "system"; senderId: string;
@@ -68,7 +81,7 @@ export class AgentLedger {
   /** Create the tables (once) and attach the ledger to this store; channel cores then shadow-write into it. */
   static open(store: DurableStore): AgentLedger {
     let ledger = this.ledgers.get(store);
-    if (!ledger) { store.migrate(1, AGENT_LEDGER_V1); store.migrate(2, AGENT_LEDGER_V2); store.migrate(3, AGENT_LEDGER_V3); ledger = new AgentLedger(store); this.ledgers.set(store, ledger); }
+    if (!ledger) { store.migrate(1, AGENT_LEDGER_V1); store.migrate(2, AGENT_LEDGER_V2); store.migrate(3, AGENT_LEDGER_V3); store.migrate(4, AGENT_LEDGER_V4); ledger = new AgentLedger(store); this.ledgers.set(store, ledger); }
     return ledger;
   }
   static attached(store: DurableStore): AgentLedger | undefined { return this.ledgers.get(store); }
@@ -78,6 +91,8 @@ export class AgentLedger {
    * are no longer shadow writes. A failed ledger write then fails the receipt or transition it belongs to.
    */
   authoritative = false;
+  /** Phase 4 features (`AGENT_LEDGER_CARDS`, `AGENT_LEDGER_CONTROL`); both need `authoritative`. */
+  features = { cards: false, reset: false };
   private readonly listeners = new Set<(sessionKey: string) => void>();
   private readonly streams = new Set<(sessionKey: string, turnId: string, text: string) => void>();
   private dirty = new Set<string>();
@@ -163,8 +178,10 @@ export class AgentLedger {
     const session = this.session(sessionKey);
     if (!session) throw new Error("ledger_session_not_found");
     const at = input.createdAt ?? Date.now(), seq = session.lastSeq + 1, eventId = `ev_${ulid(at)}`;
+    // Late events of a turn keep the turn's window after a reset (ADR 16.3).
+    const window = input.turnId ? Number(this.row("SELECT window FROM ledger_turns WHERE turn_id=? AND session_key=?", input.turnId, sessionKey)?.window ?? session.window) : session.window;
     this.run(`INSERT INTO ledger_events(session_key,seq,event_id,window,kind,role,sender_type,sender_id,conversation_id,turn_id,
-      ref_event_id,idempotency_key,created_at,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, sessionKey, seq, eventId, session.window,
+      ref_event_id,idempotency_key,created_at,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, sessionKey, seq, eventId, window,
       input.kind, input.role, input.senderType, input.senderId, input.conversationId ?? null, input.turnId ?? null,
       input.refEventId ?? null, input.idempotencyKey ?? null, at, bounded(input.body));
     this.run("UPDATE ledger_sessions SET last_seq=?, updated_at=MAX(updated_at,?) WHERE session_key=?", seq, at, sessionKey);
@@ -272,6 +289,8 @@ export class AgentLedger {
     this.run("UPDATE ledger_pending_inputs SET state=?, turn_id=COALESCE(?,turn_id), reason=COALESCE(?,reason), updated_at=? WHERE input_id=?",
       state, fields.turnId ?? null, fields.reason ?? null, at, inputId);
   }
+  /** A retry (ADR 6.2.4) points at the input whose outcome stayed unknown. */
+  markRetry(inputId: string, retryOf: string): void { this.run("UPDATE ledger_pending_inputs SET retry_of=? WHERE input_id=?", retryOf, inputId); }
   input(inputId: string) { return this.row("SELECT * FROM ledger_pending_inputs WHERE input_id=?", inputId); }
   /** Dispatch order (ADR 6.2): accepted inputs not yet consumed, oldest first, in receipt order within one millisecond. */
   dueInputs(limit = 500): string[] {
@@ -368,27 +387,109 @@ export class AgentLedger {
   }
 
   addCard(input: { cardId: string; callId: string; runId: string; claimId: string; turnId: string; sessionKey: string; eventId: string;
-    kind: "question" | "approval" | "connector_approval" | "sensitive"; deadlineAt?: number | null; at?: number }): void {
-    this.run(`INSERT OR IGNORE INTO ledger_cards(card_id,call_id,run_id,claim_id,turn_id,session_key,event_id,kind,status,deadline_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`, input.cardId, input.callId, input.runId, input.claimId, input.turnId, input.sessionKey,
-      input.eventId, input.kind, input.deadlineAt ?? null, input.at ?? Date.now());
+    kind: CardKind; source?: CardSource; deadlineAt?: number | null; at?: number }): void {
+    this.run(`INSERT OR IGNORE INTO ledger_cards(card_id,call_id,run_id,claim_id,turn_id,session_key,event_id,kind,status,deadline_at,updated_at,source)
+      VALUES(?,?,?,?,?,?,?,?,'pending',?,?,?)`, input.cardId, input.callId, input.runId, input.claimId, input.turnId, input.sessionKey,
+      input.eventId, input.kind, input.deadlineAt ?? null, input.at ?? Date.now(), input.source ?? cardSource(input.callId));
   }
   addCardToken(token: string, cardId: string, choiceId: string, result: unknown): void {
     this.run("INSERT OR IGNORE INTO ledger_card_tokens(token,card_id,choice_id,result) VALUES(?,?,?,?)", token, cardId, choiceId, JSON.stringify(result ?? null));
   }
   cardToken(token: string) { return this.row("SELECT * FROM ledger_card_tokens WHERE token=?", token); }
+  cardChoice(cardId: string, choiceId: string) { return this.row("SELECT * FROM ledger_card_tokens WHERE card_id=? AND choice_id=?", cardId, choiceId); }
   card(cardId: string) { return this.row("SELECT * FROM ledger_cards WHERE card_id=?", cardId); }
+  cardRecord(cardId: string): CardRecord | undefined { const row = this.card(cardId); return row ? cardRow(row) : undefined; }
+  cardByCall(runId: string, callId: string): CardRecord | undefined {
+    const row = this.row("SELECT * FROM ledger_cards WHERE run_id=? AND call_id=?", runId, callId); return row ? cardRow(row) : undefined;
+  }
+  /** Open cards of a run (call observation) or of a turn (Router-native cards). */
+  openCards(filter: { runId?: string; turnId?: string; sessionKey?: string }): CardRecord[] {
+    const [column, value] = filter.runId !== undefined ? ["run_id", filter.runId] : filter.turnId !== undefined ? ["turn_id", filter.turnId] : ["session_key", filter.sessionKey ?? ""];
+    return this.rows(`SELECT * FROM ledger_cards WHERE ${column}=? AND status='pending' ORDER BY updated_at`, value).map(cardRow);
+  }
+  /** Answers that were planned but not yet confirmed by the Host (crash or Host failure between plan and resolve). */
+  plannedCards(limit = 50): CardRecord[] {
+    return this.rows("SELECT * FROM ledger_cards WHERE status='pending' AND answer_key IS NOT NULL ORDER BY updated_at LIMIT ?", limit).map(cardRow);
+  }
+  /**
+   * Save-before-resolve (ADR 16.1 step 5): record the answer on a pending card before the Host call. The first planned
+   * answer wins: `taken` means another key is already planned, `closed` that the card is no longer pending.
+   */
+  planAnswer(cardId: string, answer: { key: string; result: unknown; by: string | null; surface: CardSurface; summary?: string }, at = Date.now()): "planned" | "same" | "taken" | "closed" {
+    const card = this.cardRecord(cardId);
+    if (!card || card.status !== "pending") return "closed";
+    if (card.answerKey) return card.answerKey === answer.key ? "same" : "taken";
+    this.run(`UPDATE ledger_cards SET answer_key=?, result=?, answered_by=?, answer_surface=?, answer_summary=?, updated_at=? WHERE card_id=? AND answer_key IS NULL`,
+      answer.key, JSON.stringify(answer.result ?? null), answer.by, answer.surface, answer.summary ?? null, at, cardId);
+    return "planned";
+  }
+  /** Drop a planned answer the Host refused, so the card can be answered again. */
+  unplanAnswer(cardId: string, key: string): void {
+    this.run("UPDATE ledger_cards SET answer_key=NULL, result=NULL, answered_by=NULL, answer_surface=NULL, answer_summary=NULL WHERE card_id=? AND answer_key=? AND status='pending'", cardId, key);
+  }
   cardsForTurn(turnId: string): string[] { return this.rows("SELECT card_id FROM ledger_cards WHERE turn_id=?", turnId).map((row) => row.card_id as string); }
   pendingCards(sessionKey: string): number {
     return Number(this.row("SELECT COUNT(*) AS n FROM ledger_cards WHERE session_key=? AND status='pending'", sessionKey)!.n);
   }
-  /** Close a pending card and append its `card.update` event. */
-  cardStatus(cardId: string, status: "answered" | "approved" | "rejected" | "expired" | "canceled", fields: { answeredBy?: string; summary?: string } = {}, at = Date.now()): void {
-    const card = this.card(cardId); if (!card || card.status !== "pending") return;
-    this.run("UPDATE ledger_cards SET status=?, answered_by=?, updated_at=? WHERE card_id=?", status, fields.answeredBy ?? null, at, cardId);
+  /** Close a pending card and append its `card.update` event. Returns false when the card was already closed. */
+  cardStatus(cardId: string, status: Exclude<CardStatus, "pending">, fields: { answeredBy?: string | null | undefined; summary?: string | null | undefined; surface?: CardSurface } = {}, at = Date.now()): boolean {
+    const card = this.card(cardId); if (!card || card.status !== "pending") return false;
+    const answeredBy = fields.answeredBy ?? (card.answered_by as string | null) ?? null, summary = fields.summary ?? (card.answer_summary as string | null) ?? null;
+    this.run("UPDATE ledger_cards SET status=?, answered_by=?, answer_surface=COALESCE(?,answer_surface), answer_summary=?, updated_at=? WHERE card_id=?",
+      status, answeredBy, fields.surface ?? null, summary, at, cardId);
     this.append(card.session_key as string, { kind: "card.update", role: "system", senderType: "system", senderId: "router",
       refEventId: card.event_id as string, turnId: card.turn_id as string, idempotencyKey: `card:${cardId}:${status}`, createdAt: at,
-      body: { cardId, status, ...(fields.summary ? { summary: fields.summary } : {}) } });
+      body: { cardId, status, ...(answeredBy && ["answered", "approved", "rejected"].includes(status) ? { answeredBy } : {}), ...(summary ? { summary } : {}) } });
+    return true;
+  }
+
+  /** The execution context of the session's current window (window 1 is the session key itself). */
+  contextFor(sessionKey: string): string {
+    return (this.row(`SELECT w.context_id FROM ledger_sessions s JOIN ledger_session_windows w ON w.session_key=s.session_key AND w.window=s.window
+      WHERE s.session_key=?`, sessionKey)?.context_id as string | undefined) ?? sessionKey;
+  }
+  /** Turns that still run in the session, and inputs not yet taken by the dispatcher (reset busy check, ADR 16.3). */
+  busy(sessionKey: string): { activeTurns: string[]; queuedInputs: string[] } {
+    return { activeTurns: this.rows("SELECT turn_id FROM ledger_turns WHERE session_key=? AND state IN ('queued','running','waiting') ORDER BY created_at", sessionKey).map((row) => row.turn_id as string),
+      queuedInputs: this.rows("SELECT input_id FROM ledger_pending_inputs WHERE session_key=? AND state='queued' ORDER BY created_at", sessionKey).map((row) => row.input_id as string) };
+  }
+  /**
+   * Reset (ADR 6.8/16.3): close the window, open `<key>.w<n+1>`, and append the `window` event. Seq continues, so the
+   * chat stays one history with a divider. The next turn starts a new Host session through the new context id.
+   */
+  reset(sessionKey: string, reason: "reset" = "reset", at = Date.now()): { window: number; event: LedgerEvent } {
+    const session = this.session(sessionKey); if (!session) throw new Error("ledger_session_not_found");
+    const next = session.window + 1;
+    this.run("UPDATE ledger_session_windows SET closed_at=?, reason=? WHERE session_key=? AND window=? AND closed_at IS NULL", at, reason, sessionKey, session.window);
+    this.run("INSERT INTO ledger_session_windows(session_key,window,context_id,opened_at) VALUES(?,?,?,?)", sessionKey, next, `${sessionKey}.w${next}`, at);
+    this.run("UPDATE ledger_sessions SET window=?, updated_at=MAX(updated_at,?) WHERE session_key=?", next, at, sessionKey);
+    const event = this.append(sessionKey, { kind: "window", role: "system", senderType: "system", senderId: "router", createdAt: at,
+      idempotencyKey: `window:${next}`, body: { window: next, reason } }).event;
+    return { window: next, event };
+  }
+  /**
+   * Purge (ADR 16.4): delete the session's transcript and everything bound to its events, tombstone every ingress claim
+   * of its conversations (a redelivered channel message does not come back), bump the generation and open a new window.
+   * Execution records (runs, archives, Host sessions) are kept.
+   */
+  purge(sessionKey: string, at = Date.now()): { generation: number; purgedEvents: number; window: number; inputIds: string[] } {
+    const session = this.session(sessionKey); if (!session) throw new Error("ledger_session_not_found");
+    const events = `SELECT event_id FROM ledger_events WHERE session_key=?`;
+    const purgedEvents = Number(this.row("SELECT COUNT(*) AS n FROM ledger_events WHERE session_key=?", sessionKey)!.n);
+    this.run(`DELETE FROM ledger_platform_messages WHERE event_id IN (${events})`, sessionKey);
+    this.run(`DELETE FROM ledger_attachments WHERE event_id IN (${events})`, sessionKey);
+    this.run(`DELETE FROM ledger_deliveries WHERE event_id IN (${events}) AND status<>'queued' AND status<>'sending'`, sessionKey);
+    this.run(`UPDATE ledger_deliveries SET event_id=NULL WHERE event_id IN (${events})`, sessionKey);
+    this.run("DELETE FROM ledger_card_tokens WHERE card_id IN (SELECT card_id FROM ledger_cards WHERE session_key=?)", sessionKey);
+    this.run("DELETE FROM ledger_cards WHERE session_key=?", sessionKey);
+    this.run("DELETE FROM ledger_events WHERE session_key=?", sessionKey);
+    this.run(`UPDATE ledger_ingress SET state='tombstone', event_id=NULL, reason='purged', expires_at=? WHERE conversation_id IN
+      (SELECT conversation_id FROM ledger_conversations WHERE session_key=?)`, at + TOMBSTONE_MS, sessionKey);
+    const inputIds = this.rows("SELECT input_id FROM ledger_pending_inputs WHERE session_key=?", sessionKey).map((row) => row.input_id as string);
+    this.run("UPDATE ledger_pending_inputs SET state='dropped', reason='purged', updated_at=? WHERE session_key=? AND state='queued'", at, sessionKey);
+    this.run("UPDATE ledger_sessions SET last_seq=0, published_seq=0, generation=generation+1, updated_at=MAX(updated_at,?) WHERE session_key=?", at, sessionKey);
+    const { window } = this.reset(sessionKey, "reset", at);
+    return { generation: this.session(sessionKey)!.generation, purgedEvents, window, inputIds };
   }
 
   addAttachment(input: { eventId: string | null; name: string; contentType: string; size?: number | null; locator: unknown; at?: number }): string {
@@ -439,6 +540,14 @@ function turnRow(row: Row): Turn {
     replyRoute: row.reply_route === null ? null : JSON.parse(row.reply_route as string), state: row.state as TurnState,
     finalEventId: nullable(row.final_event_id), error: nullable(row.error), createdAt: Number(row.created_at),
     startedAt: row.started_at === null ? null : Number(row.started_at), finishedAt: row.finished_at === null ? null : Number(row.finished_at) };
+}
+function cardRow(row: Row): CardRecord {
+  return { cardId: row.card_id as string, callId: row.call_id as string, runId: row.run_id as string, claimId: row.claim_id as string,
+    turnId: row.turn_id as string, sessionKey: row.session_key as string, eventId: row.event_id as string, kind: row.kind as CardKind,
+    status: row.status as CardStatus, source: (row.source as CardSource | undefined) ?? cardSource(row.call_id as string),
+    deadlineAt: row.deadline_at === null ? null : Number(row.deadline_at), answeredBy: nullable(row.answered_by), answerKey: nullable(row.answer_key),
+    result: row.result === null || row.result === undefined ? null : JSON.parse(row.result as string), surface: nullable(row.answer_surface) as CardSurface | null,
+    summary: nullable(row.answer_summary), updatedAt: Number(row.updated_at) };
 }
 function deliveryRow(row: Row): Delivery {
   return { deliveryId: row.delivery_id as string, eventId: nullable(row.event_id), conversationId: row.conversation_id as string,

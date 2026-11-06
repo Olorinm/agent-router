@@ -208,10 +208,14 @@ export class CommunicationCore {
           this.atomic(() => { this.store.set("communication_inbox", id, { ...value, state: "done" }); this.shadow((ledger) => shadowControl(ledger, value, "stale_action")); }); continue; }
         const resumable = (item: InboxRecord) => Boolean(item.taskId) && item.conversationId === value.conversationId &&
           (item.connectionId === value.connectionId && item.source.sender === value.source.sender || this.isOwnerInput(item) && this.isOwnerInput(value));
+        // A reset (ADR 16.3) opens a new execution context: turns of earlier windows are never resumed.
+        const window = this.authoritative ? this.ledger!.session(value.conversationId)?.window : undefined;
+        const current = (item: InboxRecord) => window === undefined || window === 1 || this.ledger!.turn(item.taskId ?? "")?.window === window;
         const prior = (this.authoritative ? this.ledger!.startedInputs(value.conversationId).map(({ inputId }) => this.store.get<InboxRecord>("communication_inbox", inputId))
           .find((item): item is InboxRecord => Boolean(item && resumable(item))) : undefined) ??
           this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).reverse().find(resumable);
-        const previous = prior?.taskId ? await this.work.get(prior.taskId) : undefined;
+        const resumeFrom = prior && current(prior) ? prior : undefined;
+        const previous = resumeFrom?.taskId ? await this.work.get(resumeFrom.taskId) : undefined;
         const resume = previous && [TaskState.TASK_STATE_INPUT_REQUIRED, TaskState.TASK_STATE_AUTH_REQUIRED].includes(previous.status?.state ?? 0);
         let quote = value.source.quoted?.text;
         if (!quote && value.source.quoted?.messageId && this.authoritative) {
@@ -233,7 +237,9 @@ export class CommunicationCore {
         const channelContext = { channel: this.connection(value.connectionId).adapter.kind, connectionId: value.connectionId,
           scope: value.source.scope, conversationId: value.replyRoute.target, messageId: value.replyRoute.messageId,
           senderId: value.source.sender, ...(value.source.quoted?.messageId ? { quotedMessageId: value.source.quoted.messageId } : {}) };
-        const request = SendMessageRequest.fromJSON({ message: { messageId: `channel-${id}`, contextId: value.conversationId,
+        // The window's context id (window 1 is the session key), so a reset starts a new Host session.
+        const contextId = this.authoritative ? this.ledger!.contextFor(value.conversationId) : value.conversationId;
+        const request = SendMessageRequest.fromJSON({ message: { messageId: `channel-${id}`, contextId,
           ...(resume ? { taskId: previous!.id } : {}), role: "ROLE_USER",
           parts: [{ text }, { text: `Channel context (provider routing IDs): ${JSON.stringify(channelContext)}` }] }, configuration: { returnImmediately: true } });
         // Both steps are independently durable. The stable message ID closes the restart window.
@@ -302,15 +308,17 @@ export class CommunicationCore {
     this.store.set("communication_results", taskId, answer);
     return true;
   }
+  /** A later window's execution context (`<key>.w<n>`) belongs to its session. */
+  private sessionOf(contextId: string): string { return this.ledger?.sessionForContext(contextId) ?? contextId; }
   isOwnerTask(conversationId: string, taskId: string): boolean {
     const input = this.input(taskId);
-    return Boolean(input && input.conversationId === conversationId && input.source.scope === "direct" &&
+    return Boolean(input && input.conversationId === this.sessionOf(conversationId) && input.source.scope === "direct" &&
       this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
   }
   /** The owner's turn in a group of only the owner and the owner's agents, as reported at receipt. */
   isPrivateGroupOwnerTask(conversationId: string, taskId: string): boolean {
     const input = this.input(taskId);
-    return Boolean(input && input.conversationId === conversationId && input.source.scope === "group" && input.source.privateGroup === true &&
+    return Boolean(input && input.conversationId === this.sessionOf(conversationId) && input.source.scope === "group" && input.source.privateGroup === true &&
       this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender));
   }
   async flush(now = Date.now()): Promise<void> {
