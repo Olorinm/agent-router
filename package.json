@@ -49,19 +49,19 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
+    "@larksuite/cli": "1.0.97",
+    "@larksuiteoapi/node-sdk": "1.74.0",
     "aws4fetch": "^1.0.20",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
+    "grammy": "1.46.0",
     "ipaddr.js": "^2.5.0",
     "jose": "^6.2.15",
     "matrix-js-sdk": "^42.3.0",
-    "undici": "^8.10.2",
-    "zod": "^4.6.5",
-    "@larksuite/cli": "1.0.97",
-    "@larksuiteoapi/node-sdk": "1.74.0",
-    "grammy": "1.46.0",
     "qrcode-terminal": "0.12.0",
-    "ws": "^8.22.1"
+    "undici": "^8.12.4",
+    "ws": "^8.22.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
@@ -69,7 +69,7 @@
     "@types/ws": "^8.18.2",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.1.0"
   },
   "bin": {
     "agent-router-connector": "dist/matrix/index.js"
