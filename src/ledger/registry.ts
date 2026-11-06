@@ -2,7 +2,7 @@ import type { DurableStore } from "../communication/store.js";
 import { digest, key } from "../execution/protocol.js";
 import { REGISTRY_V1 } from "./schema.js";
 
-export type IdentityProvider = "matrix" | "web" | "oidc" | "feishu" | "grove-mail" | "agentmail" | "telegram" | "weixin";
+export type IdentityProvider = "matrix" | "web" | "oidc" | "cloudflare-access" | "feishu" | "grove-mail" | "agentmail" | "telegram" | "weixin";
 export interface Identity { identityId: string; personId: string; provider: string; namespace: string; subject: string; verifiedBy: string; createdAt: string }
 /** Today an owner is identified by the owner's Matrix id; the person id is derived from it until phase 6. */
 export const personId = (ownerId: string) => `prs_${digest(key("person", ownerId)).slice(0, 24)}`;

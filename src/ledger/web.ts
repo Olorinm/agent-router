@@ -13,19 +13,18 @@ import type { WebChannel } from "../channels/web.js";
 import type { LedgerControl } from "./control.js";
 import { isRoomChat } from "./rooms.js";
 import { mountRoomRoutes } from "./rooms-web.js";
+import type { OwnerAuthenticator, OwnerPrincipal, OwnerRequest } from "../auth/edge-identity.js";
 
-export interface OwnerPrincipal { personId: string; ownerId: string; matrixUserId: string }
-/** ADR 0005 section 8.1. Phase 6 adds a native implementation beside Synapse whoami. */
-export interface OwnerAuthenticator { authenticate(token: string): Promise<OwnerPrincipal> }
+export type { OwnerPrincipal, OwnerAuthenticator, OwnerRequest } from "../auth/edge-identity.js";
 /** Wraps the service's whoami check and caches the result for 60 s by token hash. Tokens are never stored. */
-export class SynapseWhoamiAuthenticator implements OwnerAuthenticator {
+export class SynapseWhoamiAuthenticator {
   private readonly cache = new Map<string, { principal: OwnerPrincipal; expires: number }>();
   constructor(private readonly whoami: (token: string) => Promise<string>, private readonly ttlMs = 60_000) {}
   async authenticate(token: string): Promise<OwnerPrincipal> {
     const hash = digest(["owner-token", token]), now = Date.now(), cached = this.cache.get(hash);
     if (cached && cached.expires > now) return cached.principal;
     const ownerId = await this.whoami(token);
-    const principal = { personId: personId(ownerId), ownerId, matrixUserId: ownerId };
+    const principal: OwnerPrincipal = { personId: personId(ownerId), ownerId, via: "bearer", matrixUserId: ownerId };
     if (this.cache.size > 10_000) this.cache.clear();
     this.cache.set(hash, { principal, expires: now + this.ttlMs });
     return principal;
@@ -51,7 +50,9 @@ export interface WebLedgerDependencies {
   /** Wakes the room fan-out worker after a room message. */
   kick?(): void;
 }
-const bearer = (req: IncomingMessage) => req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? "";
+/** The request's credentials, kept in memory with a socket ticket so the socket can be re-checked. */
+const credentials = (req: IncomingMessage): OwnerRequest => ({ headers: Object.fromEntries(["authorization", "cf-access-jwt-assertion"]
+  .flatMap((name) => req.headers[name] === undefined ? [] : [[name, req.headers[name]]])) });
 const baseLimits = { textBytes: 24_000, eventBytes: 256 * 1024, historyPage: LIMITS.pageEvents, historyBytes: LIMITS.pageBytes,
   attachmentBytes: 25 * 1024 * 1024, attachmentsPerMessage: 10, socketsPerPerson: 10, sendsPerMinute: 60 };
 const sendRequest = z.object({
@@ -68,12 +69,12 @@ const agentOf = (chatId: string) => /^(?:dm|obs):([^:]+)/.exec(chatId)?.[1];
 
 /** Single-use socket tickets (60 s), kept in memory only. */
 class Tickets {
-  private readonly tickets = new Map<string, { principal: OwnerPrincipal; token: string; expires: number }>();
-  issue(principal: OwnerPrincipal, token: string) {
+  private readonly tickets = new Map<string, { principal: OwnerPrincipal; credentials: OwnerRequest; expires: number }>();
+  issue(principal: OwnerPrincipal, credentials: OwnerRequest) {
     const now = Date.now();
     for (const [id, ticket] of this.tickets) if (ticket.expires <= now) this.tickets.delete(id);
     const ticket = `tk_${randomBytes(24).toString("base64url")}`, expires = now + 60_000;
-    this.tickets.set(digest(ticket), { principal, token, expires });
+    this.tickets.set(digest(ticket), { principal, credentials, expires });
     return { ticket, expiresAt: new Date(expires).toISOString() };
   }
   consume(ticket: string) {
@@ -98,7 +99,7 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
     keyGenerator: (req) => ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? "unknown"), message: { error: "rate_limit_exceeded" } }));
   router.use(async (req, res, next) => {
-    try { res.locals.principal = await authenticator.authenticate(bearer(req)); next(); } catch (error) { next(error); }
+    try { res.locals.principal = await authenticator.authenticate(req); next(); } catch (error) { next(error); }
   });
   const principal = (res: express.Response) => res.locals.principal as OwnerPrincipal;
   const hub = (res: express.Response) => hubs.hub(principal(res).ownerId);
@@ -115,12 +116,13 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     return hub(res);
   };
   router.get("/me", (_req, res) => {
-    const { personId: id, ownerId } = principal(res);
-    res.json({ person: { id, name: persons.person(id)?.displayName ?? ownerId }, ownerId, identities: persons.identities(id), limits });
+    const { personId: id, ownerId, via, email, expiresAt } = principal(res);
+    res.json({ person: { id, name: persons.person(id)?.displayName ?? ownerId }, ownerId, identities: persons.identities(id), limits,
+      auth: { via, ...(email ? { email } : {}), ...(expiresAt ? { expiresAt: new Date(expiresAt).toISOString() } : {}) } });
   });
   router.post("/socket-tickets", (req, res) => {
     z.object({}).strict().parse(req.body ?? {});
-    res.set("Cache-Control", "no-store").json(tickets.issue(principal(res), bearer(req)));
+    res.set("Cache-Control", "no-store").json(tickets.issue(principal(res), credentials(req)));
   });
   router.get("/chats", (req, res) => {
     const query = z.object({ archived: z.enum(["true", "false"]).default("false"), cursor: z.string().regex(/^\d{1,9}$/).optional(),
@@ -320,10 +322,15 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     if (url.pathname !== "/_agent-router/v1/web/socket") return false;
     const ticket = tickets.consume(url.searchParams.get("ticket") ?? "");
     if (!ticket) { socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return true; }
-    sockets.handleUpgrade(req, socket, head, (ws) => connect(ws, ticket.principal, ticket.token));
+    // Browsers always send Origin on an upgrade; an edge ticket needs an allowed one, and no ticket accepts a foreign one.
+    const origin = { headers: req.headers };
+    if ((ticket.principal.via !== "bearer" || req.headers.origin !== undefined) && authenticator.allowsOrigin && !authenticator.allowsOrigin(origin)) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return true;
+    }
+    sockets.handleUpgrade(req, socket, head, (ws) => connect(ws, ticket.principal, ticket.credentials));
     return true;
   };
-  const connect = (ws: WebSocket, owner: OwnerPrincipal, token: string) => {
+  const connect = (ws: WebSocket, owner: OwnerPrincipal, credentials: OwnerRequest) => {
     const target = hubs.hub(owner.ownerId);
     const open = [...target.sockets].filter((item) => item.personId === owner.personId).length;
     if (open >= limits.socketsPerPerson) { ws.close(4429, "too_many_sockets"); return; }
@@ -334,10 +341,13 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       ws.send(JSON.stringify(data));
     } };
     target.sockets.add(client);
-    // The bearer is re-checked every 10 minutes; a revoked session closes the socket.
-    const recheck = setInterval(() => { authenticator.authenticate(token).catch(() => ws.close(4401, "token_invalid")); }, 600_000);
+    // The credential is re-checked every 10 minutes; a revoked session closes the socket. An edge principal closes at its `exp`.
+    const recheck = setInterval(() => { authenticator.authenticate(credentials).catch(() => ws.close(4401, "token_invalid")); }, 600_000);
     recheck.unref();
-    ws.on("close", () => { clearInterval(recheck); target.sockets.delete(client); live.delete(ws); });
+    const expiry = owner.expiresAt === undefined ? undefined
+      : setTimeout(() => ws.close(4401, "token_expired"), Math.min(Math.max(0, owner.expiresAt - Date.now()), 2_147_483_647));
+    expiry?.unref();
+    ws.on("close", () => { clearInterval(recheck); clearTimeout(expiry); target.sockets.delete(client); live.delete(ws); });
     // Requests are handled one at a time so responses and replays keep the order of the requests.
     let queue = Promise.resolve();
     const handle = async (text: string) => {
