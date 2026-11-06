@@ -17,6 +17,7 @@ import { AgentLedger } from "../ledger/ledger.js";
 import { OwnerHubs } from "../ledger/hub.js";
 import { PersonRegistry, personId } from "../ledger/registry.js";
 import { SynapseWhoamiAuthenticator, createWebLedger } from "../ledger/web.js";
+import { RoomFanout } from "../ledger/rooms-fanout.js";
 
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export interface ManagedAgent {
@@ -32,7 +33,9 @@ export interface ServiceConfig { serverName: string; homeserver: string; publicU
   /** ADR 0005 `cards` (phase 4, `AGENT_LEDGER_CARDS`, needs `ledgerSend`): card answers over HTTP; first answer wins. */
   ledgerCards?: boolean;
   /** ADR 0005 `reset` (phase 4, `AGENT_LEDGER_CONTROL`, needs `ledgerSend`): cancel, steer, reset ("新对话") and purge. */
-  ledgerControl?: boolean; }
+  ledgerControl?: boolean;
+  /** ADR 0005 `groups` (phase 5, `AGENT_LEDGER_GROUPS`, needs `ledgerSend`): native hub rooms, fan-out to agents and room commands. */
+  ledgerGroups?: boolean; }
 export interface ServiceExtension {
   observation?: import("../execution/observation.js").RunObservation;
   sessions?: import("../execution/sessions.js").WorkSessions;
@@ -41,6 +44,8 @@ export interface ServiceExtension {
   web?: import("../channels/web.js").WebChannel;
   /** Phase 4 cards and control (ADR 0005 section 16). */
   control?: import("../ledger/control.js").LedgerControl;
+  /** The hub room channel (ADR 0005 phase 5). */
+  room?: import("../channels/room.js").RoomChannel;
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
   resolve(callId: string, result: unknown): Promise<void | "accepted" | "stale">;
   reconcile(claimId: string, runId: string): Promise<void>;
@@ -77,6 +82,8 @@ export class ManagedService {
   readonly hubs: OwnerHubs;
   readonly web: ReturnType<typeof createWebLedger> | undefined;
   private readonly ledgers = new Map<string, AgentLedger>();
+  /** The hub room fan-out worker (phase 5); present with `ledgerGroups`. */
+  readonly fanout: RoomFanout | undefined;
   private runtimes = new Map<string, Promise<Runtime>>();
   private configurations = new Map<string, Promise<void>>();
   private deleteGuards: Array<(agentId: string) => void> = [];
@@ -105,12 +112,18 @@ export class ManagedService {
       agentName: (agentId) => this.store.get<ManagedAgent>("agents", agentId)?.name ?? agentId,
       ledger: (agentId) => this.ledgers.get(agentId),
       personName: (id) => this.persons.person(id)?.displayName,
+      groups: Boolean(config.ledgerRead && config.ledgerSend && config.ledgerGroups),
     });
+    this.fanout = config.ledgerRead && config.ledgerSend && config.ledgerGroups ? new RoomFanout(this.hubs, {
+      owners: () => [...new Set(this.agents().filter((agent) => agent.status === "active").map((agent) => agent.owner))],
+      channel: async (agentId) => this.agent(agentId).status === "active" ? (await this.runtime(agentId)).extension?.room : undefined,
+    }) : undefined;
     this.web = config.ledgerRead ? createWebLedger({ hubs: this.hubs, persons: this.persons,
       authenticator: new SynapseWhoamiAuthenticator((token) => this.authenticate(token)),
       send: config.ledgerSend, channel: async (agentId) => (await this.runtime(agentId)).extension?.web,
       cards: Boolean(config.ledgerSend && config.ledgerCards), reset: Boolean(config.ledgerSend && config.ledgerControl),
       control: async (agentId) => (await this.runtime(agentId)).extension?.control,
+      groups: Boolean(config.ledgerSend && config.ledgerGroups), kick: () => this.fanout?.kick(),
       open: async (agentId) => { await this.runtime(agentId); }, owned: (owner) => this.agents(owner).filter((agent) => agent.status === "active"),
       debug: (agentId) => {
         const ledger = this.ledgers.get(agentId), store = ledger?.store;
@@ -118,6 +131,13 @@ export class ManagedService {
         return { ledger: ledger?.counts() ?? null, error: ledger?.lastError || null, timeline: count("timeline"), inbox: count("communication_inbox"),
           outbox: count("communication_outbox"), backfill: store?.get("meta", "ledger_backfill") ?? null };
       } }) : undefined;
+  }
+  /** Channel runtime options for hub rooms (phase 5): the owner's rooms and the Matrix rooms frozen by the import. */
+  roomOptions(agent: ManagedAgent) {
+    // Without `groups` the room connection is not registered, so channel status and dispatch are unchanged. A room
+    // frozen by `ledger:import-rooms` stays frozen either way (the import is explicit and per room).
+    return { ...(this.fanout ? { rooms: () => this.hubs.hub(agent.owner).rooms } : {}),
+      roomMigrated: (room: string) => Boolean(this.store.get("matrix_room_migrations", room)) };
   }
   agents(owner?: string): ManagedAgent[] {
     return this.store.entries<ManagedAgent>("agents").map((r) => r.value).filter((a) => !owner || a.owner === owner);
@@ -359,6 +379,7 @@ export class ManagedService {
   }
   async start(): Promise<void> { for (const agent of this.agents()) if (agent.status !== "deleting") await this.runtime(agent.id); }
   async close(): Promise<void> {
+    await this.fanout?.stop();
     await Promise.allSettled(this.configurations.values());
     await this.channels.close();
     for (const pending of this.runtimes.values()) {

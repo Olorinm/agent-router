@@ -2172,3 +2172,65 @@ routes in `src/ledger/web.ts`. Attachments (16.5) are a separate change. These c
 // POST …/purge { idempotencyKey, confirm: "<chatId>", cancelActive? } → { "generation": 2, "purgedEvents": 12, "window": 2 }
 //      422 { "error": "purge_confirmation_required" }
 ```
+
+## Implementation notes (phase 5)
+
+Phase 5 adds native groups: `src/ledger/rooms.ts` (hub rooms, transcript, fan-out, group context, mirror),
+`src/ledger/rooms-web.ts` (group commands), `src/ledger/rooms-fanout.ts` (worker), `src/channels/room.ts` (`RoomChannel`)
+and `src/ledger/rooms-import.ts` (Matrix import). These choices fill gaps in section 17 or deviate from it:
+
+1. **Flag.** `ServiceConfig.ledgerGroups` (`AGENT_LEDGER_GROUPS=1`), effective with `ledgerRead` and `ledgerSend`. It sets
+   `limits.features.groups`, accepts group commands and room sends, and starts the fan-out worker. Flag off: room chats stay
+   listed and readable (`readOnly: true`), `POST /groups…` and room sends are 403 `feature_disabled`, and the `room` connection is
+   not registered in the channel runtimes (as `web` without `ledgerSend`), so channel status and dispatch are unchanged. A room
+   frozen by the import stays frozen with the flag off. The flag is independent of `cards` and `reset`.
+2. **Schema.** The section 17.8 tables and indexes (plus `hub_room_events(room_id, turn_id)`) are one step with its own counter
+   (`meta.hub_rooms_schema_version = 1`) instead of `OWNER_HUB_V3`, so it does not depend on the order of the phase 4 step.
+3. **Hub delegation.** `OwnerHub` routes `room:` chat ids to `HubRooms` for summary, history, read markers, turns and socket
+   subscribe/replay. Rooms are indexed in `hub_chats` (`kind 'group'`, `agent_id NULL`). An agent's `room` session is not a chat:
+   its publication mirrors `turn`, `card`, `card.update` and its room replies into the room, in ledger order, under the 17.4 keys,
+   so the room shows `turn queued → running → message → completed` as a DM does. `chat.stream` frames of a room session use the
+   room chat id.
+4. **Sessions.** `RoomChannel` (connection `room`, reserved in channel configuration, owner address = the owner id) creates
+   `ledger_sessions(kind='room', room_id)`. The session key keeps the legacy formula; `ChannelAdapter.sessionConnection` lets an
+   imported room (`threadId` = Matrix room id) use the agent's Matrix connection id in it, so the key, and the Host session, are
+   the ones its Matrix group session already had.
+5. **Group context.** `ChannelAdapter.turnContext` returns the prefix and a `commit`; the dispatcher prepends it to the model input
+   and commits after the turn start. The cursor is in the hub file, so it moves right after (not in) the agent transaction; a
+   crash in between repeats the context once. Times use the server time zone; the owner is named "主人".
+6. **Send.** Validation order as in phase 3 (8.3), plus `mention_not_member`. Same key and body: `duplicate`; same key, other
+   body: 409. `addressed` lists every member agent with `queued | delivered | failed | not_addressed`.
+7. **Commands.** Create is idempotent through `hub_commands` (`group:<key>`); 1–64 characters (400 `invalid_request` otherwise),
+   1–20 unique agents, 422 `agent_not_found`, 429 `room_limit_reached` (100 rooms, archived ones included). Add/remove are
+   idempotent without a key; more than 20 agents is 422 `too_many_members`. Member events: `add` per agent at creation, `rename`,
+   `remove` (sender `system` when the agent is deleted).
+8. **Not yet.** Room reset (17.5), card answers from a room chat and media in rooms are not implemented: the phase 4 card and
+   control routes accept only `dm:` chats (`chat_read_only` for a room chat), and media waits for the blob store.
+   `RoomChannel` sends text and HTML only (`channel_content_unsupported` otherwise).
+9. **Import.** `npm run ledger:import-rooms -- (--owner <ownerId> | --all) [--dry-run] [--state <dir>]` (`import-groups` is an
+   alias). It runs with the Router service **stopped** and Synapse running, like the backfill: the agent stores are leased, so a
+   running service cannot share them. Gap filling reads the agents' `timeline` mirrors and Synapse `/messages` (AS token) back to
+   the first known `matrix:<event_id>`. The freeze record is `matrix_room_migrations[<matrixRoomId>] = { roomId, at,
+   noticeEventId }`; the notice is sent once (transaction id of 17.6, and `noticeEventId` on rerun). Each agent's cursor starts at
+   the room's last seq, because its Matrix session already holds that history. After the restart `MatrixChannel` claims new
+   messages of the room as `ignored` (`room_migrated`) through `ChannelAdapter.ignored`.
+
+Final shapes:
+
+```jsonc
+// POST /_agent-router/v1/web/groups
+{ "idempotencyKey": "01JC…", "title": "周报小组", "agentIds": ["<agentId-1>", "<agentId-2>"] }
+// 201
+{ "chatId": "room:rm_01JC…", "kind": "group", "title": "周报小组", "agentIds": ["<agentId-1>", "<agentId-2>"], "readOnly": false,
+  "lastSeq": 2, "generation": 1, "readSeq": 0, "unread": 0, "lastEvent": null, "activeTurns": 0, "pendingCards": 0, "updatedAt": "…",
+  "members": [ { "type": "person", "id": "prs_…", "name": "alice" }, { "type": "agent", "id": "<agentId-1>", "name": "helper" }, … ] }
+
+// POST /_agent-router/v1/web/chats/room%3Arm_01JC…/messages
+{ "idempotencyKey": "01JC…", "text": "@helper 帮我查一下", "mentions": { "agentIds": ["<agentId-1>"], "all": false } }
+// 200
+{ "status": "accepted", "event": { "chatId": "room:rm_01JC…", "seq": 3, "kind": "message", "role": "user", "text": "@helper 帮我查一下",
+    "mentions": { "agentIds": ["<agentId-1>"], "all": false }, "channel": { "kind": "web" }, "idempotencyKey": "01JC…", … },
+  "addressed": [ { "agentId": "<agentId-1>", "state": "queued" }, { "agentId": "<agentId-2>", "state": "not_addressed" } ] }
+// The reply: { "kind": "message", "role": "assistant", "sender": { "type": "agent", … }, "agentId": "<agentId-1>",
+//              "turnId": "…", "replyTo": "<origin eventId>", "final": true, "text": "…" }
+```

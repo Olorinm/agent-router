@@ -11,6 +11,8 @@ import { LIMITS, type HubSocket, type OwnerHubs } from "./hub.js";
 import { personId, type PersonRegistry } from "./registry.js";
 import type { WebChannel } from "../channels/web.js";
 import type { LedgerControl } from "./control.js";
+import { isRoomChat } from "./rooms.js";
+import { mountRoomRoutes } from "./rooms-web.js";
 
 export interface OwnerPrincipal { personId: string; ownerId: string; matrixUserId: string }
 /** ADR 0005 section 8.1. Phase 6 adds a native implementation beside Synapse whoami. */
@@ -44,6 +46,10 @@ export interface WebLedgerDependencies {
   reset?: boolean | undefined;
   /** The agent's card and control ledger; undefined when the agent has no channel runtime. */
   control?(agentId: string): Promise<LedgerControl | undefined>;
+  /** ADR 0005 `groups` (phase 5, `AGENT_LEDGER_GROUPS`, needs `send`): native hub rooms. */
+  groups?: boolean | undefined;
+  /** Wakes the room fan-out worker after a room message. */
+  kick?(): void;
 }
 const bearer = (req: IncomingMessage) => req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? "";
 const baseLimits = { textBytes: 24_000, eventBytes: 256 * 1024, historyPage: LIMITS.pageEvents, historyBytes: LIMITS.pageBytes,
@@ -85,7 +91,8 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   const { hubs, persons, authenticator } = dependencies, tickets = new Tickets(), epoch = `ep_${randomBytes(8).toString("hex")}`;
   const send = Boolean(dependencies.send && dependencies.channel);
   const cards = send && Boolean(dependencies.cards && dependencies.control), reset = send && Boolean(dependencies.reset && dependencies.control);
-  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: false, reset, groups: false } };
+  const groups = send && Boolean(dependencies.groups);
+  const limits = { ...baseLimits, features: { history: true, send, cards, attachments: false, reset, groups } };
   const router = express.Router();
   // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
@@ -96,6 +103,12 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
   const principal = (res: express.Response) => res.locals.principal as OwnerPrincipal;
   const hub = (res: express.Response) => hubs.hub(principal(res).ownerId);
   const chat = async (res: express.Response, chatId: string) => {
+    if (isRoomChat(chatId)) {
+      // Room chats are the owner's own; member agents open so their sessions and in-flight text can be read.
+      const target = hub(res), roomId = target.rooms.roomOf(chatId), owned = new Set(dependencies.owned(principal(res).ownerId).map((agent) => agent.id));
+      for (const agentId of target.rooms.agentIds(roomId)) if (owned.has(agentId)) await dependencies.open(agentId).catch(() => undefined);
+      return target;
+    }
     const agentId = agentOf(chatId);
     if (!agentId || !dependencies.owned(principal(res).ownerId).some((agent) => agent.id === agentId)) throw new WorkError("chat_not_found", 404);
     await dependencies.open(agentId);
@@ -127,6 +140,7 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     const target = await chat(res, req.params.chatId);
     const summary = target.summary(req.params.chatId, principal(res).personId);
     if (!summary) throw new WorkError("chat_not_found", 404);
+    if (isRoomChat(req.params.chatId)) { res.json({ ...summary, members: target.rooms.members(target.rooms.roomOf(req.params.chatId)) }); return; }
     res.json({ ...summary, members: [{ type: "person", id: principal(res).personId, name: persons.person(principal(res).personId)?.displayName ?? principal(res).ownerId },
       ...summary.agentIds.map((id) => ({ type: "agent", id, name: dependencies.owned(principal(res).ownerId).find((agent) => agent.id === id)?.name ?? id }))] });
   });
@@ -159,6 +173,19 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       target.render(chatId, resolved.agentId, resolved.ledger, resolved.ledger.session(resolved.sessionKey)?.generation ?? 1, event, true);
     router.post("/chats/:chatId/messages", sends, async (req, res) => {
       const body = sendRequest.parse(req.body), chatId = req.params.chatId as string;
+      if (isRoomChat(chatId)) {
+        // Room send (17.1): same validation order as a DM; the hub fans out to the addressed member agents.
+        const target = await chat(res, chatId), roomId = target.rooms.roomOf(chatId);
+        if (!groups) throw new WorkError("feature_disabled", 403);
+        if (target.rooms.room(roomId)!.archived) throw new WorkError("chat_read_only", 403);
+        if (Buffer.byteLength(body.text) > baseLimits.textBytes) throw new WorkError("message_too_large", 413);
+        if (body.attachments?.length) throw new WorkError("attachments_unsupported", 422);
+        if (!body.text.trim()) throw new WorkError("message_empty", 422);
+        const result = target.rooms.send(roomId, principal(res).personId, body);
+        dependencies.kick?.();
+        res.json({ status: result.duplicate ? "duplicate" : "accepted", event: result.event, addressed: result.addressed });
+        return;
+      }
       const { target, resolved, channel } = await writable(res, chatId);
       if (Buffer.byteLength(body.text) > baseLimits.textBytes) throw new WorkError("message_too_large", 413);
       // Attachments arrive with the blob store (phase 4).
@@ -271,6 +298,7 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       });
     }
   }
+  mountRoomRoutes(router, { principal, hub, owned: dependencies.owned, open: dependencies.open, enabled: groups, kick: () => dependencies.kick?.() });
   /** Phase 1 diffing aid: ledger counts beside the legacy and Matrix mirror counts, per owned agent. */
   router.get("/debug/ledger", async (_req, res) => {
     const data = [];
@@ -321,7 +349,10 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
         if (request.method === "unsubscribe") { target.unsubscribe(client, request.params.chatIds); client.send({ type: "res", id, ok: true, result: {} }); return; }
         // Agent runtimes (and so their ledgers) open lazily, as for HTTP; foreign agents are never opened.
         const owned = new Set(dependencies.owned(owner.ownerId).map((agent) => agent.id));
-        for (const agentId of new Set(request.params.chats.map((item) => agentOf(item.chatId)))) {
+        const roomAgents = request.params.chats.filter((item) => isRoomChat(item.chatId)).flatMap((item) => {
+          try { return target.rooms.agentIds(target.rooms.roomOf(item.chatId)); } catch { return []; }
+        });
+        for (const agentId of new Set([...request.params.chats.map((item) => agentOf(item.chatId)), ...roomAgents])) {
           if (agentId && owned.has(agentId)) await dependencies.open(agentId).catch(() => undefined);
         }
         if (ws.readyState !== ws.OPEN) return;
