@@ -2,13 +2,17 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-/** Durable identity-scoped state. Network calls never run inside a transaction. */
+/**
+ * Durable identity-scoped state. Network calls never run inside a transaction.
+ * Temporary tables, sorts and statement journals stay in memory: the service and its offline tools run in read-only
+ * containers with no writable temp directory, where a spill fails with SQLITE_IOERR and SQLite rolls the transaction back.
+ */
 export class DurableStore {
   readonly db: DatabaseSync;
   constructor(path: string, identity: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA temp_store=MEMORY;
       CREATE TABLE IF NOT EXISTS documents(collection TEXT NOT NULL, id TEXT NOT NULL, value TEXT NOT NULL,
       PRIMARY KEY(collection,id));
       CREATE INDEX IF NOT EXISTS document_status ON documents(collection,json_extract(value,'$.status'));`);
@@ -54,7 +58,8 @@ export class DurableStore {
   transaction<T>(work: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try { const result = work(); this.db.exec("COMMIT"); return result; }
-    catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    // Some errors (SQLITE_IOERR, SQLITE_FULL, ...) already rolled the transaction back; rethrow the cause, not the ROLLBACK error.
+    catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
   acquireLease(owner: string, now = Date.now()): void {
     this.transaction(() => {

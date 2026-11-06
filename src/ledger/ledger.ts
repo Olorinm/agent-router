@@ -118,15 +118,18 @@ export class AgentLedger {
   }
   /**
    * Shadow write: a ledger failure never changes the legacy path. Inside an outer transaction the work runs
-   * in a savepoint, so a ledger error rolls back only the ledger rows.
+   * in a savepoint, so a ledger error rolls back only the ledger rows. When SQLite itself ended the outer transaction
+   * (SQLITE_IOERR, SQLITE_FULL), the legacy writes are gone as well: the error propagates instead of being swallowed.
    */
   shadow<T>(work: () => T): T | undefined {
+    const outer = this.db.isTransaction;
     try {
-      if (!this.db.isTransaction) return this.store.transaction(work);
+      if (!outer) return this.store.transaction(work);
       this.db.exec("SAVEPOINT ledger_shadow");
       try { const result = work(); this.db.exec("RELEASE ledger_shadow"); return result; }
-      catch (error) { this.db.exec("ROLLBACK TO ledger_shadow"); this.db.exec("RELEASE ledger_shadow"); throw error; }
+      catch (error) { if (this.db.isTransaction) { this.db.exec("ROLLBACK TO ledger_shadow"); this.db.exec("RELEASE ledger_shadow"); } throw error; }
     } catch (error) {
+      if (outer && !this.db.isTransaction) throw error;
       this.lastError = error instanceof Error && /^[a-z0-9_:-]+$/.test(error.message) ? error.message : "ledger_write_failed";
       return undefined;
     }
