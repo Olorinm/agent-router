@@ -76,7 +76,7 @@ export class CommunicationCore {
     this.ledger = AgentLedger.attached(store);
   }
   get shadowContext(): ShadowContext {
-    return { agentId: this.agentId, ownerPersonId: this.ownerPersonId, channel: (id) => this.connection(id).adapter.kind,
+    return { agentId: this.agentId, ownerPersonId: this.ownerPersonId, channel: (id) => this.kindOf(id),
       account: (id) => this.store.get<string>("communication_checkpoints", key(id, "account")) ?? id,
       ...(this.persons ? { person: this.persons } : {}) };
   }
@@ -227,7 +227,7 @@ export class CommunicationCore {
    * still honored directly for one release; they are also seeded as `config` identities.
    */
   isOwner(connectionId: string, source: ChannelMessage): boolean {
-    if (this.connection(connectionId).definition.ownerAddresses.includes(source.sender)) return true;
+    if (this.connections.get(connectionId)?.definition.ownerAddresses.includes(source.sender)) return true;
     return Boolean(this.identity && this.ownerPersonId && this.identity.person(connectionId, source) === this.ownerPersonId);
   }
   async dispatch(): Promise<void> {
@@ -241,6 +241,15 @@ export class CommunicationCore {
         if (!value || value.state !== "received") continue;
         const pending = this.authoritative ? this.ledger!.input(id) : undefined;
         if (pending && !["queued", "starting"].includes(String(pending.state))) continue;
+        // A message on a connection that is gone (Matrix off, ADR 0005 19.2) has no route. It must not stall the queue,
+        // and it is settled so that bringing the connection back does not run it late.
+        if (!this.connections.has(value.connectionId)) {
+          this.atomic(() => {
+            this.store.set("communication_inbox", id, { ...value, state: "ignored", reason: "connection_removed" });
+            this.shadow((ledger) => { if (ledger.input(id)) ledger.updateInput(id, "dropped", { reason: "connection_removed" }); });
+          });
+          continue;
+        }
         const eventType = value.source.event?.type;
         // Message state changes are durable context, not new requests or answers to pending interactions.
         if (eventType && ["reaction", "message-edit", "message-redaction"].includes(eventType)) {
@@ -312,9 +321,10 @@ export class CommunicationCore {
       const input = this.input(task.id);
       if (!input) continue; // Matrix/A2A events belong to the existing connector.
       this.store.transaction(() => {
-        const adapter = this.connection(input.connectionId).adapter;
-        const capabilities = adapter.capabilitiesFor?.(input.replyRoute) ?? adapter.capabilities;
-        if (adapter.activity && capabilities?.native.includes("reaction")) {
+        // The connection may be gone (Matrix off): the result is still recorded, and flush settles its delivery as failed.
+        const adapter = this.connections.get(input.connectionId)?.adapter;
+        const capabilities = adapter?.capabilitiesFor?.(input.replyRoute) ?? adapter?.capabilities;
+        if (adapter?.activity && capabilities?.native.includes("reaction")) {
           const active = task.status?.state === TaskState.TASK_STATE_WORKING;
           const id = digest(key(input.id, "activity", String(active)));
           const activity: OutboxRecord = { id, taskId: task.id, route: input.replyRoute, text: "",
@@ -482,22 +492,28 @@ export class CommunicationCore {
   }
   async progress(taskId: string, text: string): Promise<void> {
     const input = this.input(taskId); if (!input || !text) return;
-    const connection = this.connection(input.connectionId);
-    if (!connection.connected || !connection.adapter.progress || !this.capabilities(taskId)?.stream) return;
+    const connection = this.connections.get(input.connectionId);
+    if (!connection?.connected || !connection.adapter.progress || !this.capabilities(taskId)?.stream) return;
     const receipt = await connection.adapter.progress(input.replyRoute, text, taskId, false);
     this.store.set("communication_progress_messages", taskId, receipt.externalId.split(","));
     this.store.set("communication_streams", taskId, true);
   }
   capabilities(taskId: string) { const input = this.input(taskId); if (!input) return undefined;
-    const adapter = this.connection(input.connectionId).adapter; return adapter.capabilitiesFor?.(input.replyRoute) ?? adapter.capabilities; }
+    const adapter = this.connections.get(input.connectionId)?.adapter; return adapter?.capabilitiesFor?.(input.replyRoute) ?? adapter?.capabilities; }
+  /** True while the connection is registered. Records of a removed connection (Matrix off) stay readable but have no route. */
+  connected(connectionId: string): boolean { return this.connections.has(connectionId); }
   /**
    * An owner's direct input. A sender that became the owner by pairing is the owner only in owner-main; its earlier
    * peer conversations keep their peer rights (ADR 0005 18.1: a conversation never moves).
+   * On a connection that is gone (Matrix off) the record speaks for itself: only an owner's direct message is in owner-main.
    */
   isOwnerInput(input: InboxRecord) {
     if (input.source.scope !== "direct") return false;
-    if (this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender)) return true;
-    return input.conversationId === `c-${digest(key(this.agentId, "owner-main")).slice(0, 40)}` && this.isOwner(input.connectionId, input.source);
+    const ownerMain = input.conversationId === `c-${digest(key(this.agentId, "owner-main")).slice(0, 40)}`;
+    const connection = this.connections.get(input.connectionId);
+    if (!connection) return ownerMain;
+    if (connection.definition.ownerAddresses.includes(input.source.sender)) return true;
+    return ownerMain && this.isOwner(input.connectionId, input.source);
   }
   /**
    * `queueContent` for the channel tool. On a transcript channel (web) the media is stored first (ADR 0005 16.5) and the
@@ -513,8 +529,9 @@ export class CommunicationCore {
   }
   queueContent(taskId: string, content: ChannelContent, sendKey: string, options: { notice?: string; attachments?: RecordedAttachment[] } = {}): string {
     const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
-    const adapter = this.connection(input.connectionId).adapter;
-    if ((content.html || content.media?.length || content.card || content.buttons?.length) && !adapter.sendContent) throw new Error("channel_content_unsupported");
+    // A schedule notice whose session only has a removed connection (Matrix off): the transcript is its delivery.
+    const adapter = options.notice ? this.connections.get(input.connectionId)?.adapter : this.connection(input.connectionId).adapter;
+    if ((content.html || content.media?.length || content.card || content.buttons?.length) && !adapter?.sendContent) throw new Error("channel_content_unsupported");
     const capabilities = this.capabilities(taskId);
     if (content.html && !capabilities?.send.includes("html")) throw new Error("channel_html_unsupported");
     if (content.media?.length && !capabilities?.send.some((kind) => ["file", "image", "audio", "video"].includes(kind))) throw new Error("channel_media_unsupported");
@@ -524,7 +541,7 @@ export class CommunicationCore {
     // Recorded media lives in the blob store; the outbox row keeps no copy of its bytes.
     const { media: _media, ...rest } = content;
     const outbox: OutboxRecord = { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
-      content: recorded ? rest : content, state: "queued", attempts: 0, nextAt: 0 };
+      content: recorded ? rest : content, attempts: 0, nextAt: 0, ...(!adapter && this.authoritative ? { state: "accepted", externalId: id } : { state: "queued" }) };
     let bound = false;
     this.atomic(() => {
       if (this.store.insert("communication_outbox", id, outbox)) this.settleWeb(outbox, this.shadow((ledger) => {
@@ -532,12 +549,12 @@ export class CommunicationCore {
           options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
             : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
               ...(recorded ? { attachments: recorded } : content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } });
-        if (recorded && eventId) { adapter.recordedMedia!.bind(ledger, eventId, recorded); bound = true; }
+        if (recorded && eventId) { adapter!.recordedMedia!.bind(ledger, eventId, recorded); bound = true; }
         return eventId;
       }));
     });
     // Not recorded (a concurrent duplicate, or a ledger error rolled back): its stored media has no event.
-    if (recorded && !bound) adapter.recordedMedia?.release(recorded);
+    if (recorded && !bound) adapter?.recordedMedia?.release(recorded);
     return id;
   }
   delivery(taskId: string, id: string) {
@@ -565,6 +582,10 @@ export class CommunicationCore {
     if (!attachment) throw new Error("channel_attachment_not_found");
     if (!adapter.readAttachment) throw new Error("channel_attachment_read_unsupported");
     return adapter.readAttachment(input.source, attachment);
+  }
+  /** The adapter kind, also of a connection that is no longer registered (its stored record stays). */
+  private kindOf(id: string): string {
+    return this.connections.get(id)?.adapter.kind ?? this.store.get<{ kind: string }>("communication_connections", id)?.kind ?? id;
   }
   private connection(id: string): Connection {
     const connection = this.connections.get(id);

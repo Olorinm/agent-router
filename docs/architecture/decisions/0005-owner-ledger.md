@@ -2401,10 +2401,16 @@ Phase 7 is implemented in `src/matrix/managed.ts` (switches, gated paths, toggle
      `ready`. This replaces the operator route `GET /web/debug/identity` of 19.4 item 3.
    - item 14: `AGENT_MATRIX=off npm run matrix:forget -- --all [--dry-run]`.
    The Go CLI does not wrap these commands (as for backfill).
-10. **Not done.** Media of `ai.mau.room` groups is not in any ledger, so it is not promoted; it stays in the
+10. **Records of a removed connection.** Matrix inbox records stay in the stores and in `owner-main` after the switch, so
+    the core never requires their connection to be registered: `isOwnerInput` answers from the record (only an owner's
+    direct message is in `owner-main`), results are recorded and their delivery fails with `connection_removed`, a
+    `received` input is settled `ignored`/`dropped`, and `WorkSessions.deliver` uses the newest owner route that exists
+    (with none left, the ledger notice is the delivery). The same holds when `AGENT_LEDGER_SEND` is turned off again. The
+    Host scope is unchanged by all of this; `test/fixtures/host-scope-0.7.0-alpha.10.json` pins the deployed channel tool.
+11. **Not done.** Media of `ai.mau.room` groups is not in any ledger, so it is not promoted; it stays in the
     `media_store/` archive (item 8). The CLI edge mode does not cover the Matrix social commands (`find`, `lookup`,
     `profile-set`).
-11. **CLI edge login.** `agent-router login --edge URL` verifies `GET /account` and saves `edge.json` (service URL and
+12. **CLI edge login.** `agent-router login --edge URL` verifies `GET /account` and saves `edge.json` (service URL and
     owner only) in the profile; credentials are read per call: `--access-client-id-file`/`--access-client-secret-file`
     or `CF_ACCESS_CLIENT_ID[_FILE]`/`CF_ACCESS_CLIENT_SECRET[_FILE]` (headers `CF-Access-Client-Id`/`-Secret`), then
     `--access-token-file`/`CF_ACCESS_TOKEN[_FILE]`, then `cloudflared access token -app=<origin>` (header

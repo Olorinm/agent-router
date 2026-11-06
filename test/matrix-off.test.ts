@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
@@ -13,6 +13,8 @@ import { Host, until } from "./ledger-fixture.js";
 import { AgentLedger } from "../src/ledger/ledger.js";
 import { createBlobStore } from "../src/ledger/blobs.js";
 import { exportMatrix, forgetMatrix, promoteMedia } from "../src/matrix/removal.js";
+import { DurableStore } from "../src/communication/store.js";
+import { digest } from "../src/execution/protocol.js";
 
 /**
  * ADR 0005 19.5: the full service (createRouter, loadServiceConfig) with `AGENT_MATRIX=off`, the edge identity as the only
@@ -212,6 +214,124 @@ describe("Router with AGENT_MATRIX=off (ADR 0005 phase 7)", () => {
   }, 60_000);
 });
 
+/**
+ * The production upgrade: an agent whose owner-main session ends with Matrix turns (records on a connection that is no
+ * longer registered once Matrix is off), a Host scope written by the prior release, and every ledger flag turned on at once.
+ */
+describe("upgrading a production store to AGENT_MATRIX=off", () => {
+  const room = "!dm:example.test";
+  const transport = (agent: ManagedAgent, inbox: ApplicationInbox): MatrixTransport => ({ identity: async () => agent.matrixId,
+    sync: async (since): Promise<SyncBatch> => { await new Promise((r) => setTimeout(r, 20)); return inbox.next(agent.id, since) ?? { next_batch: since ?? "0" }; },
+    state: async () => [{ type: "m.room.member", event_id: "$m1", sender: owner, state_key: owner, content: { membership: "join" } },
+      { type: "m.room.member", event_id: "$m2", sender: agent.matrixId, state_key: agent.matrixId, content: { membership: "join" } }],
+    history: async () => ({ events: [] }), createRoom: async () => room, join: async () => {}, send: async () => "$e", stop: () => {} });
+  const message = (id: string, body: string, ts = Date.now()) => ({ event_id: id, room_id: room, sender: owner, type: "m.room.message", origin_server_ts: ts, content: { msgtype: "m.text", body } });
+  /** Prior release: Matrix on, `AGENT_LEDGER_READ` only, one finished owner turn over Matrix. */
+  async function priorStore(stateDir: string, prepare?: (store: DurableStore) => void) {
+    const on = await boot(stateDir, { matrix: { enabled: true }, ledgerSend: false, ledgerCards: false, ledgerControl: false, ledgerGroups: false },
+      { provision: async () => {}, transport });
+    const agent = (await on.api(`${root}/agents`, "POST", { name: "coco" })).data;
+    await on.router.connections.edit(owner, agent.id, (config) => {
+      config.connections.push({ id: "matrix", kind: "matrix", ownerAddresses: [owner], peerAddresses: [], groupIds: [] });
+      config.host = { binding: "fixture", runtimeId: "fixture", instanceName: "channel-host", instructions: "prior instructions" };
+    });
+    on.router.service.inbox.receive("t0", { events: [{ event_id: "$j", room_id: room, sender: agent.matrixId, type: "m.room.member", state_key: agent.matrixId, content: { membership: "join" } }] });
+    on.router.service.inbox.receive("t1", { events: [message("$m", "Matrix 上的消息")] });
+    await until(async () => (await on.router.service.runtime(agent.id)).connector.store.entries<{ state: string; taskId?: string }>("communication_inbox").map(({ value }) => value),
+      (records) => records.some((record) => record.state === "done"));
+    const { connector } = await on.router.service.runtime(agent.id);
+    const scope = connector.store.get<string>("communication_host", "scope")!;
+    const session = connector.store.entries<{ conversationId: string }>("communication_inbox")[0]!.value.conversationId;
+    const binding = connector.store.get("execution_sessions", session);
+    expect(scope).toBeTruthy(); expect(binding).toBeTruthy();
+    prepare?.(connector.store);
+    const instance = on.router.service.store.entries<{ id: string; agentId: string; name: string }>("instances")
+      .map(({ value }) => value).find((item) => item.agentId === agent.id && item.name === "channel-host")!;
+    const { matrix: _state, ...record } = on.router.service.agent(agent.id);
+    on.router.service.store.set("agents", agent.id, record);
+    await on.stop(); cleanup.splice(cleanup.indexOf(on.stop), 1);
+    return { agent, scope, session, binding, instance };
+  }
+  const state = () => { const dir = mkdtempSync(join(tmpdir(), "matrix-upgrade-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
+
+  it("keeps the Host scope and the owner-main session, and a web DM after Matrix turns reaches the same Host session", async () => {
+    const stateDir = state(), prior = await priorStore(stateDir);
+    const t = await boot(stateDir);
+    const { connector, extension } = await t.router.service.runtime(prior.agent.id);
+    // The 2026-11-05 outage: a different scope fails the start with host_binding_configuration_changed.
+    expect(connector.store.get("communication_host", "scope")).toBe(prior.scope);
+    expect(connector.store.get("execution_sessions", prior.session)).toEqual(prior.binding);
+    const chatId = `dm:${prior.agent.id}`;
+    await t.api(`${root}/web/chats/${enc(chatId)}/messages`, "POST", { idempotencyKey: ik(), text: "网页上的消息" });
+    await until(() => t.host.starts.map((item) => item.input), (inputs) => inputs.some((input) => input.includes("网页上的消息")));
+    await until(() => t.events(chatId), (items) => items.filter((event) => event.role === "assistant" && event.final).length === 2);
+    const binding = prior.binding as { sessionId: string };
+    expect(t.host.starts.at(-1)!.sessionId).toBe(binding.sessionId);
+    // Mau reads the session and validates schedule targets through the same owner lookup.
+    expect(extension!.sessions!.getSession(prior.session).ownerConversation).toBe(true);
+  }, 60_000);
+
+  it("computes the Host scope of the deployed 0.7.0-alpha.10: changing the channel tool or its instructions stops every agent with runs", async () => {
+    const stateDir = state(), prior = await priorStore(stateDir);
+    // `communication_host.scope` is checked at every start and is not migrated. The fixture is the deployed definition.
+    const released = JSON.parse(readFileSync(new URL("./fixtures/host-scope-0.7.0-alpha.10.json", import.meta.url), "utf8")) as { tools: unknown[]; toolInstructions: string };
+    expect(prior.scope).toBe(digest({ agentId: prior.agent.id, instanceId: prior.instance.id, runtimeId: "fixture", instructions: "prior instructions", host: "fixture-host",
+      tools: released.tools, toolInstructions: released.toolInstructions }));
+  }, 60_000);
+
+  it("does not let records of the removed Matrix connection stall dispatch, results or schedule notices", async () => {
+    const stateDir = state();
+    let finished: unknown;
+    const prior = await priorStore(stateDir, (store) => {
+      // The moment of the switch: a Matrix message not yet dispatched and a Matrix task's result not yet published.
+      const [{ value: done }] = store.entries<Record<string, any>>("communication_inbox");
+      finished = done!.taskId;
+      store.set("communication_inbox", "late", { ...done, id: "late", state: "received", taskId: undefined, source: { ...done!.source, externalId: "$late", text: "切换瞬间的消息" } });
+      store.set("cli_work_events", "unpublished", store.get("cli_work", String(finished))!.task ?? store.get("cli_work", String(finished)));
+    });
+    const t = await boot(stateDir);
+    const { connector, extension } = await t.router.service.runtime(prior.agent.id);
+    const records = () => connector.store.entries<{ state: string; reason?: string }>("communication_inbox");
+    await until(records, (items) => items.find(({ id }) => id === "late")?.value.state === "ignored");
+    expect(records().find(({ id }) => id === "late")!.value.reason).toBe("connection_removed");
+    await until(() => connector.store.entries("cli_work_events").filter(({ id }) => id === "unpublished").length, (n) => n === 0);
+    expect(t.host.starts).toEqual([]);
+
+    // A schedule notice for a session that only has Matrix turns: the transcript is its delivery.
+    const sessions = extension!.sessions!, chatId = `dm:${prior.agent.id}`;
+    expect(sessions.deliver({ eventId: "rule-1", targetSessionId: prior.session, text: "定时通知" })).toMatchObject({ state: "accepted" });
+    await until(() => t.events(chatId), (items) => items.some((event) => event.kind === "notice" && event.text === "定时通知"));
+    // Once the owner uses the web, the notice goes through the newest route that exists.
+    await t.api(`${root}/web/chats/${enc(chatId)}/messages`, "POST", { idempotencyKey: ik(), text: "网页上的消息" });
+    await until(() => t.events(chatId), (items) => items.filter((event) => event.role === "assistant" && event.final).length === 2);
+    expect(sessions.deliver({ eventId: "rule-2", targetSessionId: prior.session, text: "第二条通知" })).toMatchObject({ state: "accepted" });
+    const delivered = connector.store.entries<{ route: { connectionId: string }; text: string }>("communication_outbox").find(({ value }) => value.text === "第二条通知")!;
+    expect(delivered.value.route.connectionId).toBe("web");
+  }, 60_000);
+
+  it("rolls back to AGENT_MATRIX=on without replaying the off period", async () => {
+    const stateDir = state(), prior = await priorStore(stateDir);
+    const off = await boot(stateDir);
+    const chatId = `dm:${prior.agent.id}`;
+    await off.api(`${root}/web/chats/${enc(chatId)}/messages`, "POST", { idempotencyKey: ik(), text: "关闭期间的网页消息" });
+    await until(() => off.events(chatId), (items) => items.filter((event) => event.role === "assistant" && event.final).length === 2);
+    const offAt = Date.now();
+    await off.stop(); cleanup.splice(cleanup.indexOf(off.stop), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const on = await boot(stateDir, { matrix: { enabled: true } }, { provision: async () => {}, transport });
+    expect((await on.api(`${root}/agents/${prior.agent.id}`)).data.matrix.state).toBe("active");
+    const { connector } = await on.router.service.runtime(prior.agent.id);
+    expect(connector.store.get("communication_host", "scope")).toBe(prior.scope);
+    // Synapse retries the transactions of the off period when the Application Service comes back.
+    on.router.service.inbox.receive("backlog", { events: [message("$off", "关闭期间的 Matrix 消息", offAt - 1), message("$on", "恢复后的 Matrix 消息", Date.now() + 1000)] });
+    await until(() => on.host.starts.map((item) => item.input), (inputs) => inputs.some((input) => input.includes("恢复后的 Matrix 消息")));
+    expect(on.host.starts.some((item) => item.input.includes("关闭期间"))).toBe(false);
+    expect(on.host.starts.at(-1)!.sessionId).toBe((prior.binding as { sessionId: string }).sessionId);
+    expect((await on.api(`${root}/agents/${prior.agent.id}/communication`)).data.error).toBeNull();
+  }, 60_000);
+});
+
 describe("per-agent Matrix toggle with Matrix on (19.1)", () => {
   it("switches between active and dormant and ignores Matrix events from before the new activation checkpoint", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "matrix-toggle-"));
@@ -315,10 +435,30 @@ describe("Synapse removal tooling (19.4)", () => {
       conversations: [expect.objectContaining({ agentId: agent.id, kind: "direct" })] });
     expect(report.blocking.ownersWithoutEdgeLogin).toEqual([]);
 
+    // Everything except the lease, per table and collection: what a command leaves behind can be compared exactly.
+    const snapshot = (path: string) => {
+      const store = new DurableStore(path, path.endsWith("registry.sqlite") ? "example.test" : agent.matrixId);
+      try {
+        const tables = (store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'ledger_%'").all() as Array<{ name: string }>).map(({ name }) => name);
+        return { collections: Object.fromEntries((store.db.prepare("SELECT collection, COUNT(*) AS n FROM documents GROUP BY collection").all() as Array<{ collection: string; n: number }>).map((row) => [row.collection, Number(row.n)])),
+          documents: digest(store.db.prepare("SELECT collection,id,value FROM documents WHERE NOT (collection='meta' AND id='lease') ORDER BY collection,id").all()),
+          ledger: Object.fromEntries(tables.map((name) => [name, digest(store.db.prepare(`SELECT * FROM ${name}`).all())])) };
+      } finally { store.close(); }
+    };
+    const agentFile = join(stateDir, "agents", `${agent.id}.sqlite`), registryFile = join(stateDir, "registry.sqlite");
+    const agentBefore = snapshot(agentFile), registryBefore = snapshot(registryFile);
     const dry = await forgetMatrix({ stateDir, all: true, dryRun: true });
     expect(dry.agents[0]).toMatchObject({ agentId: agent.id, previous: "active", documents: { rooms: 1, "meta.sync": 1 } });
     expect(dry.registry).toMatchObject({ matrix_agents: 1 });
+    expect(snapshot(agentFile)).toEqual(agentBefore);
+    expect(snapshot(registryFile)).toEqual(registryBefore);
     await forgetMatrix({ stateDir, all: true });
+    // Only the listed Matrix mirrors go: the ledger and every other collection stay exactly as they were.
+    const agentAfter = snapshot(agentFile), registryAfter = snapshot(registryFile), gone = ["timeline", "room_info", "read_markers", "rooms"];
+    expect(agentAfter.ledger).toEqual(agentBefore.ledger);
+    expect(agentAfter.collections).toEqual(Object.fromEntries(Object.entries(agentBefore.collections).filter(([name]) => !gone.includes(name)).map(([name, n]) => [name, name === "meta" ? n - 1 : n])));
+    expect(Object.keys(registryBefore.collections).filter((name) => !(name in registryAfter.collections)).every((name) => name.startsWith("as_") || name.startsWith("matrix_"))).toBe(true);
+    expect(registryAfter.collections.agents).toBe(registryBefore.collections.agents);
     expect(await forgetMatrix({ stateDir, all: true, dryRun: true })).toMatchObject({ agents: [{ previous: "none", documents: { rooms: 0, "meta.sync": 0 } }],
       registry: { matrix_agents: 0, as_queue: 0, as_members: 0 } });
 
