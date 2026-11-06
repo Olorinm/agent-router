@@ -130,3 +130,15 @@ ALTER TABLE ledger_cards ADD COLUMN answer_summary TEXT;
 CREATE INDEX ledger_cards_planned ON ledger_cards(updated_at) WHERE status = 'pending' AND answer_key IS NOT NULL;
 CREATE INDEX ledger_cards_by_run ON ledger_cards(run_id, call_id);
 CREATE INDEX ledger_card_tokens_by_card ON ledger_card_tokens(card_id, choice_id);`;
+
+/** Phase 6 (section 18.6): when an identity was last used. Applied by `PersonRegistry` only when the column is missing. */
+export const REGISTRY_V2 = `ALTER TABLE reg_person_identities ADD COLUMN last_seen_at INTEGER;`;
+
+/**
+ * Phase 6 hub tables (section 18.6, `OWNER_HUB_V4`). Versioned under its own meta row (`hub_identity_schema_version`),
+ * so it does not depend on the order in which the phase 4 and 5 hub steps ship.
+ */
+export const OWNER_HUB_IDENTITY_V1 = `
+CREATE TABLE hub_pairing_failures(sender_key TEXT PRIMARY KEY, failures INTEGER NOT NULL, window_start INTEGER NOT NULL,
+  locked_until INTEGER);
+CREATE INDEX hub_pairing_pending ON hub_pairing_codes(person_id) WHERE consumed_at IS NULL;`;

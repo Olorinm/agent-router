@@ -255,4 +255,29 @@ describe("owner API with edge identity", () => {
     expect((await configured.api(`${root}/agents`, { ...edge, Origin: "https://mau.example.test" }, "POST", { name: "helper" })).status).toBe(201);
     expect((await configured.api(`${root}/agents`, { ...edge, Origin: "https://example.test" }, "POST", { name: "other" })).status).toBe(403);
   });
+
+  it("refuses to unlink the Access identity of the current edge login (identity_in_use), with the identity flag", async () => {
+    const t = await service({}, { ledgerIdentity: true });
+    const edge = { "cf-access-jwt-assertion": await t.sign(), Origin: "https://example.test" };
+    const list = async (headers: Record<string, string>) => (await t.api(`${root}/web/identities`, headers)).data.data as any[];
+    const login = (await list(edge)).find((item) => item.provider === "cloudflare-access")!;
+    expect(login).toMatchObject({ subject: "owner@example.test", verifiedBy: "login", removable: false, fixed: "identity_in_use" });
+    const remove = async (id: string, headers: Record<string, string>) => {
+      const response = await fetch(`http://127.0.0.1:${t.port}${root}/web/identities/${id}`, { method: "DELETE", headers });
+      return { status: response.status, data: response.status === 204 ? null : await response.json() };
+    };
+    expect(await remove(login.identityId, edge)).toEqual({ status: 409, data: { error: "identity_in_use" } });
+    // Another Access login of the same person is not the current one and can be removed.
+    t.managed.persons.link(personId(owner), "cloudflare-access", "example-team.cloudflareaccess.com", "Owner.Alt@example.test", "login");
+    const other = (await list(edge)).find((item) => item.subject === "owner.alt@example.test")!;
+    expect(other).toMatchObject({ removable: true });
+    expect(other.fixed).toBeUndefined();
+    expect(await remove(other.identityId, edge)).toEqual({ status: 204, data: null });
+    // A bearer principal carries no email, so no Access identity is "in use" for it.
+    expect((await list({ Authorization: "Bearer owner" })).find((item) => item.identityId === login.identityId)).toMatchObject({ removable: true });
+    // The flag off: no identity routes and features.identity false.
+    const off = await service({});
+    expect((await off.api(`${root}/web/me`, { Authorization: "Bearer owner" })).data.limits.features.identity).toBe(false);
+    expect((await off.api(`${root}/web/identities`, { Authorization: "Bearer owner" })).status).toBe(404);
+  });
 });

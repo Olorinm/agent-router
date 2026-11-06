@@ -17,6 +17,7 @@ export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): Service
     ...(["1", "true"].includes(env.AGENT_LEDGER_CARDS ?? "") ? { ledgerCards: true } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_CONTROL ?? "") ? { ledgerControl: true } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_GROUPS ?? "") ? { ledgerGroups: true } : {}),
+    ...(["1", "true"].includes(env.AGENT_LEDGER_IDENTITY ?? "") ? { ledgerIdentity: true } : {}),
     ...(env.AGENT_TRUST_PROXY ? { trustedProxies: env.AGENT_TRUST_PROXY.split(",").map(v => v.trim()).filter(Boolean) } : {}),
     ...(env.AGENT_EDGE_IDENTITY_FILE ? { edgeIdentity: loadEdgeIdentityConfig(env.AGENT_EDGE_IDENTITY_FILE) } : {}),
     ...(env.AGENT_IDENTITY_CONFIG_FILE ? { externalIdentity: externalIdentityConfigSchema.parse({

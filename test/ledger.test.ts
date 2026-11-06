@@ -220,7 +220,7 @@ describe("person registry", () => {
     expect(persons.resolve("feishu", "app-b", "ou_1")).toBeUndefined();
     expect(persons.resolve("grove-mail", "", "owner@example.test")).toBe(person);
     expect(persons.identities(person).map((item) => item.verifiedBy)).toEqual(["config", "config"]);
-    new PersonRegistry(store); expect(store.get("meta", "registry_schema_version")).toBe(1);
+    new PersonRegistry(store); expect(store.get("meta", "registry_schema_version")).toBe(2);
   });
 });
 

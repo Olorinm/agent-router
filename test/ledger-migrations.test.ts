@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableStore } from "../src/communication/store.js";
 import { AgentLedger } from "../src/ledger/ledger.js";
-import { OwnerHub, type HubDirectory } from "../src/ledger/hub.js";
+import { OwnerHubs, type HubDirectory } from "../src/ledger/hub.js";
+import { Identities } from "../src/ledger/identity.js";
+import { digest } from "../src/execution/protocol.js";
 import { PersonRegistry } from "../src/ledger/registry.js";
 import { ALPHA10_AGENT_LEDGER_V1, ALPHA10_AGENT_LEDGER_V2, ALPHA10_OWNER_HUB_V1, ALPHA10_REGISTRY_V1 } from "./fixtures/schema-0.7.0-alpha.10.js";
 
@@ -17,6 +19,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const dir = () => { const path = mkdtempSync(join(tmpdir(), "ledger-migrations-")); cleanup.push(() => rmSync(path, { recursive: true, force: true })); return path; };
 const store = (path: string, identity = "@alice:example.test") => { const value = new DurableStore(path, identity); cleanup.push(() => { try { value.close(); } catch { /* closed */ } }); return value; };
+const owner = "@alice:example.test", hubPath = (root: string) => join(root, "owners", `${digest(owner)}.sqlite`);
 const directory: HubDirectory = { owns: () => true, agentName: (id) => id, ledger: () => undefined, personName: () => undefined };
 
 /** Tables, indexes and their columns, without SQLite internals. */
@@ -36,7 +39,7 @@ function alpha10(root: string) {
   agent.migrate(1, ALPHA10_AGENT_LEDGER_V1); agent.migrate(2, ALPHA10_AGENT_LEDGER_V2);
   agent.set("meta", "probe", "agent");
   agent.close();
-  const hub = store(join(root, "hub.sqlite"));
+  const hub = store(hubPath(root));
   hub.migrate(1, ALPHA10_OWNER_HUB_V1); hub.set("meta", "probe", "hub"); hub.close();
   const registry = store(join(root, "registry.sqlite"), "service");
   registry.migrate(1, ALPHA10_REGISTRY_V1, "registry_schema_version"); registry.set("meta", "probe", "registry"); registry.close();
@@ -45,10 +48,11 @@ function alpha10(root: string) {
 function current(root: string) {
   const agent = store(join(root, "agent.sqlite"), "agent-1");
   AgentLedger.open(agent);
-  const hub = new OwnerHub("@alice:example.test", join(root, "hub.sqlite"), directory);
-  cleanup.push(() => { try { hub.close(); } catch { /* closed */ } });
+  const hubs = new OwnerHubs(root, directory), hub = hubs.hub(owner);
+  cleanup.push(() => { try { hubs.close(); } catch { /* closed */ } });
   const registryStore = store(join(root, "registry.sqlite"), "service");
-  new PersonRegistry(registryStore);
+  // The identity step (phase 6) runs when the identity flag first touches the owner's hub.
+  new Identities(new PersonRegistry(registryStore), hubs).pendingCodes(owner);
   return { agent, hub: hub.store, registry: registryStore };
 }
 
@@ -63,8 +67,8 @@ describe("ledger migrations", () => {
       expect(a[name].get("meta", "probe"), name).toBe(name);
     }
     expect(versions(a.agent)).toEqual({ ledger_schema_version: 4 });
-    expect(versions(a.hub)).toMatchObject({ ledger_schema_version: 1, hub_rooms_schema_version: 1 });
-    expect(versions(a.registry)).toMatchObject({ registry_schema_version: 1 });
+    expect(versions(a.hub)).toEqual({ ledger_schema_version: 1, hub_rooms_schema_version: 1, hub_identity_schema_version: 1 });
+    expect(versions(a.registry)).toEqual({ registry_schema_version: 2 });
   });
   it("is idempotent when the stores are opened again", () => {
     const root = dir();
