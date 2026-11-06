@@ -3,7 +3,8 @@ import { DurableStore } from "../communication/store.js";
 import { digest } from "../execution/protocol.js";
 import type { RunBinding } from "../execution/host-worker.js";
 import { WorkError } from "../execution/work.js";
-import { legacySession, ulid, type AgentLedger, type LedgerEvent, type LedgerSession } from "./ledger.js";
+import { conversationKey, legacySession, ulid, type AgentLedger, type LedgerEvent, type LedgerSession } from "./ledger.js";
+import { WEB_CONNECTION, webAccount, webTarget } from "../channels/web.js";
 import { OWNER_HUB_V1 } from "./schema.js";
 
 export interface Actor { type: "person" | "agent" | "system" | "external"; id: string; name: string }
@@ -36,7 +37,7 @@ export interface HubSocket {
 }
 export const LIMITS = { pageEvents: 200, pageBytes: 1024 * 1024, deltaGap: 1000, socketReplayEvents: 500, socketReplayBytes: 1024 * 1024, subscriptions: 200 };
 const fields: Record<string, string[]> = {
-  message: ["text", "html", "attachments", "mentions", "replyTo", "final", "possibleDuplicate", "quoted", "media", "event", "truncated"],
+  message: ["text", "html", "attachments", "mentions", "replyTo", "final", "possibleDuplicate", "quoted", "media", "event", "truncated", "redacted"],
   notice: ["text", "level"], action: ["targetCardId", "label"], card: ["card"], "card.update": ["cardId", "status", "answeredBy", "summary"],
   turn: ["agentId", "state", "inputEventIds", "error"], delivery: ["targetEventId", "delivery"], edit: ["targetEventId", "text"],
   redaction: ["targetEventId"], reaction: ["targetEventId", "key", "removed"], window: ["window", "reason"], member: ["action", "member", "title"],
@@ -102,8 +103,12 @@ export class OwnerHub {
         channel: (item.route as { channel?: string } | null)?.channel, status: item.status, error: item.error ?? undefined }));
     }
     const channel = body.origin === "schedule" ? "schedule" : typeof body.channel === "string" ? body.channel : undefined;
+    // The client's key, on the sender's own web messages only (chats are owner-only, so the reader is the sender).
+    const own = event.senderType === "person" && event.idempotencyKey?.startsWith(`${WEB_CONNECTION}:${event.senderId}:`)
+      ? event.idempotencyKey.slice(WEB_CONNECTION.length + event.senderId.length + 2) : undefined;
     return { chatId, seq: event.seq, generation, eventId: event.eventId, at: iso(event.createdAt), sender: this.actor(agentId, event),
-      ...(channel ? { channel: { kind: channel } } : {}), ...(event.turnId ? { turnId: event.turnId } : {}), kind: event.kind, ...picked };
+      ...(channel ? { channel: { kind: channel } } : {}), ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(own && event.kind === "message" ? { idempotencyKey: own } : {}), kind: event.kind, ...picked };
   }
   /** Publication (ADR 6.6): refresh the index from the ledger, push new events, then acknowledge. */
   publish(agentId: string, sessionKey: string): void {
@@ -133,6 +138,20 @@ export class OwnerHub {
       if (socket.index) { const summary = this.summary(chatId, socket.personId); if (summary) socket.send({ type: "event", event: "chats.updated", data: summary }); }
     }
     ledger.markPublished(sessionKey, session.lastSeq);
+  }
+  /**
+   * `POST /chats/dm`: create the owner-main session and the person's web conversation (its `primary`) when they do
+   * not exist yet, then index the chat. Idempotent.
+   */
+  openDm(agentId: string, personId: string, at = Date.now()): void {
+    const { sessionKey, ledger } = this.resolve(`dm:${agentId}`);
+    const conversation = { connectionId: WEB_CONNECTION, channel: "web", accountId: webAccount(this.ownerId), kind: "direct" as const,
+      peerId: webTarget(personId), sessionKey, personId, replyRoute: { connectionId: WEB_CONNECTION, target: webTarget(personId), messageId: "", data: {} }, at };
+    ledger.store.transaction(() => {
+      ledger.ensureSession(sessionKey, "owner_main", "owner-main", at);
+      if (!ledger.conversationSession(conversationKey(conversation))) ledger.ensureConversation(conversation, "primary");
+    });
+    this.publish(agentId, sessionKey);
   }
   /** Publish every session of an agent whose ledger is ahead of the hub (startup and recovery). */
   sync(agentId: string): void {

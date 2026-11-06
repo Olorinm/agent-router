@@ -113,3 +113,8 @@ CREATE INDEX reg_identities_person ON reg_person_identities(person_id);`;
 export const AGENT_LEDGER_V2 = `
 CREATE INDEX ledger_pending_by_turn ON ledger_pending_inputs(turn_id) WHERE turn_id IS NOT NULL;
 CREATE INDEX ledger_cards_by_turn ON ledger_cards(turn_id);`;
+
+
+/** Phase 3 dispatcher: resume lookups per session read started inputs newest first. */
+export const AGENT_LEDGER_V3 = `
+CREATE INDEX ledger_pending_by_session ON ledger_pending_inputs(session_key, created_at);`;

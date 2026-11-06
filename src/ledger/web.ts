@@ -9,6 +9,7 @@ import { digest } from "../execution/protocol.js";
 import { WorkError } from "../execution/work.js";
 import { LIMITS, type HubSocket, type OwnerHubs } from "./hub.js";
 import { personId, type PersonRegistry } from "./registry.js";
+import type { WebChannel } from "../channels/web.js";
 
 export interface OwnerPrincipal { personId: string; ownerId: string; matrixUserId: string }
 /** ADR 0005 section 8.1. Phase 6 adds a native implementation beside Synapse whoami. */
@@ -33,11 +34,20 @@ export interface WebLedgerDependencies {
   open(agentId: string): Promise<void>;
   owned(ownerId: string): Array<{ id: string; name: string }>;
   debug(agentId: string): Record<string, unknown>;
+  /** ADR 0005 `send` (phase 3, `AGENT_LEDGER_SEND`): owner messages and redactions through the web channel. */
+  send?: boolean | undefined;
+  /** The agent's web channel; undefined when the agent has no channel runtime. */
+  channel?(agentId: string): Promise<WebChannel | undefined>;
 }
 const bearer = (req: IncomingMessage) => req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? "";
-const features = { history: true, send: false, cards: false, attachments: false, reset: false, groups: false };
-const limits = { textBytes: 24_000, eventBytes: 256 * 1024, historyPage: LIMITS.pageEvents, historyBytes: LIMITS.pageBytes,
-  attachmentBytes: 25 * 1024 * 1024, attachmentsPerMessage: 10, socketsPerPerson: 10, features };
+const baseLimits = { textBytes: 24_000, eventBytes: 256 * 1024, historyPage: LIMITS.pageEvents, historyBytes: LIMITS.pageBytes,
+  attachmentBytes: 25 * 1024 * 1024, attachmentsPerMessage: 10, socketsPerPerson: 10, sendsPerMinute: 60 };
+const sendRequest = z.object({
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/), text: z.string().max(1_000_000),
+  attachments: z.array(z.string().min(1).max(128)).max(10).optional(),
+  mentions: z.object({ agentIds: z.array(z.string().min(1).max(128)).max(50), all: z.boolean().optional() }).strict().optional(),
+  replyTo: z.string().min(1).max(64).optional(),
+}).strict();
 const seq = z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const historyQuery = z.object({ before: seq.optional(), after: seq.optional(), generation: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(LIMITS.pageEvents).default(50), strict: z.enum(["true", "false"]).optional() }).strict()
@@ -67,6 +77,8 @@ class Tickets {
  */
 export function createWebLedger(dependencies: WebLedgerDependencies) {
   const { hubs, persons, authenticator } = dependencies, tickets = new Tickets(), epoch = `ep_${randomBytes(8).toString("hex")}`;
+  const send = Boolean(dependencies.send && dependencies.channel);
+  const limits = { ...baseLimits, features: { history: true, send, cards: false, attachments: false, reset: false, groups: false } };
   const router = express.Router();
   // Its own bound before authentication (each request may cost a whoami); the service-wide 1200/min also applies.
   router.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: "draft-8", legacyHeaders: false,
@@ -95,10 +107,11 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       limit: z.coerce.number().int().min(1).max(200).default(50) }).strict().parse(req.query);
     res.json(hub(res).chats(principal(res).personId, { archived: query.archived === "true", cursor: query.cursor, limit: query.limit }));
   });
-  /** Phase 2: a DM chat exists for every owned agent, so this only resolves (and indexes) it. Idempotent. */
+  /** Creates the agent's owner DM chat (session and web conversation) when it does not exist yet. Idempotent. */
   router.post("/chats/dm", async (req, res) => {
     const body = z.object({ agentId: z.string().min(1).max(128) }).strict().parse(req.body);
     const chatId = `dm:${body.agentId}`, target = await chat(res, chatId);
+    target.openDm(body.agentId, principal(res).personId);
     const summary = target.summary(chatId, principal(res).personId);
     if (!summary) throw new WorkError("chat_not_found", 404);
     res.json(summary);
@@ -119,6 +132,44 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     res.json((await chat(res, req.params.chatId)).read(req.params.chatId, principal(res).personId, body.seq));
   });
   router.get("/chats/:chatId/turns/:turnId", async (req, res) => res.json((await chat(res, req.params.chatId)).turn(req.params.chatId, req.params.turnId)));
+  if (send) {
+    // Per person, after authentication: each send may start a turn.
+    const sends = rateLimit({ windowMs: 60_000, limit: baseLimits.sendsPerMinute, standardHeaders: "draft-8", legacyHeaders: false,
+      keyGenerator: (_req, res) => `person:${principal(res).personId}`,
+      handler: (req, res) => {
+        const reset = (req as express.Request & { rateLimit?: { resetTime?: Date } }).rateLimit?.resetTime;
+        res.status(429).json({ error: "rate_limit_exceeded", retryAfterMs: Math.max(0, (reset?.getTime() ?? Date.now() + 60_000) - Date.now()) });
+      } });
+    /** The writable chat behind a chat id, and the agent's web channel. Observed chats are read-only. */
+    const writable = async (res: express.Response, chatId: string) => {
+      const target = await chat(res, chatId), resolved = target.resolve(chatId);
+      if (resolved.kind !== "dm") throw new WorkError("chat_read_only", 403);
+      const channel = await dependencies.channel!(resolved.agentId);
+      if (!channel) throw new WorkError("agent_channels_not_configured", 409);
+      return { target, resolved, channel };
+    };
+    const rendered = (target: ReturnType<typeof hubs.hub>, chatId: string, resolved: ReturnType<ReturnType<typeof hubs.hub>["resolve"]>, event: import("./ledger.js").LedgerEvent) =>
+      target.render(chatId, resolved.agentId, resolved.ledger, resolved.ledger.session(resolved.sessionKey)?.generation ?? 1, event, true);
+    router.post("/chats/:chatId/messages", sends, async (req, res) => {
+      const body = sendRequest.parse(req.body), chatId = req.params.chatId as string;
+      const { target, resolved, channel } = await writable(res, chatId);
+      if (Buffer.byteLength(body.text) > baseLimits.textBytes) throw new WorkError("message_too_large", 413);
+      // Attachments arrive with the blob store (phase 4).
+      if (body.attachments?.length) throw new WorkError("attachments_unsupported", 422);
+      if (body.mentions && body.mentions.agentIds.some((id) => id !== resolved.agentId)) throw new WorkError("mention_not_member", 422);
+      if (!body.text.trim()) throw new WorkError("message_empty", 422);
+      if (body.replyTo && resolved.ledger.event(body.replyTo)?.sessionKey !== resolved.sessionKey) throw new WorkError("reply_target_not_found", 422);
+      const result = channel.submit({ personId: principal(res).personId, idempotencyKey: body.idempotencyKey, text: body.text, replyTo: body.replyTo });
+      res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event),
+        addressed: [{ agentId: resolved.agentId, state: result.inputState === "control" ? "control" : "queued" }] });
+    });
+    router.post("/chats/:chatId/events/:eventId/redact", sends, async (req, res) => {
+      const body = z.object({ idempotencyKey: sendRequest.shape.idempotencyKey }).strict().parse(req.body ?? {});
+      const chatId = req.params.chatId as string, { target, resolved, channel } = await writable(res, chatId);
+      const result = channel.redact(principal(res).personId, resolved.sessionKey, req.params.eventId as string, body.idempotencyKey);
+      res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event), dropped: result.dropped });
+    });
+  }
   /** Phase 1 diffing aid: ledger counts beside the legacy and Matrix mirror counts, per owned agent. */
   router.get("/debug/ledger", async (_req, res) => {
     const data = [];
