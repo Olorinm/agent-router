@@ -50,7 +50,8 @@ export function createConnectorApp(connector: MatrixConnector, apiToken: string,
   }));
   app.use(auth);
   // ADR 0005 19.2: the Matrix social API needs a homeserver. Work, inbox, requests and status keep working.
-  app.use(/^\/api\/(contacts|blocked|invites|conversations|messages|rooms|events)(\/|$)/, (_req, res, next) => {
+  // Case-insensitive like Express routing, so no spelling of the path bypasses it (the transport refuses anyway).
+  app.use(/^\/api\/(contacts|blocked|invites|conversations|messages|rooms|events)(\/|$)/i, (_req, res, next) => {
     if (connector.transport.dormant) { res.status(409).json({ error: "matrix_disabled" }); return; }
     next();
   });
