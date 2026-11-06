@@ -1,27 +1,20 @@
 import { bindAccount, type AttachmentReference, type ChannelAdapter, type ChannelContent, type ChannelContext, type ChannelMessage, type MediaContent,
-  type RecordedAttachment, type RecordedMedia, type ReplyRoute } from "../communication/types.js";
-import type { CommunicationCore, InboxRecord } from "../communication/core.js";
-import { digest } from "../execution/protocol.js";
-import { WorkError } from "../execution/work.js";
-import type { AgentLedger, LedgerEvent } from "../ledger/ledger.js";
-import type { OwnerAttachments } from "../ledger/blobs-hub.js";
-
-/** The connection id of the web channel on every agent's channel core (ADR 0005 phase 3). */
-export const WEB_CONNECTION = "web";
-/** The web channel's account is the owner (ADR 4.1 `account_id`: ownerKey for web). */
-export const webAccount = (ownerId: string) => digest(ownerId);
-export const webTarget = (personId: string) => `person:${personId}`;
-export interface WebSendInput { personId: string; idempotencyKey: string; text: string; replyTo?: string | undefined; attachments?: string[] | undefined }
-export interface WebSendResult { duplicate: boolean; event: LedgerEvent; inputState: string | null }
+  type RecordedAttachment, type RecordedMedia, type ReplyRoute } from "../api.js";
+import type { CommunicationCore, InboxRecord } from "../../communication/core.js";
+import { WorkError } from "../../execution/work.js";
+import type { AgentLedger, LedgerEvent } from "../../ledger/ledger.js";
+import type { OwnerAttachments } from "../../ledger/blobs-hub.js";
+import { WEB_CONNECTION, webAccount, webTarget, type WebIngress, type WebSendInput, type WebSendResult } from "../../ledger/surfaces.js";
 
 /**
  * Owner web messages as a channel adapter. A web message enters the same ingress → claim → pending input → turn
  * path as every other channel, in the owner-main session. Its delivery is the ledger event itself, so `send` is
  * never reached for a recorded reply (the core settles web outbox rows when they are recorded).
  */
-export class WebChannel implements ChannelAdapter {
+export class WebChannel implements ChannelAdapter, WebIngress {
   readonly kind = "web";
   readonly retrySafe = true;
+  readonly ledgerDelivery = true;
   readonly capabilities: { receive: string[]; send: string[]; stream: boolean; buttons: boolean; native: string[] };
   /** Agent outbound media (ADR 0005 16.5): stored under the owner's prefix and attached to the content event. */
   readonly recordedMedia: RecordedMedia | undefined;

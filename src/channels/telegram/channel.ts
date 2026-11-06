@@ -1,10 +1,6 @@
 import { Bot, GrammyError, InputFile, type Context } from "grammy";
-import { PollingChannel } from "./polling.js";
-import { ChannelHttpError } from "./http.js";
-import { bindAccount, ChannelSendError, sendChunks, type ChannelAdapter, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent } from "../communication/types.js";
+import { PollingChannel, ChannelHttpError, bindAccount, ChannelSendError, sendChunks, download, mediaContent, digest, type ChannelAdapter, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent } from "../api.js";
 
-import { download, mediaContent } from "../communication/media.js";
-import { digest } from "../execution/protocol.js";
 
 export class TelegramChannel extends PollingChannel implements ChannelAdapter {
   readonly kind = "telegram";

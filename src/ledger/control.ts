@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ChannelHttpError } from "../channels/http.js";
+import { ChannelHttpError } from "../http.js";
 import type { CommunicationCore, InboxRecord, OutboxRecord } from "../communication/core.js";
 import { interaction } from "../communication/interaction.js";
 import type { DurableStore } from "../communication/store.js";

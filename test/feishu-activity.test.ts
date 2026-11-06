@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LarkChannel } from "@larksuiteoapi/node-sdk";
-import { feishuActivity } from "../src/channels/feishu-activity.js";
-import { FEISHU_EMOJIS } from "../src/channels/feishu-emojis.js";
-import { FeishuChannel } from "../src/channels/feishu.js";
+import { feishuActivity } from "../src/channels/feishu/index.js";
+import { FEISHU_EMOJIS } from "../src/channels/feishu/index.js";
+import { FeishuChannel } from "../src/channels/feishu/index.js";
 import { CommunicationCore, type OutboxRecord } from "../src/communication/core.js";
 import { DurableStore } from "../src/communication/store.js";
 import { CliWork } from "../src/execution/work.js";

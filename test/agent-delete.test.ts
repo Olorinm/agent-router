@@ -68,16 +68,13 @@ describe("deleting an Agent", () => {
     expect((await service.create(owner, "scratch")).id).not.toBe(agent.id);
   });
 
-  it("refuses while work is running or a channel entry points at the Agent, and keeps the Agent intact", async () => {
+  it("refuses while work is running, and keeps the Agent intact", async () => {
     const { service, api, deactivated } = await setup();
     const agent = await service.create(owner, "busy");
     const runtime = await service.runtime(agent.id);
     runtime.connector.store.set("communication_runs", "claim", { phase: "unknown" });
     expect(await api(`${root}/agents/${agent.id}`, "alice", "DELETE")).toEqual({ status: 409, data: { error: "agent_has_active_or_unknown_run" } });
     runtime.connector.store.set("communication_runs", "claim", { phase: "finished" });
-    service.channels.register({ id: "mail", kind: "agentmail", account: "busy@example.test", agentId: agent.id, rules: [], enabled: true, accessMode: "read-only" },
-      { poll: async () => ({ messages: [], cursor: "", more: false }), reply: async () => "sent" });
-    expect(await api(`${root}/agents/${agent.id}`, "alice", "DELETE")).toEqual({ status: 409, data: { error: "agent_used_by_channel_configuration" } });
     expect(deactivated).toEqual([]);
     expect(service.agent(agent.id).status).toBe("active");
     expect((await api(`${root}/agents/${agent.id}/gateway/api/status`)).status).toBe(200);

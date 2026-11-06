@@ -5,7 +5,7 @@ import { ManagedService, createManagedApp, type ManagedAgent, type ServiceConfig
 import type { ApplicationInbox } from "../src/matrix/application-service.js";
 import type { MatrixTransport } from "../src/matrix/transport.js";
 import { channelConfigSchema, createChannelRuntime } from "../src/service/channels.js";
-import { ChannelHttpError } from "../src/channels/http.js";
+import { ChannelHttpError } from "../src/http.js";
 import type { HostCall, HostPort, HostRun } from "../src/execution/host.js";
 import { AgentLedger } from "../src/ledger/ledger.js";
 

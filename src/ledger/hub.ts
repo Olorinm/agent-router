@@ -5,7 +5,7 @@ import { digest } from "../execution/protocol.js";
 import type { RunBinding } from "../execution/host-worker.js";
 import { WorkError } from "../execution/work.js";
 import { cardSource, conversationKey, legacySession, ulid, type AgentLedger, type LedgerEvent, type LedgerSession } from "./ledger.js";
-import { WEB_CONNECTION, webAccount, webTarget } from "../channels/web.js";
+import { WEB_CONNECTION, webAccount, webTarget } from "./surfaces.js";
 import { OWNER_HUB_V1 } from "./schema.js";
 import { HubRooms, isRoomChat } from "./rooms.js";
 

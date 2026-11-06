@@ -5,9 +5,8 @@ import { buildCdnDownloadUrl, buildCdnUploadUrl } from "./vendor/cdn-url.js";
 import { getUploadUrl } from "./vendor/api.js";
 import type { CDNMedia, MessageItem } from "./vendor/types.js";
 import { UploadMediaType, MessageItemType } from "./vendor/types.js";
-import { download, mediaContent, MAX_MEDIA_BYTES } from "../../communication/media.js";
-import type { AttachmentReference, MediaContent } from "../../communication/types.js";
-import type { WeixinCredentials } from "./index.js";
+import { download, mediaContent, MAX_MEDIA_BYTES, type AttachmentReference, type MediaContent } from "../api.js";
+import type { WeixinCredentials } from "./channel.js";
 
 const cdn = "https://novac2c.cdn.weixin.qq.com/c2c";
 function trusted(url: string) {

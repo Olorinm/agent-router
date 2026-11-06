@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ChannelHttpError, ServiceHttp } from "../channels/http.js";
+import { ChannelHttpError, ServiceHttp } from "../http.js";
 import type { HostTool } from "./tools.js";
 import type { MediaContent } from "../communication/types.js";
 

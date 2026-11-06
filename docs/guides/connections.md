@@ -48,8 +48,7 @@ agent-router channel-connect grove-mail \
   --owner-email alice@example.org --api-key-file /private/mail-key
 ```
 
-This does not authorize an arbitrary Gmail/Outlook mailbox. Legacy AgentMail
-configuration remains available through the [channel guide](channels.md).
+This does not authorize an arbitrary Gmail/Outlook mailbox.
 Secrets are read from files or hidden prompts, never command-line token values.
 
 The CLI waits for QR setup by default, and prints the job ID immediately.

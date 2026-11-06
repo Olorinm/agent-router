@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bot } from "grammy";
 import type { LarkChannel, NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { TelegramChannel } from "../src/channels/telegram.js";
-import { FeishuChannel } from "../src/channels/feishu.js";
-import { GroveMailChannel } from "../src/channels/grove-mail.js";
+import { TelegramChannel } from "../src/channels/telegram/index.js";
+import { FeishuChannel } from "../src/channels/feishu/index.js";
+import { GroveMailChannel } from "../src/channels/grove-mail/index.js";
 import { WeixinChannel } from "../src/channels/weixin/index.js";
 import { getUpdates } from "../src/channels/weixin/vendor/api.js";
-import { MatrixChannel } from "../src/channels/matrix.js";
+import { MatrixChannel } from "../src/channels/matrix/index.js";
 import { MatrixConnector } from "../src/matrix/connector.js";
 import type { MatrixTransport } from "../src/matrix/transport.js";
 import type { RoomEvent } from "../src/matrix/protocol.js";
 import { CommunicationCore } from "../src/communication/core.js";
 import { DurableStore } from "../src/communication/store.js";
 import { CliWork } from "../src/execution/work.js";
-import { ServiceHttp, ChannelHttpError } from "../src/channels/http.js";
+import { ServiceHttp, ChannelHttpError } from "../src/http.js";
 import type { ChannelContext, ChannelMessage, ReplyRoute } from "../src/communication/types.js";
 import { channelConfigSchema } from "../src/service/channels.js";
 

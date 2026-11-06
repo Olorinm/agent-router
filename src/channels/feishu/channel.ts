@@ -1,9 +1,7 @@
 import { createLarkChannel, Domain, LarkChannelError, LoggerLevel, type LarkChannel, type CardActionEvent, type NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { bindAccount, ChannelSendError, sendChunks, type ChannelAdapter, type ChannelContext, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent, type ChannelCapabilities } from "../communication/types.js";
+import { bindAccount, ChannelSendError, sendChunks, mediaContent, readBytes, digest, type ChannelAdapter, type ChannelContext, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent, type ChannelCapabilities } from "../api.js";
 
-import { mediaContent, readBytes } from "../communication/media.js";
-import { digest } from "../execution/protocol.js";
-import { feishuActivity } from "./feishu-activity.js";
+import { feishuActivity } from "./activity.js";
 
 export class FeishuChannel implements ChannelAdapter {
   readonly kind = "feishu";

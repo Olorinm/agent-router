@@ -12,7 +12,7 @@ import type { HostCall, HostPort, HostRun } from "../src/execution/host.js";
 import type { HostTools } from "../src/execution/tools.js";
 import { digest, key } from "../src/execution/protocol.js";
 import { ChannelSendError, sendChunks, type ChannelAdapter, type ChannelContext, type ChannelKind, type ChannelMessage, type ReplyRoute } from "../src/communication/types.js";
-import { ChannelHttpError } from "../src/channels/http.js";
+import { ChannelHttpError } from "../src/http.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });

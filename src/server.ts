@@ -4,7 +4,6 @@ import type { Duplex } from "node:stream";
 import { ManagedService, createManagedApp, type ServiceConfig, type ServiceDependencies } from "./matrix/managed.js";
 import { ConnectionConfiguration, type ConnectionOptions, type HostBindingProvider } from "./connections/configuration.js";
 import { createConnections } from "./connections/routes.js";
-import { configureChannels } from "./channels/config.js";
 
 export function createRouter(config: ServiceConfig, options: {
   connections?: string | Partial<ConnectionOptions>;
@@ -15,27 +14,19 @@ export function createRouter(config: ServiceConfig, options: {
   const service = new ManagedService(config, { ...options.dependencies, configure: connections.factory });
   connections.attach(service);
   const routes = createConnections(service, connections);
-  const channelIds = config.channelConfigFile
-    ? configureChannels(service.channels, config.channelConfigFile, id => { service.agent(id); }) : [];
-  let timer: ReturnType<typeof setInterval> | undefined;
   let starting: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
   let closed = false;
   return {
-    service, connections, channelIds, app: createManagedApp(service, routes.router),
+    service, connections, app: createManagedApp(service, routes.router),
     /** Event socket upgrade (ADR 0005 8.4); true when handled. Only active with `ledgerRead`. */
     upgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => service.web?.upgrade(req, socket, head) ?? false,
     start: () => {
       if (closed) return Promise.reject(new Error("router_closed"));
-      return starting ??= service.start().then(() => {
-        if (!closed && channelIds.length) {
-          timer = setInterval(() => { for (const id of channelIds) void service.channels.tick(id); }, 1000);
-          timer.unref();
-        }
-      });
+      return starting ??= service.start();
     },
     close: () => {
-      closed = true; clearInterval(timer);
+      closed = true;
       return closing ??= (async () => { await starting?.catch(() => {}); await routes.close(); await service.close(); })();
     },
   };
@@ -44,7 +35,7 @@ export { ManagedService, type ManagedAgent, type ServiceConfig, type ServiceDepe
 export { ConnectionConfiguration, type HostBindingProvider } from "./connections/configuration.js";
 export { WorkError as RouterError } from "./matrix/cli-work.js";
 export { HttpAgentHost, type HostPort, type HostStartInput, type HostAdmission, type NativeSessionInput, type HostRun, type HostCall } from "./execution/host.js";
-export { ServiceHttp, ChannelHttpError } from "./channels/http.js";
+export { ServiceHttp, ChannelHttpError } from "./http.js";
 export type { HostTool, HostToolResult, HostTools } from "./execution/tools.js";
 export { checkChannels } from "./service/check.js";
 export { externalIdentityConfigSchema } from "./matrix/external-identity.js";

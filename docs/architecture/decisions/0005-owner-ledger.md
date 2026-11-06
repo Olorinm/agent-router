@@ -502,7 +502,7 @@ Section 16.3 has the exact endpoint.
 | `communication/tasks` API (`replyMessageIds`, `interactionMessageIds`) | Gains `turnId`, `inputEventIds`, `finalEventId`, `cardIds`, and is deprecated in favor of `GET /web/chats/:chatId/turns/:turnId`. | When the console stops calling it |
 | Matrix `timeline`, `room_info`, `read_markers` (agent side) | Read only by the Matrix CLI/social API. The console stops using them after phase 2. | With Synapse |
 | Mau `memory_history` (FTS) | Stays a derived search index. It can later be fed from ledger final events in place of completed-turn hooks. | Not in scope |
-| `src/channels/router.ts` visitor ledger | Untouched through phase 7 (section 15.2, open question 3). | — |
+| `src/channels/router.ts` visitor ledger | Untouched through phase 7 (section 15.2, open question 3). Removed 2026-11-06 with AgentMail; its registry records are deleted, not migrated. | Removed |
 
 ## 8. Web channel API
 
@@ -904,6 +904,8 @@ Still open:
    final events, and if so, in which phase? Not required by phases 3–7.
 3. **The public visitor ledger** (`src/channels/router.ts`, entries/visitors/decisions). It stays separate
    through phase 7 (section 15.2). Converging it onto the ledger ingress is a phase 8 candidate.
+   *Resolved 2026-11-06: removed (owner decision), together with the AgentMail entries it served; no
+   migration of its records.*
 4. **Mail sender authentication.** Pairing and owner resolution over mail trust the provider's sender
    address. Whether each mail provider exposes a DKIM/SPF verdict Router can require is unverified
    (section 18.4).
@@ -2078,7 +2080,7 @@ These answers are normative for clients; the Router and the Mau console (`web/sr
 
 ## Implementation notes (phase 3)
 
-Phase 3 adds the `WebChannel` adapter (`src/channels/web.ts`), switches dispatch and flush to the ledger, and adds the send
+Phase 3 adds the `WebChannel` adapter (`src/channels/web/`), switches dispatch and flush to the ledger, and adds the send
 and redaction endpoints. These choices fill gaps in the text above or deviate from it:
 
 1. **Flag.** `ServiceConfig.ledgerSend` (`AGENT_LEDGER_SEND=1`), effective only together with `ledgerRead`. It mounts the two
@@ -2239,7 +2241,7 @@ routes in `src/ledger/web.ts`. Attachments (16.5) are a separate change. These c
 ## Implementation notes (phase 5)
 
 Phase 5 adds native groups: `src/ledger/rooms.ts` (hub rooms, transcript, fan-out, group context, mirror),
-`src/ledger/rooms-web.ts` (group commands), `src/ledger/rooms-fanout.ts` (worker) and `src/channels/room.ts` (`RoomChannel`).
+`src/ledger/rooms-web.ts` (group commands), `src/ledger/rooms-fanout.ts` (worker) and `src/channels/room/` (`RoomChannel`).
 These choices fill gaps in section 17 or deviate from it:
 
 1. **Flag.** `ServiceConfig.ledgerGroups` (`AGENT_LEDGER_GROUPS=1`), effective with `ledgerRead` and `ledgerSend`. It sets

@@ -1,11 +1,9 @@
-import { bindAccount, ChannelSendError, type ChannelAdapter, type ChannelContent, type ChannelContext, type ChannelMessage, type ReplyRoute } from "../communication/types.js";
-import type { CommunicationCore } from "../communication/core.js";
-import { digest } from "../execution/protocol.js";
-import { WorkError } from "../execution/work.js";
-import type { HubRooms, RoomDelivery } from "../ledger/rooms.js";
+import { bindAccount, ChannelSendError, digest, type ChannelAdapter, type ChannelContent, type ChannelContext, type ChannelMessage, type ReplyRoute } from "../api.js";
+import type { CommunicationCore } from "../../communication/core.js";
+import { WorkError } from "../../execution/work.js";
+import type { HubRooms, RoomDelivery } from "../../ledger/rooms.js";
+import { ROOM_CONNECTION } from "../../ledger/surfaces.js";
 
-/** The connection id of the hub room channel on every agent's channel core (ADR 0005 phase 5). */
-export const ROOM_CONNECTION = "room";
 
 /**
  * Owner hub rooms as a channel adapter (ADR 0005 section 17). The fan-out worker hands the owner's addressed room

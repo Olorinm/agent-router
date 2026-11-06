@@ -3,7 +3,7 @@ import { DurableStore } from "../src/communication/store.js";
 import { CliWork } from "../src/execution/work.js";
 import { RunObservation } from "../src/execution/observation.js";
 import { archiveRun, archivedEvents, compactRunEvents, runArchive } from "../src/execution/run-archive.js";
-import { ChannelHttpError } from "../src/channels/http.js";
+import { ChannelHttpError } from "../src/http.js";
 import type { HostPort } from "../src/execution/host.js";
 
 const close: Array<() => void> = [];

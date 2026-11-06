@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { ChannelHttpError } from "./http.js";
+import { ChannelHttpError } from "../http.js";
 import type { ChannelContext } from "../communication/types.js";
 
 /** One reader per connection. Checkpoints are owned by the durable communication store. */

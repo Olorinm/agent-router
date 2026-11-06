@@ -1,9 +1,6 @@
-import { ChannelHttpError, ServiceHttp } from "./http.js";
+import { ChannelHttpError, ServiceHttp, PollingChannel, bindAccount, ChannelSendError, download, mediaContent, type ChannelAdapter, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent } from "../api.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { PollingChannel } from "./polling.js";
-import { bindAccount, ChannelSendError, type ChannelAdapter, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent } from "../communication/types.js";
 
-import { download, mediaContent } from "../communication/media.js";
 
 interface MailEvent { sequence: number; inbox_id: string; event_id: string; type: string; created_at: string; data: { message?: Record<string, any> }; }
 export class GroveMailChannel extends PollingChannel implements ChannelAdapter {
