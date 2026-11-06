@@ -67,12 +67,16 @@ export class CommunicationCore {
   /** Phase 3: the ledger is the dispatch and delivery queue (see `AgentLedger.authoritative`). */
   private get authoritative(): boolean { return Boolean(this.ledger?.authoritative); }
   /**
-   * A ledger write beside its legacy record. Shadow mode (phases 1–2) swallows ledger errors. Authoritative mode
-   * runs it in the caller's transaction, so a ledger error rolls back the legacy record as well.
+   * A ledger write beside its legacy record, in the caller's transaction when there is one. A ledger error rolls back
+   * only the ledger write (savepoint) and is recorded in `ledger.lastError`; the legacy record commits, and the
+   * authoritative dispatcher and flush pick it up through their legacy fallbacks (records without a pending input or
+   * delivery row, settled records reconciled). Failing the receipt instead would stop a channel cursor forever on a
+   * deterministic ledger error (a Matrix /sync batch or Feishu redelivery loop).
+   * `strict` (web receipts in authoritative mode) throws instead: the HTTP client sees the error and retries.
    */
-  private shadow<T>(work: (ledger: AgentLedger) => T): T | undefined {
+  private shadow<T>(work: (ledger: AgentLedger) => T, strict = false): T | undefined {
     const ledger = this.ledger; if (!ledger) return undefined;
-    if (!ledger.authoritative) return ledger.shadow(() => work(ledger));
+    if (!strict || !ledger.authoritative) return ledger.shadow(() => work(ledger));
     return this.store.db.isTransaction ? work(ledger) : this.store.transaction(() => work(ledger));
   }
   /** One transaction for a legacy record and its ledger write. */
@@ -169,7 +173,7 @@ export class CommunicationCore {
         this.store.insert("communication_outbox", noticeId, { id: noticeId, taskId: null, route: record.replyRoute,
           text: "这条消息超过当前 24 KB 的文字输入上限，请缩短内容后再发送。", state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
       }
-      this.shadow((ledger) => shadowReceive(ledger, this.shadowContext, record, { owner, allowed, oversized, noticeId }));
+      this.shadow((ledger) => shadowReceive(ledger, this.shadowContext, record, { owner, allowed, oversized, noticeId }), adapter.kind === "web");
       if (noticeId) this.settleWeb(this.store.get<OutboxRecord>("communication_outbox", noticeId)!, undefined);
     };
     // Matrix invokes receipt inside its existing transaction; other channels create their own.
@@ -213,7 +217,7 @@ export class CommunicationCore {
         if (!quote && value.source.quoted?.messageId && this.authoritative) {
           const ledger = this.ledger!, quotedId = value.source.quoted.messageId;
           const target = ledger.event(ledger.platformEvent(value.connectionId, quotedId) ?? quotedId);
-          if (target && typeof target.body.text === "string" && !target.body.redacted) quote = target.body.text;
+          if (target && target.sessionKey === value.conversationId && typeof target.body.text === "string" && !target.body.redacted) quote = target.body.text;
         }
         if (!quote && value.source.quoted?.messageId) {
           const original = this.store.entries<InboxRecord>("communication_inbox").map(({ value: item }) => item).find((item) => item.connectionId === value.connectionId && item.replyRoute.target === value.replyRoute.target && item.replyRoute.messageId === value.source.quoted!.messageId);

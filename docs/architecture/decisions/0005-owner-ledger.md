@@ -1008,9 +1008,14 @@ and redaction endpoints. These choices fill gaps in the text above or deviate fr
    (`AgentLedger.authoritative`). Embedders and tests pass `ledgerSend: true` in the `ServiceConfig` given to `createRouter` /
    `ManagedService`. Flag off: the routes are 404, `send` is `false`, and dispatch and flush use the legacy records again;
    Matrix send keeps working.
-2. **Authoritative ledger.** With the flag, ledger writes on the channel path are no longer shadow writes: they run in the same
-   transaction as the legacy record, so a ledger error fails the receipt (the adapter does not advance its cursor) or the
-   transition. Without the flag they stay shadow writes (phase 1 rule 3).
+2. **Authoritative ledger.** With the flag, the dispatcher and flush read the ledger, and ledger writes run in the same
+   transaction as their legacy record. A web receipt is strict: a ledger error fails the request (500) and nothing is
+   recorded; the client retries with the same key. Every other ledger write keeps the phase 1 savepoint rule: a ledger error
+   rolls back only the ledger write, is reported in `ledger.lastError` (`GET /web/debug/ledger`), and the legacy record
+   commits. Failing a channel receipt instead would stop its cursor forever on a deterministic error (a Matrix `/sync` batch
+   or a Feishu redelivery loop). The legacy record is then carried by the fallbacks of rules 3 and 5 (a receipt without a
+   pending input is still dispatched; a settled record is reconciled; an outbox row without a delivery row is still sent),
+   so a ledger fault degrades the transcript, never the channel. Without the flag all ledger writes are shadow writes.
 3. **Dispatch** reads `ledger_pending_inputs` (`state IN ('queued','starting')`, ordered by `created_at`, then receipt order).
    An input becomes `starting` when the dispatcher takes it, before control handling; after a crash a `starting` input is sent
    again with the same `channel-<input_id>` message id. `received` legacy records without a pending input (reactions, edits,
@@ -1023,8 +1028,8 @@ and redaction endpoints. These choices fill gaps in the text above or deviate fr
 5. **Flush** reads `ledger_deliveries` (`status='queued' AND next_at<=now`) and then queued legacy outbox rows that have no
    delivery row (for example rows from before the cutover). A due delivery whose legacy row is no longer queued is resynced,
    not sent. Adapters, chunk checkpoints and dispositions are unchanged.
-6. **Web channel.** Every channel runtime registers `WebChannel` as connection `web` (the id is reserved in channel
-   configuration) with the owner's person id as its only owner address. A web message is a normal `ChannelMessage`:
+6. **Web channel.** With the flag, every channel runtime registers `WebChannel` as connection `web` (the id is reserved in
+   channel configuration; without the flag the connection is not registered and channel status is unchanged) with the owner's person id as its only owner address. A web message is a normal `ChannelMessage`:
    `externalId = <personId>:<idempotencyKey>`, `sender = <personId>`, `scope: "direct"`, reply target `person:<personId>`,
    and `quoted.messageId = replyTo`. It goes through the same receive → claim → event → pending input → turn path, into the
    owner-main session, so web, Feishu, mail and Matrix owner DMs are one chat with one execution session. Its conversation is

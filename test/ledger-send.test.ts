@@ -145,11 +145,20 @@ describe("web channel ingress and the authoritative ledger queue", () => {
     expect(h.store.get<InboxRecord>("communication_inbox", legacy.id)).toMatchObject({ state: "submitted" });
     expect(h.work.list().map((item) => item.id)).toHaveLength(2);
   });
-  it("fails the receipt, not just the ledger row, when an authoritative ledger write fails", async () => {
+  it("never wedges a channel on a failing ledger write: channel receipts degrade to the legacy path, web sends fail", async () => {
     const h = await harness();
     h.store.db.exec("DROP TABLE ledger_events");
-    expect(() => h.core.receive("feishu", feishuMessage("f1"))).toThrow();
-    expect(h.store.entries("communication_inbox")).toHaveLength(0);
+    // A deterministic ledger error must not fail the receipt: Matrix /sync and Feishu redelivery would loop on it forever.
+    const record = h.core.receive("feishu", feishuMessage("f1"));
+    expect(h.store.get<InboxRecord>("communication_inbox", record.id)).toMatchObject({ state: "received" });
     expect(h.ledger.claimFor("feishu", "f1")).toBeUndefined();
+    expect(h.ledger.lastError).not.toBe("");
+    // The receipt has no pending input, so the authoritative dispatcher runs it through its legacy fallback.
+    await h.core.dispatch(); await h.worker.tick(); await h.worker.tick(); await h.core.dispatch(); await h.core.flush();
+    expect(h.host.starts.map((start) => start.input.split("\n")[0])).toEqual(["飞书-f1"]);
+    expect(h.feishu.sent.map((item) => item.text)).toEqual(["回答-1"]);
+    // A web send has no cursor: the error reaches the HTTP client, and nothing is half-recorded.
+    expect(() => h.web.submit({ personId: person, idempotencyKey: key(1), text: "网页" })).toThrow();
+    expect(h.store.entries<InboxRecord>("communication_inbox").filter(({ value }) => value.connectionId === WEB_CONNECTION)).toHaveLength(0);
   });
 });
