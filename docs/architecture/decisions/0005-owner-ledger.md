@@ -1980,11 +1980,11 @@ deviate from it where the code required:
 
 The attachment part of section 16.5 is implemented in `src/ledger/blobs.ts` (stores), `src/ledger/blobs-hub.ts`
 (`OwnerAttachments`: uploads, permissions, reference counting, sweeper, send binding) and `src/ledger/blobs-web.ts`
-(routes). Cards, control (cancel, steer, reset, redaction, purge) and schedule targets are not part of this change.
+(routes). Cards and control (cancel, steer, reset, purge) shipped separately (phase 4 cards and control notes); the
+integration points with them are notes 11 and 13. Schedule targets are not part of this change.
 
-1. **Flag and config.** `ServiceConfig.ledgerAttachments` (`AGENT_LEDGER_ATTACHMENTS=1`, needs `ledgerRead`) builds
-   `ManagedService.attachments` and sets `features.attachments`. Phase 3's `send` is not on `main` yet, so the flag
-   does not check it; once `send` lands, `attachments` must also require it (section 16 table). `GET /me` adds
+1. **Flag and config.** `ServiceConfig.ledgerAttachments` (`AGENT_LEDGER_ATTACHMENTS=1`, needs `ledgerRead` and `ledgerSend`,
+   section 16 table) builds `ManagedService.attachments` and sets `features.attachments`. `GET /me` adds
    `limits.attachmentQuotaBytes` while the feature is on. Blob store: `ServiceConfig.blobStore` =
    `{ kind: "local", dir? }` (default `<stateDir>/blobs`) or `{ kind: "r2", bucket, accessKeyIdFile,
    secretAccessKeyFile, endpoint? | accountId? }` (`AGENT_BLOB_STORE=r2`, `AGENT_R2_*` as in 16.5, plus
@@ -2036,8 +2036,36 @@ The attachment part of section 16.5 is implemented in `src/ledger/blobs.ts` (sto
      `MAX_MEDIA_BYTES`). Agent outbound media on a web turn: `storeMedia(ownerId, target, media)` then `writeLedger`.
    - Redaction and purge (16.4): `releaseAgent(ownerId, agentId, attachmentIds)` / `releaseRoom(…)` after the
      ledger rows lose their `event_id` or are deleted.
-9. **Not done here.** Text over 256 KiB still becomes `truncated: true` (implementation note 13) rather than an
-   attachment; the Mau console composer; promotion on ingest.
+9. **Send.** `POST /chats/:chatId/messages` accepts `attachments: [attachmentId…]`. Validation order (phase 3 note 9) is
+   unchanged except that attachments without the feature stay 422 `attachments_unsupported`, and a message with
+   attachments may have empty text. `WebChannel.submit` runs `reserve` → one agent-store transaction (receive, then
+   `writeLedger` on the recorded event) → `commit`; any failure (or a message that was not recorded) runs `abort`. The
+   `ChannelMessage` carries `attachments: [{ id: attachmentId, name, mediaType, kind, data: { sha256, size } }]`, so the
+   claim hash covers the attachment ids: a retry with the same key, text and ids is `duplicate` (the uploads are bound by
+   then and are not reserved again), other ids are 409 `idempotency_key_reused`. For the web channel `shadowReceive` writes
+   the body entries `{ attachmentId, name, contentType, size, sha256 }` and leaves the rows to `writeLedger`; other channels
+   keep `{"channel":…}` locators. The model text lists them (`附件：<name> (<type>)`) and the Host gets the bytes through
+   `WebChannel.readAttachment` → `readMedia`, cached in `communication_media` like channel media.
+10. **Agent media on a web turn.** With the feature the web channel reports `send: ["text", "file", "image", "audio",
+    "video"]` (and the same in `receive`). The channel tool calls `CommunicationCore.submitContent`: on a channel with
+    `recordedMedia` (web) every file is stored with `storeMedia` first, then `queueContent` records the content event with
+    `attachments` (no `media`) and binds the rows with `writeLedger` in the same transaction; the outbox row keeps no copy of
+    the bytes. A retried tool call (same send key) stores nothing; a call that records no event releases what it stored.
+    The media is attached to the content event of that tool call, not to the turn's final text.
+11. **Redaction.** `WebChannel.redact` detaches the target's `ledger_attachments` rows (`event_id = NULL`) in the redaction
+    transaction and then calls `releaseAgent`. A bound upload is no longer readable through `hub_uploads` (only unbound
+    uploads are), so the redacted attachment is 404 at once and its blob is swept after the grace period. Purge:
+    `AgentLedger.purge` returns the ids of the `ledger_attachments` rows it deletes, and `LedgerControl.purge` calls
+    `releaseAgent` with them after its transaction (`ControlDependencies.releaseAttachments`, set by the channel runtime
+    with the feature). As with redaction, a crash between the two leaves the references (the blob is kept, never lost).
+12. **Not done here.** Text over 256 KiB still becomes `truncated: true` (implementation note 13) rather than an
+    attachment; promotion on ingest; rooms: `writeRoom`/`releaseRoom` and the room download lookup exist, but room
+    sends do not take `attachments` yet and `RoomChannel` stays text-only (phase 5 note 8).
+13. **Edge login (18.2).** The CSRF guard for edge principals refuses unsafe requests with a form-sendable body type
+    (`text/plain`, `multipart/form-data`, `application/x-www-form-urlencoded`) with 415 `content_type_not_allowed`. An
+    upload is the file's own type, so the guard accepts any type when the request carries `X-File-Name`: that header is
+    not CORS-safelisted and Router answers no preflight, so a cross-site page cannot send it. The allowed-`Origin` check
+    is unchanged. Downloads are same-origin `GET`s, so with an edge login the console can use plain `<img src>`.
 
 ## Client contract (phase 2, settled with the Mau console)
 
@@ -2116,14 +2144,14 @@ and redaction endpoints. These choices fill gaps in the text above or deviate fr
 7. **Web delivery.** A reply, notice or card to a web turn is recorded as its event and gets no `ledger_deliveries` row and no
    `delivery` event. Its legacy outbox row is written `accepted` at once with `externalId = eventId`, so
    `communication/tasks` (`replyMessageIds`) and other legacy views keep working. Deliveries to other channels are unchanged.
-   The web channel reports `send: ["text"]` only, so agent media and HTML to a web turn are rejected until phase 4.
+   The web channel reports `send: ["text"]` only, so agent media and HTML to a web turn are rejected (phase 4 adds media with the `attachments` feature).
 8. **Idempotency.** The claim hash is computed from the request (text and `replyTo`), so the same key and body return the
    stored event with `status: "duplicate"` (also after a redaction), and the same key with another body is 409
    `idempotency_key_reused` (Matrix txnId semantics). Two concurrent sends are ordered by their receipt: seq and dispatch order
    follow the commit order.
 9. **Validation order.** Chat (`chat_not_found` 404 for foreign or unknown chats, `chat_read_only` 403 for observed chats),
    agent runtime (`agent_channels_not_configured` 409 when the agent has no channel runtime), size (`message_too_large` 413 over
-   24 KB UTF-8), attachments (any → 422 `attachments_unsupported`), mentions (a DM accepts only its own agent id, otherwise
+   24 KB UTF-8), attachments (any → 422 `attachments_unsupported` without the phase 4 `attachments` feature; see phase 4 note 9), mentions (a DM accepts only its own agent id, otherwise
    422 `mention_not_member`; they are not stored), empty text (422 `message_empty`), `replyTo` (an event of the same chat,
    otherwise 422 `reply_target_not_found`). A malformed body or key is 400 `invalid_request`.
 10. **Rate limits.** Besides the 600/min/IP `/web` limit, sends and redactions share 60 requests per minute per person; the 429

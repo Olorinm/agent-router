@@ -280,4 +280,17 @@ describe("owner API with edge identity", () => {
     expect((await off.api(`${root}/web/me`, { Authorization: "Bearer owner" })).data.limits.features.identity).toBe(false);
     expect((await off.api(`${root}/web/identities`, { Authorization: "Bearer owner" })).status).toBe(404);
   });
+
+  it("lets an edge principal upload a file of a simple type (X-File-Name forces a preflight) and keeps the guard otherwise", async () => {
+    const t = await service({}, { ledgerSend: true, ledgerAttachments: true });
+    const jwt = { "cf-access-jwt-assertion": await t.sign(), Origin: "https://example.test" };
+    const upload = async (headers: Record<string, string>) => {
+      const response = await fetch(`http://127.0.0.1:${t.port}${root}/web/attachments`, { method: "POST", body: "plain notes", headers });
+      return { status: response.status, data: await response.json() as any };
+    };
+    expect(await upload({ ...jwt, "Content-Type": "text/plain", "X-File-Name": "notes.txt" })).toMatchObject({ status: 201, data: { contentType: "text/plain", name: "notes.txt" } });
+    expect(await upload({ ...jwt, "Content-Type": "text/plain" })).toEqual({ status: 415, data: { error: "content_type_not_allowed" } });
+    expect(await upload({ "cf-access-jwt-assertion": jwt["cf-access-jwt-assertion"], Origin: "https://evil.example.test", "Content-Type": "text/plain", "X-File-Name": "x.txt" }))
+      .toEqual({ status: 403, data: { error: "origin_not_allowed" } });
+  });
 });

@@ -80,7 +80,7 @@ export interface ServiceDependencies {
 }
 // ---- ADR 0005 phase 4 (attachments). Separate declarations (merged by TypeScript) keep the phase 3 edits above apart. ----
 export interface ServiceConfig {
-  /** ADR 0005 `attachments` (phase 4, `AGENT_LEDGER_ATTACHMENTS`, needs `ledgerSend`): upload/download routes and `features.attachments`. */
+  /** ADR 0005 `attachments` (phase 4, `AGENT_LEDGER_ATTACHMENTS`, needs `ledgerSend`): upload/download routes, attachments on send and `features.attachments`. */
   ledgerAttachments?: boolean;
   /** Blob store for attachments; default `LocalBlobStore` under `<stateDir>/blobs`. R2 credentials are read from files. */
   blobStore?: BlobStoreConfig;

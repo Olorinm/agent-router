@@ -239,7 +239,8 @@ export class OwnerAttachments {
   async resolve(owner: { ownerId: string; personId: string }, attachmentId: string, at = Date.now()): Promise<AttachmentMeta> {
     if (!/^at_[0-9A-Z]{26}$/.test(attachmentId)) throw new WorkError("attachment_not_found", 404);
     const hub = this.hub(owner.ownerId), db = hub.store.db;
-    const upload = db.prepare("SELECT * FROM hub_uploads WHERE attachment_id=? AND uploaded_by=?").get(attachmentId, owner.personId);
+    // A bound upload is readable through its message, so a redaction (rows without `event_id`) also ends access to it.
+    const upload = db.prepare("SELECT * FROM hub_uploads WHERE attachment_id=? AND uploaded_by=? AND bound_at IS NULL").get(attachmentId, owner.personId);
     if (upload) return { attachmentId, name: String(upload.name), contentType: String(upload.content_type), size: Number(upload.size), sha256: String(upload.sha256) };
     const room = db.prepare("SELECT * FROM hub_room_attachments WHERE attachment_id=? AND event_id IS NOT NULL AND sha256 IS NOT NULL").get(attachmentId);
     if (room) return { attachmentId, name: String(room.name), contentType: String(room.content_type), size: Number(room.size), sha256: String(room.sha256) };

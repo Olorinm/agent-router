@@ -35,7 +35,7 @@ export class ChannelTools {
         bytes += Buffer.byteLength(content.content, "base64"); if (bytes > 30 * 1024 * 1024) throw new Error("attachments_too_large");
         media.push({ name: file.name, mediaType: file.mediaType, data: content.content });
       }
-      const id = this.core.queueContent(binding.taskId, { text: input.text ?? "", ...(input.html ? { html: input.html } : {}), ...(media.length ? { media } : {}), ...(input.card ? { card: input.card } : {}) }, `${call.runId}:${call.id}`);
+      const id = await this.core.submitContent(binding.taskId, { text: input.text ?? "", ...(input.html ? { html: input.html } : {}), ...(media.length ? { media } : {}), ...(input.card ? { card: input.card } : {}) }, `${call.runId}:${call.id}`);
       await this.core.flush(); result = this.core.delivery(binding.taskId, id);
     }
     if (input.operation === "delivery") result = this.core.delivery(binding.taskId, input.deliveryId ?? "");

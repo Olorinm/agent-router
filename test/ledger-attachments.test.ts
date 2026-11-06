@@ -89,7 +89,7 @@ async function setup(store: "local" | "r2", overrides: Partial<ServiceConfig> = 
   }
   const files: Record<string, Buffer> = {}, adapters = new Map<string, Adapter>(), cores = new Map<string, CommunicationCore>();
   const service = new ManagedService({ serverName: "example.test", homeserver: "https://example.test", publicUrl: "https://example.test/_agent-router/v1",
-    stateDir, asToken: "a".repeat(48), hsToken: "h".repeat(48), ledgerRead: true, ledgerAttachments: true, ...(blobStore ? { blobStore } : {}), ...overrides }, {
+    stateDir, asToken: "a".repeat(48), hsToken: "h".repeat(48), ledgerRead: true, ledgerSend: true, ledgerAttachments: true, ...(blobStore ? { blobStore } : {}), ...overrides }, {
     authenticate: async (token) => { if (token === "alice") return owner; if (token === "bob") return other; throw new Error("bad_credentials"); },
     provision: async () => {}, transport,
     configure: async (agent, connector) => {

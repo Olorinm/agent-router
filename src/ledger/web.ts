@@ -95,7 +95,8 @@ class Tickets {
 
 /**
  * Read-only web channel API (ADR 0005 phase 2): chat index, history, read markers, turn detail and the event socket.
- * Sending, reset, cards, attachments and groups arrive in later phases; `GET /me` reports them as disabled features.
+ * Sending (phase 3) and attachments (phase 4) are flag-gated; reset, cards and groups arrive in later phases, and `GET /me`
+ * reports every feature that is off as disabled.
  */
 export function createWebLedger(dependencies: WebLedgerDependencies) {
   const { hubs, persons, authenticator } = dependencies, tickets = new Tickets(), epoch = `ep_${randomBytes(8).toString("hex")}`;
@@ -200,12 +201,14 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
       }
       const { target, resolved, channel } = await writable(res, chatId);
       if (Buffer.byteLength(body.text) > baseLimits.textBytes) throw new WorkError("message_too_large", 413);
-      // Attachments arrive with the blob store (phase 4).
-      if (body.attachments?.length) throw new WorkError("attachments_unsupported", 422);
+      // Attachments need the `attachments` feature (phase 4); the channel binds them to the message (ADR 16.5).
+      const attachmentIds = body.attachments ?? [];
+      if (attachmentIds.length && !dependencies.attachments) throw new WorkError("attachments_unsupported", 422);
       if (body.mentions && body.mentions.agentIds.some((id) => id !== resolved.agentId)) throw new WorkError("mention_not_member", 422);
-      if (!body.text.trim()) throw new WorkError("message_empty", 422);
+      if (!body.text.trim() && !attachmentIds.length) throw new WorkError("message_empty", 422);
       if (body.replyTo && resolved.ledger.event(body.replyTo)?.sessionKey !== resolved.sessionKey) throw new WorkError("reply_target_not_found", 422);
-      const result = channel.submit({ personId: principal(res).personId, idempotencyKey: body.idempotencyKey, text: body.text, replyTo: body.replyTo });
+      const result = channel.submit({ personId: principal(res).personId, idempotencyKey: body.idempotencyKey, text: body.text, replyTo: body.replyTo,
+        ...(attachmentIds.length ? { attachments: attachmentIds } : {}) });
       res.json({ status: result.duplicate ? "duplicate" : "accepted", event: rendered(target, chatId, resolved, result.event),
         addressed: [{ agentId: resolved.agentId, state: result.inputState === "control" ? "control" : "queued" }] });
     });
