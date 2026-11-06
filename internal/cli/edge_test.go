@@ -19,6 +19,9 @@ func edgeRouter(t *testing.T, check func(r *http.Request) bool) *httptest.Server
 		if strings.HasPrefix(r.URL.Path, "/_matrix/") {
 			t.Errorf("Matrix request in edge mode: %s", r.URL.Path)
 		}
+		if r.Method != "GET" && r.Header.Get("Origin") != "http://"+r.Host {
+			t.Errorf("unsafe edge request without the service Origin: %q", r.Header.Get("Origin"))
+		}
 		if !check(r) {
 			jsonResponse(w, 401, map[string]string{"error": "account_login_required"})
 			return

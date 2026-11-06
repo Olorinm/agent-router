@@ -110,7 +110,17 @@ func readSecretValue(file, env, envFile string) (string, error) {
 
 // accessHeaders resolves Cloudflare Access credentials: a service token (client id and secret), an Access token
 // (from `cloudflared access login`), or `cloudflared access token -app=ORIGIN` when cloudflared is installed.
+// `Origin` is the service's own origin: Router accepts unsafe edge requests only with an allowed Origin (CSRF guard).
 func (a *app) accessHeaders(serviceURL string) (http.Header, error) {
+	headers, err := a.accessCredentials(serviceURL)
+	if err != nil {
+		return nil, err
+	}
+	u, _ := url.Parse(serviceURL)
+	headers.Set("Origin", u.Scheme+"://"+u.Host)
+	return headers, nil
+}
+func (a *app) accessCredentials(serviceURL string) (http.Header, error) {
 	id, err := readSecretValue(a.o.accessClientIDFile, "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_ID_FILE")
 	if err != nil {
 		return nil, err

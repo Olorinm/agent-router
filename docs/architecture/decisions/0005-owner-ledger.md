@@ -2408,4 +2408,5 @@ Phase 7 is implemented in `src/matrix/managed.ts` (switches, gated paths, toggle
     owner only) in the profile; credentials are read per call: `--access-client-id-file`/`--access-client-secret-file`
     or `CF_ACCESS_CLIENT_ID[_FILE]`/`CF_ACCESS_CLIENT_SECRET[_FILE]` (headers `CF-Access-Client-Id`/`-Secret`), then
     `--access-token-file`/`CF_ACCESS_TOKEN[_FILE]`, then `cloudflared access token -app=<origin>` (header
-    `cf-access-token`). Owner commands (agents, channels, gateway) use it; `logout` removes the edge profile.
+    `cf-access-token`), plus `Origin` of the service for the edge CSRF guard. Owner commands (agents, channels, gateway) use
+    it; `logout` removes the edge profile.
