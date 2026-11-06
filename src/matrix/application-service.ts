@@ -13,7 +13,9 @@ export const transactionSchema = z.object({ events: z.array(eventSchema).max(100
 
 /** ACK follows the atomic transaction journal + per-Agent fanout, never model execution. */
 export class ApplicationInbox {
-  constructor(readonly store: ConnectorStore, readonly agentForUser: (userId: string) => string | undefined) {}
+  /** `accepts` drops events for agents whose Matrix adapter does not run (dormant, ADR 0005 19.1). */
+  constructor(readonly store: ConnectorStore, readonly agentForUser: (userId: string) => string | undefined,
+    readonly accepts: (agentId: string) => boolean = () => true) {}
   receive(id: string, input: unknown): void {
     const { events } = transactionSchema.parse(input);
     const hash = digest(events);
@@ -50,7 +52,7 @@ export class ApplicationInbox {
           }
         }
       }
-      for (const [agent, batch] of batches) this.store.set(`as_queue:${agent}`, String(sequence), batch);
+      for (const [agent, batch] of batches) if (this.accepts(agent)) this.store.set(`as_queue:${agent}`, String(sequence), batch);
       this.store.set("meta", "as_sequence", sequence);
       this.store.set("as_transactions", id, hash);
     });

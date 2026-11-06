@@ -9,7 +9,7 @@ import { loadServiceConfig } from "../src/service/config.js";
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const owner = "@alice:example.test";
-const none = { history: true, send: false, cards: false, attachments: false, reset: false, groups: false, identity: false };
+const none = { history: true, send: false, cards: false, attachments: false, reset: false, groups: false, identity: false, matrix: true };
 
 async function features(flags: Partial<ServiceConfig>) {
   const stateDir = mkdtempSync(join(tmpdir(), "ledger-features-"));
@@ -38,7 +38,10 @@ describe("ledger feature flags", () => {
     expect(await features({ ...send, ledgerAttachments: true })).toEqual({ ...none, send: true, attachments: true });
     expect(await features({ ledgerIdentity: true })).toEqual({ ...none, identity: true });
     expect(await features({ ...send, ledgerCards: true, ledgerControl: true, ledgerGroups: true, ledgerAttachments: true, ledgerIdentity: true }))
-      .toEqual({ history: true, send: true, cards: true, attachments: true, reset: true, groups: true, identity: true });
+      .toEqual({ history: true, send: true, cards: true, attachments: true, reset: true, groups: true, identity: true, matrix: true });
+  });
+  it("reports the deployment's Matrix switch explicitly (ADR 0005 19.1)", async () => {
+    expect(await features({ ledgerSend: true, matrix: { enabled: false } })).toEqual({ ...none, send: true, matrix: false });
   });
   it("keeps the send-dependent features off without send", async () => {
     expect(await features({ ledgerCards: true, ledgerControl: true, ledgerGroups: true, ledgerAttachments: true })).toEqual(none);

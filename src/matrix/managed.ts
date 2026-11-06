@@ -11,7 +11,7 @@ import { createConnectorApp } from "./index.js";
 import { ApplicationInbox, ApplicationTransport } from "./application-service.js";
 import { digest, mxid } from "./protocol.js";
 import { WorkError } from "./cli-work.js";
-import type { MatrixTransport } from "./transport.js";
+import { DormantTransport, type MatrixTransport } from "./transport.js";
 import { ChannelRouter } from "../channels/router.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { OwnerHubs } from "../ledger/hub.js";
@@ -26,12 +26,29 @@ import { OwnerAttachments } from "../ledger/blobs-hub.js";
 import type { AttachmentReference, MediaContent } from "../communication/types.js";
 
 export const agentName = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
+/**
+ * ADR 0005 19.1: `none` never had a Matrix account (created while Matrix was off), `dormant` has an Application Service
+ * account that is not used, `active` is provisioned and its Matrix adapter runs. A missing value is `active` (legacy).
+ */
+export type MatrixState = "active" | "dormant" | "none";
 export interface ManagedAgent {
+  /** `matrixId` is the agent's runtime identity whether or not it is registered on a homeserver. */
   id: string; owner: string; name: string; address: string; matrixId: string;
-  createdAt: string; status: "provisioning" | "active" | "deleting";
+  createdAt: string; status: "provisioning" | "active" | "deleting"; matrix?: MatrixState;
 }
+/** Agent API responses: the stored record with `matrix` as `{ state, userId }` (the effective state). */
+export type PublicAgent = Omit<ManagedAgent, "matrix"> & { matrix: { state: MatrixState; userId: string | null } };
 interface Instance { id: string; agentId: string; name: string; tokenHash: string; createdAt: string; lastSeen: string | null; revoked: boolean; }
-export interface ServiceConfig { serverName: string; homeserver: string; publicUrl: string; stateDir: string; asToken: string; hsToken: string; externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string;
+export interface ServiceConfig { serverName: string; publicUrl: string; stateDir: string;
+  /** Matrix Application Service settings; required and used only while `matrix.enabled` is not false. */
+  homeserver?: string; asToken?: string; hsToken?: string;
+  /**
+   * ADR 0005 19.1, `AGENT_MATRIX=on|off` (default on). Off: Router makes no homeserver request at all, mounts no
+   * Application Service routes, creates agents with `matrix: "none"` and runs every agent with a dormant transport.
+   * `serverName` stays required (it is the owner-id namespace).
+   */
+  matrix?: { enabled: boolean };
+  externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string;
   /** ADR 0005 `ledger_read`: serve the read-only web history API and event socket from the owner ledger. */
   ledgerRead?: boolean;
   /** ADR 0005 `send` (phase 3, needs `ledgerRead`): owner web messages through the web channel; dispatch and flush read the ledger. */
@@ -125,13 +142,21 @@ export class ManagedService {
   private deleteGuards: Array<(agentId: string) => void> = [];
   constructor(readonly config: ServiceConfig, readonly dependencies: ServiceDependencies = {}) {
     if (!/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/.test(config.serverName)) throw new Error("invalid_server_name");
-    for (const raw of [config.homeserver, config.publicUrl]) {
+    const matrixOn = config.matrix?.enabled !== false;
+    if (matrixOn && !config.homeserver) throw new Error("matrix_homeserver_required");
+    for (const raw of matrixOn ? [config.homeserver!, config.publicUrl] : [config.publicUrl]) {
       const url = new URL(raw);
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("invalid_service_url");
     }
-    if (config.asToken.length < 32 || config.hsToken.length < 32 || config.asToken === config.hsToken) throw new Error("distinct_application_service_secrets_required");
+    if (matrixOn && (!config.asToken || !config.hsToken || config.asToken.length < 32 || config.hsToken.length < 32 || config.asToken === config.hsToken))
+      throw new Error("distinct_application_service_secrets_required");
+    if (matrixOn && config.externalIdentity && !config.externalIdentity.adminToken) throw new Error("matrix_admin_token_required");
+    // Without Matrix the console can only send through the ledger (ADR 0005 15.3).
+    if (!matrixOn && config.ledgerRead && !config.ledgerSend) throw new Error("matrix_off_requires_ledger_send");
     this.store = new ConnectorStore(join(config.stateDir, "registry.sqlite"), config.serverName);
-    this.inbox = new ApplicationInbox(this.store, (user) => this.store.get<string>("matrix_agents", user));
+    // Only agents whose Matrix adapter runs get queued events; a dormant agent's rooms stay joined but are ignored (19.1).
+    this.inbox = new ApplicationInbox(this.store, (user) => this.store.get<string>("matrix_agents", user),
+      (agentId) => { const agent = this.store.get<ManagedAgent>("agents", agentId); return !agent || this.matrixState(agent) === "active"; });
     this.externalIdentity=config.externalIdentity?new ExternalIdentitySessions(this,config.externalIdentity):undefined;
     this.channels = new ChannelRouter(this.store, async (agentId) => {
       const { connector } = await this.runtime(agentId);
@@ -180,7 +205,7 @@ export class ManagedService {
       control: async (agentId) => (await this.runtime(agentId)).extension?.control,
       groups: Boolean(config.ledgerSend && config.ledgerGroups), kick: () => this.fanout?.kick(),
       open: async (agentId) => { await this.runtime(agentId); }, owned: (owner) => this.agents(owner).filter((agent) => agent.status === "active"),
-      attachments: this.attachments,
+      attachments: this.attachments, matrix: this.matrixOn,
       debug: (agentId) => {
         const ledger = this.ledgers.get(agentId), store = ledger?.store;
         const count = (collection: string) => Number(store?.db.prepare("SELECT COUNT(*) AS n FROM documents WHERE collection=?").get(collection)?.n ?? 0);
@@ -188,12 +213,74 @@ export class ManagedService {
           outbox: count("communication_outbox"), backfill: store?.get("meta", "ledger_backfill") ?? null };
       } }) : undefined;
   }
-  /** Channel runtime options for hub rooms (phase 5): the owner's rooms and the Matrix rooms frozen by the import. */
+  /** Channel runtime options for hub rooms (phase 5). Without `groups` the room connection is not registered. */
   roomOptions(agent: ManagedAgent) {
-    // Without `groups` the room connection is not registered, so channel status and dispatch are unchanged. A room
-    // frozen by `ledger:import-rooms` stays frozen either way (the import is explicit and per room).
-    return { ...(this.fanout ? { rooms: () => this.hubs.hub(agent.owner).rooms } : {}),
-      roomMigrated: (room: string) => Boolean(this.store.get("matrix_room_migrations", room)) };
+    return this.fanout ? { rooms: () => this.hubs.hub(agent.owner).rooms } : {};
+  }
+  /** ADR 0005 19.1: the deployment switch (`AGENT_MATRIX`, default on). */
+  get matrixOn(): boolean { return this.config.matrix?.enabled !== false; }
+  /** The stored per-agent state; a legacy record without one is `active`. */
+  matrixState(agent: ManagedAgent): MatrixState { return agent.matrix ?? "active"; }
+  /** The state in effect: with the deployment off, an agent with an account is `dormant`. */
+  effectiveMatrix(agent: ManagedAgent): MatrixState {
+    const state = this.matrixState(agent);
+    return state === "active" && !this.matrixOn ? "dormant" : state;
+  }
+  /** True when the agent's Matrix adapter runs (deployment on and agent `active`). Mau reads this for its connections. */
+  matrixEnabled(agentId: string): boolean {
+    const agent = this.store.get<ManagedAgent>("agents", agentId);
+    return Boolean(agent) && this.effectiveMatrix(agent!) === "active";
+  }
+  /** Agent API shape (19.1): `matrix: { state, userId }`; `matrixId` stays for compatibility. */
+  publicAgent(agent: ManagedAgent): PublicAgent {
+    const state = this.effectiveMatrix(agent);
+    return { ...agent, matrix: { state, userId: state === "none" ? null : agent.matrixId } };
+  }
+  /** Application Service settings; only reachable while the deployment has Matrix on. */
+  matrixConfig(): { homeserver: string; asToken: string; hsToken: string } {
+    if (!this.matrixOn || !this.config.homeserver || !this.config.asToken || !this.config.hsToken) throw new WorkError("matrix_disabled", 409);
+    return { homeserver: this.config.homeserver, asToken: this.config.asToken, hsToken: this.config.hsToken };
+  }
+  /**
+   * `PUT /agents/:id/matrix` (19.1, deployment on only). Enabling registers the account, restarts the runtime with the
+   * Application Service transport and sets a new activation checkpoint; disabling makes the agent `dormant` (account
+   * and rooms kept, adapter stopped). Refused while a run is active or unknown.
+   */
+  async setMatrix(owner: string, id: string, enabled: boolean): Promise<PublicAgent> {
+    if (!this.matrixOn) throw new WorkError("matrix_disabled", 409);
+    const agent = this.owned(id, owner);
+    if (agent.status === "deleting") throw new WorkError("agent_deleting", 409);
+    const target: MatrixState = enabled ? "active" : "dormant";
+    if (this.matrixState(agent) === target) return this.publicAgent(agent);
+    const previous = this.configurations.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const operation = new Promise<void>((r) => { release = r; });
+    this.configurations.set(id, operation);
+    try {
+      await previous.catch(() => {});
+      const pending = this.runtimes.get(id), runtime = pending && await pending.catch(() => undefined);
+      if (runtime && this.activeRun(runtime.connector)) throw new WorkError("agent_has_active_or_unknown_run", 409);
+      const before = this.agent(id);
+      if (runtime) {
+        this.runtimes.delete(id); this.ledgers.delete(id);
+        await runtime.extension?.stop(); await runtime.connector.stop(); runtime.connector.store.close();
+      }
+      this.store.transaction(() => {
+        this.store.set("agents", id, { ...this.agent(id), matrix: target });
+        this.store.set("matrix_agents", before.matrixId, id);
+      });
+    } finally {
+      release();
+      if (this.configurations.get(id) === operation) this.configurations.delete(id);
+    }
+    try { await this.runtime(id); }
+    catch (error) {
+      // The runtime must keep running: fall back to the previous state.
+      this.store.set("agents", id, { ...this.agent(id), matrix: agent.matrix ?? "active" });
+      await this.runtime(id).catch(() => undefined);
+      throw error;
+    }
+    return this.publicAgent(this.agent(id));
   }
   agents(owner?: string): ManagedAgent[] {
     return this.store.entries<ManagedAgent>("agents").map((r) => r.value).filter((a) => !owner || a.owner === owner);
@@ -218,8 +305,10 @@ export class ManagedService {
     if(token.startsWith("ars_")){if(!this.externalIdentity)throw new WorkError("account_session_invalid",401);return this.externalIdentity.authenticate(token);}
     let user: string;
     if (this.dependencies.authenticate) user = await this.dependencies.authenticate(token);
+    // ADR 0005 19.2: without Matrix there is no whoami; owners sign in through the edge identity (or `ars_` sessions).
+    else if (!this.matrixOn) throw new WorkError("matrix_disabled", 401);
     else {
-      const response = await fetch(`${this.config.homeserver}/_matrix/client/v3/account/whoami`, {
+      const response = await fetch(`${this.matrixConfig().homeserver}/_matrix/client/v3/account/whoami`, {
         headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) throw new WorkError("account_session_invalid", 401);
@@ -236,11 +325,13 @@ export class ManagedService {
       if (this.agents(owner).length >= 50) throw new WorkError("agent_limit_reached", 429);
       const id = randomUUID();
       const localpart = owner.slice(1, owner.indexOf(":"));
+      // Without Matrix the agent gets no account (ADR 0005 19.2); `matrixId` is still its runtime identity.
       agent = { id, owner, name, address: `${localpart}/${name}@${this.config.serverName}`,
-        matrixId: `@_ar_${id.replaceAll("-", "")}:${this.config.serverName}`, createdAt: new Date().toISOString(), status: "provisioning" };
+        matrixId: `@_ar_${id.replaceAll("-", "")}:${this.config.serverName}`, createdAt: new Date().toISOString(), status: "provisioning",
+        matrix: this.matrixOn ? "active" : "none" };
       this.store.transaction(() => {
         this.store.set("agents", id, agent);
-        this.store.set("matrix_agents", agent!.matrixId, id);
+        if (agent!.matrix === "active") this.store.set("matrix_agents", agent!.matrixId, id);
       });
     }
     await this.runtime(agent.id);
@@ -285,20 +376,31 @@ export class ManagedService {
     this.configurations.set(id, operation);
     try { await operation; } finally { if (this.configurations.get(id) === operation) this.configurations.delete(id); }
   }
+  private async provision(agent: ManagedAgent): Promise<void> {
+    if (this.dependencies.provision) { await this.dependencies.provision(agent); return; }
+    const { homeserver, asToken } = this.matrixConfig();
+    const response = await fetch(`${homeserver}/_matrix/client/v3/register`, {
+      method: "POST", headers: { Authorization: `Bearer ${asToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "m.login.application_service", username: agent.matrixId.slice(1).split(":")[0], inhibit_login: true }),
+      redirect: "error", signal: AbortSignal.timeout(15_000),
+    });
+    const body = await response.json().catch(() => ({})) as { errcode?: string };
+    if (!response.ok && body.errcode !== "M_USER_IN_USE") throw new WorkError("matrix_agent_provisioning_failed", 502);
+  }
   private async open(agent: ManagedAgent): Promise<Runtime> {
-    if (this.dependencies.provision) await this.dependencies.provision(agent);
-    else {
-      const response = await fetch(`${this.config.homeserver}/_matrix/client/v3/register`, {
-        method: "POST", headers: { Authorization: `Bearer ${this.config.asToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "m.login.application_service", username: agent.matrixId.slice(1).split(":")[0], inhibit_login: true }),
-        redirect: "error", signal: AbortSignal.timeout(15_000),
-      });
-      const body = await response.json() as { errcode?: string };
-      if (!response.ok && body.errcode !== "M_USER_IN_USE") throw new WorkError("matrix_agent_provisioning_failed", 502);
-    }
+    // Matrix off for the deployment or the agent: no homeserver call, a dormant transport (ADR 0005 19.2).
+    const matrix = this.matrixOn && this.matrixState(agent) === "active";
+    if (matrix) await this.provision(agent);
     const store = new ConnectorStore(join(this.config.stateDir, "agents", `${agent.id}.sqlite`), agent.matrixId);
     // This is an AS-owned journal, not an account restored from Matrix history.
     if (!store.get("meta", "sync")) store.set("meta", "sync", "0");
+    // A new activation checkpoint after a dormant period: queued and late Matrix events of that period are ignored (19.1).
+    if (matrix && store.get("meta", "matrix_runtime") === "dormant") {
+      store.set("meta", "matrix_activation", Date.now());
+      const sequence = this.store.get<number>("meta", "as_sequence") ?? 0;
+      if (Number(store.get<string>("meta", "sync") ?? 0) < sequence) store.set("meta", "sync", String(sequence));
+    }
+    store.set("meta", "matrix_runtime", matrix ? "active" : "dormant");
     // Shadow ledger (ADR 0005 phase 1): created before the channel runtime so its core writes into it.
     // A ledger that cannot open (migration or registry error) leaves the agent on the legacy path only.
     try {
@@ -311,15 +413,23 @@ export class ManagedService {
       this.persons.ensurePerson(agent.owner, agent.owner.slice(1, agent.owner.indexOf(":")));
       this.persons.link(personId(agent.owner), "matrix", this.config.serverName, agent.owner, "config");
     } catch { /* Shadow only: the legacy runtime starts regardless. */ }
-    const transport = this.dependencies.transport?.(agent, this.inbox) ?? new ApplicationTransport(
-      this.config.homeserver, this.config.asToken, agent.matrixId, agent.id, this.inbox);
+    const transport: MatrixTransport = !matrix ? new DormantTransport(agent.matrixId) : this.dependencies.transport?.(agent, this.inbox) ?? new ApplicationTransport(
+      this.matrixConfig().homeserver, this.matrixConfig().asToken, agent.matrixId, agent.id, this.inbox);
     const connector = new MatrixConnector(agent.matrixId, store, transport, undefined, 250);
     let extension: ServiceExtension | undefined;
     try {
       if (!store.get("meta", "managed_initialized")) {
+        // The owner contact is local without Matrix (no social account data).
         await connector.updateContact({ address: agent.owner, note: "Owner", receive: "allow", execution: "allow" });
-        await transport.data?.displayName(agent.name);
+        store.set("meta", "matrix_initialized", false);
         store.set("meta", "managed_initialized", true);
+      }
+      // The Matrix display name is set once the account is active; legacy agents (no flag) were initialized with it.
+      if (matrix && store.get("meta", "matrix_initialized") === false) {
+        const ownerContact = connector.contact(agent.owner);
+        if (ownerContact) await connector.social?.saveContact(ownerContact);
+        await transport.data?.displayName(agent.name);
+        store.set("meta", "matrix_initialized", true);
       }
       extension = await this.dependencies.configure?.(agent, connector);
       await connector.start();
@@ -375,11 +485,19 @@ export class ManagedService {
       .some(({ value }) => ["running", "submitting", "unknown"].includes(value.phase));
   }
   private async deprovision(agent: ManagedAgent) {
+    // No account (`none`): nothing to deactivate. Matrix off or a dormant agent: deactivation is skipped and the account
+    // is remembered, so `matrix forget` lists it (ADR 0005 19.2).
+    if (this.matrixState(agent) === "none") return;
+    if (this.effectiveMatrix(agent) !== "active") {
+      this.store.set("matrix_orphans", agent.matrixId, { agentId: agent.id, owner: agent.owner, deletedAt: new Date().toISOString() });
+      return;
+    }
     if (this.dependencies.deprovision) { await this.dependencies.deprovision(agent); return; }
     // Synapse lets an application service deactivate its own users without interactive auth;
     // deactivation leaves every room, rejects invites and removes the user from the directory.
-    const response = await fetch(`${this.config.homeserver}/_matrix/client/v3/account/deactivate?user_id=${encodeURIComponent(agent.matrixId)}`, {
-      method: "POST", headers: { Authorization: `Bearer ${this.config.asToken}`, "Content-Type": "application/json" },
+    const { homeserver, asToken } = this.matrixConfig();
+    const response = await fetch(`${homeserver}/_matrix/client/v3/account/deactivate?user_id=${encodeURIComponent(agent.matrixId)}`, {
+      method: "POST", headers: { Authorization: `Bearer ${asToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ erase: false }), redirect: "error", signal: AbortSignal.timeout(30_000),
     });
     if (response.ok) return;
@@ -450,21 +568,11 @@ export class ManagedService {
   }
 }
 
-export function createManagedApp(service: ManagedService, setup?: express.Router) {
-  const app = express(); app.disable("x-powered-by");
-  app.set("trust proxy", service.config.trustedProxies ?? false);
-  const jsonBody = express.json({ limit: "2mb" });
-  // The authenticated runtime parses attachment-bearing updates with a separate bound.
-  app.use((req, res, next) => {
-    if (req.method === "POST" && /^\/_agent-router\/v1\/agents\/[^/]+\/gateway\/api\/work\/[^/]+\/update$/.test(req.path)) next();
-    // Attachment uploads stream their raw body (any content type, including application/json) to the blob store.
-    else if (req.method === "POST" && req.path === "/_agent-router/v1/web/attachments") next();
-    else jsonBody(req, res, next);
-  });
-  app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service" }));
+/** Synapse → Router Application Service API, authenticated with the HS token. */
+function mountApplicationService(app: express.Express, service: ManagedService) {
+  const { hsToken } = service.matrixConfig();
   app.use("/_matrix/app/v1", (req, res, next) => {
-    if (!equal(bearer(req), service.config.hsToken) ||
-      (req.query.access_token !== undefined && req.query.access_token !== service.config.hsToken)) {
+    if (!equal(bearer(req), hsToken) || (req.query.access_token !== undefined && req.query.access_token !== hsToken)) {
       res.status(403).json({ errcode: "M_FORBIDDEN", error: "unauthorized" }); return;
     }
     next();
@@ -476,6 +584,21 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     res.status(exists ? 200 : 404).json(exists ? {} : { errcode: "M_NOT_FOUND" });
   });
   app.use("/_matrix/app/v1", (_req, res) => res.status(404).json({ errcode: "M_UNRECOGNIZED" }));
+}
+export function createManagedApp(service: ManagedService, setup?: express.Router) {
+  const app = express(); app.disable("x-powered-by");
+  app.set("trust proxy", service.config.trustedProxies ?? false);
+  const jsonBody = express.json({ limit: "2mb" });
+  // The authenticated runtime parses attachment-bearing updates with a separate bound.
+  app.use((req, res, next) => {
+    if (req.method === "POST" && /^\/_agent-router\/v1\/agents\/[^/]+\/gateway\/api\/work\/[^/]+\/update$/.test(req.path)) next();
+    // Attachment uploads stream their raw body (any content type, including application/json) to the blob store.
+    else if (req.method === "POST" && req.path === "/_agent-router/v1/web/attachments") next();
+    else jsonBody(req, res, next);
+  });
+  app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service", matrix: service.matrixOn }));
+  // ADR 0005 19.2: the Application Service routes exist only while Matrix is on (otherwise the generic 404 below).
+  if (service.matrixOn) mountApplicationService(app, service);
   const root = "/_agent-router/v1";
   // Limit before authentication or provisioning. Forwarded IPs are used only
   // when the operator explicitly trusts the connecting proxy address.
@@ -499,7 +622,8 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     const address = z.string().min(1).max(512).parse(req.query.address);
     const agent = service.agents().find((a) => a.address === address && a.status === "active");
     if (!agent) throw new WorkError("agent_not_found", 404);
-    res.json({ id: agent.id, address: agent.address, owner: agent.owner, name: agent.name, matrixId: agent.matrixId });
+    // Without an active Matrix account there is no Matrix address to reach the agent at (19.2).
+    res.json({ id: agent.id, address: agent.address, owner: agent.owner, name: agent.name, matrixId: service.matrixEnabled(agent.id) ? agent.matrixId : null });
   });
   app.use(`${root}/agents/:agentId/gateway`, async (req, res, next) => {
     const agentId = String(req.params.agentId), token = bearer(req);
@@ -521,13 +645,23 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     const principal = await service.authenticateRequest(req);
     res.locals.principal = principal; res.locals.owner = principal.ownerId; next();
   });
-  app.get(`${root}/agents`, (_req, res) => res.json({ data: service.agents(res.locals.owner) }));
+  // The authenticated owner (CLI edge login, ADR 0005 18.3): works for every principal, with or without Matrix.
+  app.get(`${root}/account`, (_req, res) => {
+    const { ownerId, personId: person, via, email } = res.locals.principal as OwnerPrincipal;
+    res.set("Cache-Control", "no-store").json({ owner: ownerId, personId: person, via, ...(email ? { email } : {}), matrix: service.matrixOn });
+  });
+  app.get(`${root}/agents`, (_req, res) => res.json({ data: service.agents(res.locals.owner).map((agent) => service.publicAgent(agent)) }));
   app.post(`${root}/agents`, async (req, res) => {
     const { name } = z.object({ name: agentName }).strict().parse(req.body);
-    res.status(201).json(await service.create(res.locals.owner, name));
+    res.status(201).json(service.publicAgent(await service.create(res.locals.owner, name)));
   });
   app.use(`${root}/agents/:agentId`, (req, res, next) => { service.owned(String(req.params.agentId), res.locals.owner); next(); });
-  app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.agent(req.params.agentId)));
+  app.get(`${root}/agents/:agentId`, (req, res) => res.json(service.publicAgent(service.agent(req.params.agentId))));
+  app.put(`${root}/agents/:agentId/matrix`, async (req, res) => {
+    const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(req.body);
+    const agent = await service.setMatrix(res.locals.owner, req.params.agentId, enabled);
+    res.json(agent.matrix);
+  });
   app.delete(`${root}/agents/:agentId`, async (req, res) => { await service.delete(res.locals.owner, req.params.agentId); res.status(204).end(); });
   if (setup) app.use(setup);
   const extension = async (id: string) => {

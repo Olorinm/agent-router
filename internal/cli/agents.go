@@ -173,23 +173,23 @@ func (a *app) managedGateway() (bool, error) {
 	if err != nil || selected == nil {
 		return false, err
 	}
-	token := selected.Token
-	if token == "" {
-		p, err := a.ownerSession(s)
-		if err != nil {
-			return true, err
-		}
-		if p.UserID != selected.Agent.Owner {
-			return true, errors.New("selected_agent_belongs_to_another_account")
-		}
-		if _, err = accountService(p, selected.ServiceURL, true); err != nil {
-			return true, err
-		}
-		token = p.AccessToken
-	}
 	a.base = selected.ServiceURL + "/agents/" + url.PathEscape(selected.Agent.ID) + "/gateway"
-	a.http, err = newHTTP(a.base, token)
-	if err == nil && selected.Token == "" {
+	if selected.Token != "" {
+		a.http, err = newHTTP(a.base, selected.Token)
+		return true, err
+	}
+	o, err := a.owner(s)
+	if err != nil {
+		return true, err
+	}
+	if o.UserID != selected.Agent.Owner {
+		return true, errors.New("selected_agent_belongs_to_another_account")
+	}
+	if _, err = o.service(selected.ServiceURL, true); err != nil {
+		return true, err
+	}
+	a.http, err = o.client(a.base)
+	if err == nil && o.edge == nil {
 		a.http.Transport = &managedOwnerTransport{app: a, store: s, selected: selected, next: a.http.Transport}
 	}
 	return true, err
@@ -310,7 +310,7 @@ func (a *app) runAgentCommand(command string, args []string) error {
 	if selected != nil && selected.Token != "" {
 		return errors.New("owner_account_required: use an account profile")
 	}
-	p, err := a.ownerSession(s)
+	p, err := a.owner(s)
 	if err != nil {
 		return err
 	}
@@ -318,11 +318,11 @@ func (a *app) runAgentCommand(command string, args []string) error {
 	if root == "" && selected != nil {
 		root = selected.ServiceURL
 	}
-	root, err = accountService(p, root, a.o.allowHTTP)
+	root, err = p.service(root, a.o.allowHTTP)
 	if err != nil {
 		return err
 	}
-	c, err := newHTTP(root, p.AccessToken)
+	c, err := p.client(root)
 	if err != nil {
 		return err
 	}

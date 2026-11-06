@@ -84,6 +84,9 @@ export function createConnections(
       ])
       .parse(req.body);
     const agent = service.owned(String(req.params.agentId), res.locals.owner);
+    // ADR 0005 19.2: no new Matrix connection while Matrix is off for the deployment or this agent.
+    if (body.kind === "matrix" && !service.matrixEnabled(agent.id))
+      throw new WorkError("matrix_disabled", 409);
     if (
       configuration
         .configuration(agent)
@@ -201,6 +204,7 @@ export function createConnections(
               id: string;
               started: boolean;
               error?: string;
+              disabled?: string;
             }>;
           }
         | undefined;
@@ -219,7 +223,10 @@ export function createConnections(
         const running = live?.connections?.find(
           (connection) => connection.id === check.connectionId,
         );
-        if (!running?.started || running.error) {
+        if (running?.disabled) {
+          check.status = "disabled";
+          check.detail = "Matrix is off for this deployment or Agent";
+        } else if (!running?.started || running.error) {
           check.status = "needs_action";
           check.detail = "Connection is not running cleanly";
         } else if (["matrix", "weixin"].includes(check.kind)) {

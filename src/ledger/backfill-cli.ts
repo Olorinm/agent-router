@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { matrixSwitch } from "../service/config.js";
 import { ApplicationInbox, ApplicationTransport } from "../matrix/application-service.js";
 import { ConnectorStore } from "../matrix/store.js";
 import { backfill } from "./backfill.js";
@@ -11,6 +12,8 @@ const agentId = value("--agent"), all = args.includes("--all");
 if (!agentId === !all) { process.stderr.write("usage: ledger backfill (--agent <id> | --all) [--dry-run] [--synapse] [--state <dir>]\n"); process.exit(2); }
 const stateDir = value("--state") ?? process.env.AGENT_SERVICE_STATE ?? "state/agent-service";
 let history: Parameters<typeof backfill>[0]["history"];
+// ADR 0005 19.2: Synapse is gone (or unused) when the deployment has Matrix off.
+if (args.includes("--synapse") && !matrixSwitch(process.env.AGENT_MATRIX)) { process.stderr.write("matrix_disabled\n"); process.exit(2); }
 if (args.includes("--synapse")) {
   const homeserver = process.env.MATRIX_HOMESERVER_URL?.replace(/\/$/, ""), tokenFile = process.env.MATRIX_AS_TOKEN_FILE;
   if (!homeserver || !tokenFile) { process.stderr.write("--synapse requires MATRIX_HOMESERVER_URL and MATRIX_AS_TOKEN_FILE\n"); process.exit(2); }

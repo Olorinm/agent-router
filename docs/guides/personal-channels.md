@@ -190,6 +190,10 @@ Grove Mail 的 `public_url` 与 API 地址不同时，在连接配置中增加 `
 
 开启 `AGENT_LEDGER_IDENTITY=1` 后，Owner 可在控制台生成关联码，再从新渠道私聊 Agent 发送 `/link <code>`，把该渠道账号关联到自己。邮件默认不支持关联：只有连接配置 `pairing: true` 且邮件服务标记发件人已验证时才会关联（目前 Grove Mail 尚未提供该标记）。
 
+### 关闭 Matrix（`AGENT_MATRIX=off`）
+
+部署可以不运行 Synapse：设置 `AGENT_MATRIX=off`（默认 `on`），此时 `MATRIX_HOMESERVER_URL`、`MATRIX_AS_TOKEN_FILE`、`MATRIX_HS_TOKEN_FILE` 可省略且不会被读取，`MATRIX_SERVER_NAME` 仍然必需（Owner ID 的命名空间）。Router 不访问任何 homeserver，不挂载 `/_matrix/app/v1`；新建 Agent 的 `matrix.state` 为 `none`，已有 Agent 以 `dormant` 运行（Matrix 连接保留但不注册，状态显示 `disabled: "matrix_off"`）。Owner 通过 Cloudflare Access 登录（`AGENT_EDGE_IDENTITY_FILE`），控制台需要 `AGENT_LEDGER_READ=1` 与 `AGENT_LEDGER_SEND=1`。Go CLI 用 `agent-router login --edge https://mau.example.test`（先 `cloudflared access login`，或使用 `--access-client-id-file`/`--access-client-secret-file`）。移除 Synapse 前的导出步骤见 ADR 0005 第 19.4 节与其实现说明（`npm run ledger:promote-media`、`npm run matrix:export`、`npm run matrix:forget`）。
+
 ## 已验证范围
 
 `npm test` 覆盖跨渠道主会话、原路径回复、群聊隔离、游标、去重、分片回执、未知结果、实例撤销和重启恢复、纯附件往返、原生按钮/自由回答、取消/补充、流式更新与丢失回答响应重试，以及个人身份校验、并发授权续接、用户 scope 恢复、工具执行账本和只读接入检查。现有 Matrix/A2A 回归测试继续运行。

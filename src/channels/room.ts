@@ -17,12 +17,8 @@ export class RoomChannel implements ChannelAdapter, RoomDelivery {
   readonly retrySafe = true;
   readonly capabilities = { receive: ["text", "quote"], send: ["text", "html"], stream: false, buttons: false, native: [] };
   private context: ChannelContext | undefined;
-  /**
-   * `matrixConnectionId` is the agent's Matrix connection: an imported room (`threadId` is the Matrix room id)
-   * keeps the session key its Matrix group session already had (17.6 step 3).
-   */
   constructor(readonly core: CommunicationCore, readonly agentId: string, readonly ownerId: string,
-    private readonly rooms: () => HubRooms | undefined, private readonly matrixConnectionId = "matrix") {}
+    private readonly rooms: () => HubRooms | undefined) {}
   async start(context: ChannelContext): Promise<void> { bindAccount(context, digest(["room", this.ownerId])); this.context = context; }
   async stop(): Promise<void> { this.context = undefined; }
   private hub(): HubRooms {
@@ -35,7 +31,6 @@ export class RoomChannel implements ChannelAdapter, RoomDelivery {
     if (!this.context) throw new Error("room_channel_not_started");
     this.core.receive(ROOM_CONNECTION, message);
   }
-  sessionConnection(message: ChannelMessage): string { return message.threadId.startsWith("!") ? this.matrixConnectionId : ROOM_CONNECTION; }
   turnContext(message: ChannelMessage) {
     const roomId = message.reply.data.roomId, seq = Number(message.externalId.slice(message.externalId.lastIndexOf(":") + 1));
     if (!roomId || !Number.isSafeInteger(seq)) return undefined;

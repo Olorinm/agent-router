@@ -81,7 +81,8 @@ export class MatrixConnector {
   async start(): Promise<void> {
     if (await this.transport.identity() !== this.userId) throw new Error("matrix_token_identity_mismatch");
     this.store.acquireLease(this.leaseOwner);
-    await this.social?.bootstrap();
+    // A dormant transport (Matrix off, ADR 0005 19.2) has no account data to restore and nothing to sync.
+    if (!this.transport.dormant) await this.social?.bootstrap();
     // Local acceptance is transactional and deduplicated. External acceptance is ambiguous
     // after a crash and cannot be replayed without an accepted destination task ID.
     for (const { id, value } of this.store.entries<Incoming>("incoming")) {
@@ -93,7 +94,7 @@ export class MatrixConnector {
       try { this.store.acquireLease(this.leaseOwner); }
       catch { this.running = false; this.lastError = "connector_lease_lost"; this.transport.stop(); }
     }, 5_000);
-    this.loops = [this.syncLoop(), this.workerLoop()];
+    this.loops = this.transport.dormant ? [this.workerLoop()] : [this.syncLoop(), this.workerLoop()];
   }
   async stop(): Promise<void> {
     this.running = false;
@@ -121,6 +122,9 @@ export class MatrixConnector {
 
   async acceptSync(batch: SyncBatch): Promise<void> {
     if (!batch.next_batch) throw new Error("matrix_sync_checkpoint_missing");
+    // ADR 0005 19.1: events sent while Matrix was off for this agent (delivered late) are never processed.
+    const activeSince = this.store.get<number>("meta", "matrix_activation");
+    if (activeSince) batch = activeOnly(batch, activeSince);
     const restoring = Boolean(this.social && !this.store.get("meta", "sync"));
     const prepared: Array<{ room: string; events: RoomEvent[]; state: RoomEvent[]; encrypted: boolean }> = [];
     for (const [room, joined] of Object.entries(batch.rooms?.join ?? {})) {
@@ -136,6 +140,9 @@ export class MatrixConnector {
           const page = await this.transport.history(room, from);
           for (const event of page.events) {
             if (this.store.get("seen", key(room, event.event_id))) { finished = true; break; }
+            // Nothing before the activation checkpoint is recovered (ADR 0005 19.1).
+            if (activeSince && event.state_key === undefined &&
+              Number((event as RoomEvent & { origin_server_ts?: number }).origin_server_ts ?? activeSince) < activeSince) { finished = true; break; }
             older.push(event);
           }
           if (finished || !page.end || !page.events.length || page.end === from) { finished = true; break; }
@@ -281,7 +288,8 @@ export class MatrixConnector {
     this.store.insert("outbox", id, { room, type, content, ...(recipient ? { recipient } : {}), status: "queued", attempts: 0, nextAt: 0 } satisfies Outbox);
   }
   async flush(): Promise<void> {
-    if (this.flushing) return;
+    // Matrix A2A envelopes stay queued while Matrix is off; they are sent if the agent is activated again.
+    if (this.flushing || this.transport.dormant) return;
     this.flushing = true;
     try {
       for (const { id, value } of this.store.entries<Outbox>("outbox")) {
@@ -482,6 +490,17 @@ export class MatrixConnector {
     }
     this.store.set("tasks", task.id, task);
   }
+}
+/** Drop timeline events (not state) sent before the activation checkpoint. */
+function activeOnly(batch: SyncBatch, since: number): SyncBatch {
+  const join = batch.rooms?.join;
+  if (!join) return batch;
+  const rooms: NonNullable<NonNullable<SyncBatch["rooms"]>["join"]> = {};
+  for (const [room, joined] of Object.entries(join)) {
+    rooms[room] = !joined.timeline ? joined : { ...joined, timeline: { ...joined.timeline, events: joined.timeline.events.filter((event) =>
+      event.state_key !== undefined || Number((event as RoomEvent & { origin_server_ts?: number }).origin_server_ts ?? since) >= since) } };
+  }
+  return { ...batch, rooms: { ...batch.rooms, join: rooms } };
 }
 export const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 function errorCode(error: unknown): string {

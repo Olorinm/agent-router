@@ -71,10 +71,6 @@ export interface ChannelAdapter {
   sendContent?(route: ReplyRoute, content: ChannelContent, sendKey: string): Promise<SendReceipt>;
   progress?(route: ReplyRoute, text: string, streamKey: string, final: boolean): Promise<SendReceipt>;
   native?(route: ReplyRoute, operation: string, args: Record<string, unknown>): Promise<unknown>;
-  /** The connection id used in the session key formula (hub rooms imported from Matrix keep their Matrix session). */
-  sessionConnection?(message: ChannelMessage): string;
-  /** A reason to claim the message as `ignored` (for example a Matrix room migrated to a hub room). */
-  ignored?(message: ChannelMessage): string | undefined;
   /** Text prefixed to the model input when a turn starts; `commit` runs once the turn has started (group context). */
   turnContext?(message: ChannelMessage): { text: string; commit(): void } | undefined;
 }

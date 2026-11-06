@@ -37,9 +37,10 @@ func (e *httpError) Error() string {
 
 // Credentials stay on the selected origin; redirects are never followed.
 type originTransport struct {
-	base  *url.URL
-	token string
-	next  http.RoundTripper
+	base    *url.URL
+	token   string
+	next    http.RoundTripper
+	headers http.Header
 }
 
 func (t originTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -50,6 +51,9 @@ func (t originTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	copy.Header = r.Header.Clone()
 	if t.token != "" {
 		copy.Header.Set("Authorization", "Bearer "+t.token)
+	}
+	for key, values := range t.headers {
+		copy.Header[key] = append([]string(nil), values...)
 	}
 	return t.next.RoundTrip(copy)
 }
@@ -83,7 +87,7 @@ func newHTTP(base, token string) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Transport: originTransport{u, token, t}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects_are_not_allowed") }}, nil
+	return &http.Client{Transport: originTransport{base: u, token: token, next: t}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects_are_not_allowed") }}, nil
 }
 
 func request(ctx context.Context, client *http.Client, base, path, method string, body any, headers ...http.Header) (json.RawMessage, error) {

@@ -278,7 +278,7 @@ CREATE TABLE hub_read_markers(chat_id TEXT NOT NULL, person_id TEXT NOT NULL, re
 CREATE TABLE hub_rooms(
   room_id TEXT PRIMARY KEY,                  -- "rm_<ulid>"
   title TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
-  matrix_room_id TEXT UNIQUE,                -- set for imported ai.mau.room groups
+  matrix_room_id TEXT UNIQUE,                -- unused: ai.mau.room groups are not imported (15.1 #6)
   last_seq INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 1, archived INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE hub_room_members(
@@ -809,8 +809,8 @@ backfilled events take the lowest seqs.
 2. **Classification.** Each room is classified with the live adapter's rules. A room with the owner and
    one agent, without the group flag, is a DM and goes to `owner_main`. Every such DM room of that agent
    (the console currently shows only the most recent one) becomes a `participant` conversation of the
-   one DM chat. Rooms flagged `ai.mau.room` group become hub rooms with `matrix_room_id` set. Other rooms
-   go to `peer`/`group` sessions and appear as `observed` chats.
+   one DM chat. Rooms flagged `ai.mau.room` group are skipped (`mau_group`; they are not migrated, 15.1 #6).
+   Other rooms go to `peer`/`group` sessions and appear as `observed` chats.
 3. **Ordering and keys.** Events are sorted by `origin_server_ts`, with timeline cursor as tiebreaker,
    and written with `idempotency_key = matrix:<connectionId>:<event_id>`. This is the same key the live
    Matrix adapter produces, so later live events dedupe. A group event seen by several agents is written
@@ -841,7 +841,7 @@ feature with flags from `GET /me` → `limits.features`.
 | 2. Read via Router | Hub, socket, read markers. DM chats and observed chats are served from the ledger. | `history`: chat list, history and live updates for DMs come from Router. Sending still goes through Matrix (`PUT …/send`); the Matrix adapter ingests the message and it comes back on the socket. Run cards are keyed by `turnId` through `TurnDetail`. | Flag off, back to `/sync` |
 | 3. Send via Router | `WebChannel` adapter. The dispatcher and flush read `ledger_pending_inputs`/`ledger_deliveries`. Legacy inbox and outbox are written for compatibility only. | `send`: `POST …/messages` with `idempotencyKey`. DMs no longer create Matrix rooms. | Flag off. Matrix send still works. |
 | 4. Cards, attachments, control | Card events and the answer endpoint. Blob store (R2, local fallback) and attachment endpoints. Cancel, steer, reset, redaction and purge over HTTP. Schedule notices to web plus the rule's channel. Questions and actions move to `ledger_cards`. Section 16. | `cards`, `attachments`, `reset` | Flag off. Matrix text answers still work. |
-| 5. Native groups | Hub rooms, fan-out, `RoomChannel`, group context. `ai.mau.room` groups are imported as rooms. The Matrix room receives a final "已迁移到 Mau" notice, and its new messages are ignored for that room. Section 17. | `groups`: create, members, mentions | Flag off. Rooms already created stay readable. |
+| 5. Native groups | Hub rooms, fan-out, `RoomChannel`, group context. `ai.mau.room` Matrix groups are not migrated (15.1 #6). Section 17. | `groups`: create, members, mentions | Flag off. Rooms already created stay readable. |
 | 6. Identity | Persons and identities. Owner resolution by person. Pairing codes across Feishu and mail. `CloudflareAccessAuthenticator` ahead of the bearer path; Mau's `/_mau/v1` uses the same check. Section 18. | No login page; identity settings page | Unset the edge config: whoami bearer again |
 | 7. Matrix optional | Deployment switch plus per-agent Matrix state. Agents are created without Matrix accounts when it is off; Synapse-calling paths are gated. `timeline` mirror is dropped. Export, then remove Synapse and Postgres. Section 19. | Zero Matrix code paths when `features.matrix` is false | `AGENT_MATRIX=on` until Synapse data is deleted |
 | 8. Durable Objects | Port (section 12). | No change (same API) | — |
@@ -924,6 +924,7 @@ Still open:
 | 4e | **The owner can redact (not edit) their own web messages.** | 16.4 |
 | 4f | **Transcripts are kept forever.** The owner can purge a chat manually. Ingress tombstones keep their 30-day expiry. | 16.4 |
 | 5 | **Attachments live in Cloudflare R2**, content-addressed by sha256, with size caps, a per-owner key prefix and a local-disk store for tests and development. | 16.5 |
+| 6 | **Existing Matrix groups (`ai.mau.room`) are not migrated** (nobody uses them). There is no group import, no final notice and no frozen room; backfill skips these groups. Native groups stay. | 17.6 |
 
 ### 15.2 Decided in this ADR (not by the product owner)
 
@@ -1384,7 +1385,7 @@ The fan-out worker:
 
 ```ts
 { externalId: `${roomId}:${seq}`, sender: ownerId, scope: "group", groupId: `room:${roomId}`,
-  threadId: room.matrixRoomId ?? `room:${roomId}`,          // see 17.6: imported rooms keep their session
+  threadId: `room:${roomId}`,
   text, attachments, mentions: { self: true, all }, privateGroup: true,
   reply: { target: roomId, messageId: eventId, data: { roomId } } }
 ```
@@ -1438,32 +1439,11 @@ Caps:
 covers all of them). It appends one `window` event to the room and moves every cursor to the current
 `last_seq`.
 
-### 17.6 Importing `ai.mau.room` Matrix groups
+### 17.6 Matrix groups are not migrated
 
-The import is an explicit command, run once per deployment while Synapse and the service are running:
-`agent-router ledger import-rooms (--owner <ownerId> | --all) [--dry-run]`. For each Matrix room with
-`ai.mau.room {kind:"group"}` state whose joined members are exactly the owner and the owner's agents:
-
-1. **Hub room.** `importRoom` creates the hub room and its members. This is already implemented, and the
-   id is derived from the Matrix room id.
-2. **History.** Live Matrix ingress since the phase 1 backfill wrote only agent-side sessions, not the hub
-   room. The import pages Synapse `/messages` backwards (as an agent's virtual user, with the AS token)
-   until it reaches a known `matrix:<event_id>`, and appends the missing events in order.
-3. **Session continuity.** `RoomChannel` messages for an imported room use the Matrix room id as `threadId`.
-   The legacy formula therefore gives each agent the session key its Matrix group session already had, so
-   the model context continues. The import sets that `ledger_sessions` row to `kind='room'` and fills in
-   `room_id`.
-4. **Freeze.** The registry document `matrix_room_migrations[<matrixRoomId>] = { roomId, at }` is written.
-   From then on `MatrixChannel` claims messages from that room as `ignored` (`room_migrated`): no transcript
-   event and no turn.
-5. **Final notice.** The member agent with the lowest id sends one `m.notice`: "此群聊已迁移到 Mau
-   网页端，这里的新消息不会再被处理。" Its transaction id is `digest(["room-migrated", matrixRoomId])`, so a
-   rerun never sends it twice. Agents stay joined, so Element users can still read the old history.
-6. **Late messages.** Steps 2–5 are idempotent. A rerun imports anything that arrived before the freeze.
-
-Groups that include anyone outside the owner and the owner's agents are not imported. They stay Matrix
-groups (observed chats) while Matrix is enabled, and become read-only history in phase 7. The dry run
-lists every room as `import`, `skip:has_outsiders`, `skip:not_group` or `skip:unknown_members`.
+Product decision 15.1 #6: existing `ai.mau.room` Matrix groups are not imported into hub rooms. Backfill skips their
+events (`mau_group`), no notice is sent to them, and while Matrix is on their messages keep reaching the agents as
+Matrix group messages. Their history stays in the Synapse archive of 19.4 item 8. Native groups start empty.
 
 ### 17.7 Console
 
@@ -1494,19 +1474,12 @@ CREATE INDEX hub_room_members_agent ON hub_room_members(member_id) WHERE member_
 - Fan-out order per agent, retry after a crash (the claim dedupes), the failure notice after 24 h.
 - Group context: caps, the cursor, exclusion of own inputs and messages, redacted messages skipped.
 - Replies land in the room with `replyTo`. Card mirror and an answer from the room chat. Room reset.
-- Import:
-  - a private group is imported, a group with outsiders is skipped
-  - the history gap is filled
-  - the session key is unchanged
-  - the final notice is sent exactly once
-  - a later Matrix message is ignored with `room_migrated`
 - With the flag off: reads work, commands give 403.
 
 ### 17.10 Risks
 
 - **Cost of `@all`** in a 20-agent room. Rooms are capped at 20 agents, and turns are queued through each
   agent's normal capacity.
-- **Owners still posting in Element** after the import get no reply. The final notice is the only signal.
 - **The context cap** loses detail in busy rooms. The cap values live in `limits` and can be tuned.
 
 ## 18. Phase 6: identity and edge login
@@ -1811,7 +1784,7 @@ joined but are ignored.
 | `GET /directory` | `matrixId` | `matrixId: null` |
 | Connection API, `kind:"matrix"` | allowed | 409 `matrix_disabled`. Existing Matrix `ConnectionDefinition`s are kept but not registered; their status shows `disabled: "matrix_off"`. |
 | Gateway Matrix social API (`/api/contacts`, `/api/conversations`) | as today | 409 `matrix_disabled` |
-| `ledger backfill --synapse`, `ledger import-rooms` | as today | error `matrix_disabled` |
+| `ledger backfill --synapse` | as today | error `matrix_disabled` |
 | Mau `environments.ts` | adds the `{id:"matrix", kind:"matrix"}` connection | adds nothing (`router.service.matrixEnabled(agentId)` is false) |
 | Mau `/_mau/v1/info` | `login:"matrix"` unless edge is configured | `login:"edge"` (an edge config is required when Matrix is off) |
 
@@ -1833,7 +1806,7 @@ file (15.2.13). `timeline`, `room_info` and `read_markers` are no longer written
 
 Preconditions:
 1. Phases 3–6 have been on for at least one release, and owners use only the ledger console.
-2. `agent-router ledger import-rooms --all` has run, and every imported group shows the final notice.
+2. Owners know that `ai.mau.room` Matrix groups are not migrated (15.1 #6); `matrix export` lists them.
 3. Every owner has logged in through the edge identity. `GET /web/debug/identity` (operator only) lists
    owners with the `last_seen_at` of their login identity.
 4. No live dependency on Matrix remains. Check `delegation` sessions, and `peer`/`group` sessions on
@@ -1881,7 +1854,7 @@ Removal:
 13. Remove `/_matrix` and `/.well-known/matrix` from the edge (Access application, tunnel ingress, DNS).
 14. `agent-router matrix forget --all [--dry-run]` deletes:
     - the per-agent `timeline`, `room_info`, `read_markers`, `rooms` and `meta.sync` documents
-    - the registry's `as_queue:*`, `as_members`, `matrix_agents` and `matrix_room_migrations`
+    - the registry's `as_queue:*`, `as_members`, `as_transactions`, `matrix_agents` and `matrix_orphans`
     It then sets every agent to `matrix:"none"`.
 
 ### 19.5 Tests
@@ -1923,7 +1896,7 @@ deviate from it where the code required:
    `/chats/:chatId/turns/:turnId`, `/debug/ledger`) and the event socket. Deferred: `POST /chats/dm`, send, reset,
    card answers, attachments, groups, pairing (phases 3–6). `GET /me` reports them in `limits.features` as `false`.
    `POST /chats/dm` is served from phase 2: a DM chat exists for every owned active agent, so it only resolves it.
-   Hub rooms are created only by backfill and are not served yet.
+   Hub rooms are created only by phase 5 group commands.
 2. **Flag.** The web API and socket are mounted only with `ServiceConfig.ledgerRead` (`AGENT_LEDGER_READ=1`).
    Shadow writes are always on for agents opened by `ManagedService`; a core built on a store without
    `AgentLedger.open` writes nothing.
@@ -1938,8 +1911,7 @@ deviate from it where the code required:
    legacy formula holds without per-channel code.
 6. **Idempotency keys.** Ingress and backfill both use `<connectionId>:<externalId>` (section 6.1). Section 10.3's
    `matrix:<connectionId>:<event_id>` would not dedupe against live ingress, so it is not used. Hub room events
-   use `matrix:<event_id>`. Imported room ids are derived (`rm_` + digest of the Matrix room id) instead of a ULID
-   so that every agent of the owner imports the same room.
+   are keyed by their web idempotency key (phase 5).
 7. **Persons.** `person_id` is derived from the owner id (`prs_` + digest) so that hub, registry and ledgers agree
    without lookups; `matrix_agents` documents are not changed (they are plain strings today). Seeded identities:
    the owner's Matrix id and each connection's `ownerAddresses` (`verified_by='config'`). Namespace: Feishu
@@ -2267,14 +2239,14 @@ routes in `src/ledger/web.ts`. Attachments (16.5) are a separate change. These c
 ## Implementation notes (phase 5)
 
 Phase 5 adds native groups: `src/ledger/rooms.ts` (hub rooms, transcript, fan-out, group context, mirror),
-`src/ledger/rooms-web.ts` (group commands), `src/ledger/rooms-fanout.ts` (worker), `src/channels/room.ts` (`RoomChannel`)
-and `src/ledger/rooms-import.ts` (Matrix import). These choices fill gaps in section 17 or deviate from it:
+`src/ledger/rooms-web.ts` (group commands), `src/ledger/rooms-fanout.ts` (worker) and `src/channels/room.ts` (`RoomChannel`).
+These choices fill gaps in section 17 or deviate from it:
 
 1. **Flag.** `ServiceConfig.ledgerGroups` (`AGENT_LEDGER_GROUPS=1`), effective with `ledgerRead` and `ledgerSend`. It sets
    `limits.features.groups`, accepts group commands and room sends, and starts the fan-out worker. Flag off: room chats stay
    listed and readable (`readOnly: true`), `POST /groups…` and room sends are 403 `feature_disabled`, and the `room` connection is
-   not registered in the channel runtimes (as `web` without `ledgerSend`), so channel status and dispatch are unchanged. A room
-   frozen by the import stays frozen with the flag off. The flag is independent of `cards` and `reset`.
+   not registered in the channel runtimes (as `web` without `ledgerSend`), so channel status and dispatch are unchanged. The flag
+   is independent of `cards` and `reset`.
 2. **Schema.** The section 17.8 tables and indexes (plus `hub_room_events(room_id, turn_id)`) are one step with its own counter
    (`meta.hub_rooms_schema_version = 1`) instead of `OWNER_HUB_V3`, so it does not depend on the order of the phase 4 step.
 3. **Hub delegation.** `OwnerHub` routes `room:` chat ids to `HubRooms` for summary, history, read markers, turns and socket
@@ -2283,9 +2255,8 @@ and `src/ledger/rooms-import.ts` (Matrix import). These choices fill gaps in sec
    so the room shows `turn queued → running → message → completed` as a DM does. `chat.stream` frames of a room session use the
    room chat id.
 4. **Sessions.** `RoomChannel` (connection `room`, reserved in channel configuration, owner address = the owner id) creates
-   `ledger_sessions(kind='room', room_id)`. The session key keeps the legacy formula; `ChannelAdapter.sessionConnection` lets an
-   imported room (`threadId` = Matrix room id) use the agent's Matrix connection id in it, so the key, and the Host session, are
-   the ones its Matrix group session already had.
+   `ledger_sessions(kind='room', room_id)`. The session key keeps the legacy formula with connection `room` and
+   `threadId = room:<roomId>`.
 5. **Group context.** `ChannelAdapter.turnContext` returns the prefix and a `commit`; the dispatcher prepends it to the model input
    and commits after the turn start. The cursor is in the hub file, so it moves right after (not in) the agent transaction; a
    crash in between repeats the context once. Times use the server time zone; the owner is named "主人".
@@ -2298,13 +2269,9 @@ and `src/ledger/rooms-import.ts` (Matrix import). These choices fill gaps in sec
 8. **Not yet.** Room reset (17.5), card answers from a room chat and media in rooms are not implemented: the phase 4 card and
    control routes resolve only `dm:`/`obs:` chats (404 `chat_not_found` for a room chat), and media waits for the blob store.
    `RoomChannel` sends text and HTML only (`channel_content_unsupported` otherwise).
-9. **Import.** `npm run ledger:import-rooms -- (--owner <ownerId> | --all) [--dry-run] [--state <dir>]` (`import-groups` is an
-   alias). It runs with the Router service **stopped** and Synapse running, like the backfill: the agent stores are leased, so a
-   running service cannot share them. Gap filling reads the agents' `timeline` mirrors and Synapse `/messages` (AS token) back to
-   the first known `matrix:<event_id>`. The freeze record is `matrix_room_migrations[<matrixRoomId>] = { roomId, at,
-   noticeEventId }`; the notice is sent once (transaction id of 17.6, and `noticeEventId` on rerun). Each agent's cursor starts at
-   the room's last seq, because its Matrix session already holds that history. After the restart `MatrixChannel` claims new
-   messages of the room as `ignored` (`room_migrated`) through `ChannelAdapter.ignored`.
+9. **No Matrix group import** (15.1 #6, removed in phase 7). `ledger:import-rooms`, the final notice, the frozen-room
+   handling (`matrix_room_migrations`, `room_migrated`, `ChannelAdapter.ignored`/`sessionConnection`) and the backfill's
+   hub-room classification were removed. `hub_rooms.matrix_room_id` stays in the shipped schema, unused.
 
 Final shapes:
 
@@ -2381,3 +2348,64 @@ above or deviate from it:
 // GET /identities/pairing-codes → { "data": [ { "id": "pc_…", "createdAt": "…", "expiresAt": "…" } ] }  (pending, never the code)
 // DELETE /identities/pairing-codes/:codeId → 204 | 404 pairing_code_not_found
 ```
+
+## Implementation notes (phase 7: Matrix optional)
+
+Phase 7 is implemented in `src/matrix/managed.ts` (switches, gated paths, toggle), `src/matrix/transport.ts`
+(`DormantTransport`), `src/matrix/removal.ts` and `removal-cli.ts` (runbook tooling) and the Go CLI edge login
+(`internal/cli/edge.go`). These choices fill gaps in section 19 or deviate from it:
+
+1. **Switch.** `AGENT_MATRIX=on|off` (also `1/0`, `true/false`; anything else fails the start) sets
+   `ServiceConfig.matrix.enabled`. Off: `homeserver`, `asToken`, `hsToken` and the external identity `adminToken` are
+   optional and never read, even when present. Off with `ledgerRead` but without `ledgerSend` fails the start
+   (`matrix_off_requires_ledger_send`, 15.3). `GET /health/live` reports `matrix`, `GET /web/me` always reports
+   `features.matrix`.
+2. **State.** `ManagedAgent.matrix` stores `active | dormant | none` (missing = `active`). The API reports the
+   effective state: with the deployment off an `active` agent is shown as `dormant`; the stored value is unchanged, so
+   rollback (`AGENT_MATRIX=on`) needs no migration. `ManagedService.matrixEnabled(agentId)` is the check for embedders
+   (Mau).
+3. **Activation checkpoint.** Each agent store records `meta.matrix_runtime` (`active`/`dormant`). Opening an agent
+   with Matrix after a dormant period sets `meta.matrix_activation` and moves the sync cursor past the queued
+   Application Service batches; `MatrixConnector.acceptSync` (and gap recovery) drop timeline events older than the
+   checkpoint, so events of the off period are never processed late. `ApplicationInbox` queues nothing for agents that
+   are not `active`.
+4. **Toggle.** `PUT /agents/:id/matrix {enabled}` stops and reopens the runtime under the agent's lock (the
+   `configureRuntime` lock), 409 `agent_has_active_or_unknown_run` while a run is active. Re-enabling registers the
+   account again (`M_USER_IN_USE` is fine). A failed reopen restores the previous state. Mau adds the `matrix`
+   connection the next time it configures the agent (environment ready).
+5. **Dormant runtime.** `DormantTransport` (`dormant = true`): `MatrixConnector.start` skips the account-data bootstrap
+   and the sync loop; `flush` leaves Matrix envelopes queued; the gateway's Matrix social API (`contacts`, `blocked`,
+   `invites`, `conversations`, `messages`, `rooms`, `events`) answers 409 `matrix_disabled`; `/health/ready` is ready
+   with `matrix: "dormant"`. Work, inbox, requests and status are unchanged. The owner contact is local;
+   `meta.matrix_initialized` tracks the display name separately and is completed when the agent becomes `active`.
+6. **Delete.** Agents in state `none` skip deactivation. Deployment off, or a `dormant` agent: deactivation is skipped
+   and the account is recorded in the registry's `matrix_orphans`, which `matrix export` and `matrix forget` list.
+7. **Auth.** A Matrix bearer without an injected `authenticate` dependency is 401 `matrix_disabled`; edge principals,
+   service tokens and `ars_` sessions work. `ExternalIdentitySessions` creates the `external_owners` record active at
+   once. New `GET /_agent-router/v1/account` returns `{ owner, personId, via, email?, matrix }` for any principal (used
+   by the CLI edge login).
+8. **Degradation.** `GET /directory` → `matrixId: null` unless the agent is `active`. A2A over Matrix rooms stops (its
+   envelopes stay queued); the HTTP A2A gateway is unchanged. `ledger:backfill --synapse` refuses with
+   `matrix_disabled` when `AGENT_MATRIX=off`.
+9. **Runbook tooling** (service stopped; each command takes the agent store leases):
+   - item 6: `npm run ledger:promote-media -- --all [--dry-run]` (Synapse running, `MATRIX_HOMESERVER_URL`,
+     `MATRIX_AS_TOKEN_FILE`, and the service's blob store variables). It copies every `mxc://` locator of a Matrix
+     connection in `ledger_attachments` into the blob store (`OwnerAttachments.storePromoted`, shared with lazy
+     promotion) and rewrites it to `{"blob":…}`; idempotent; exit code 1 while any remain.
+   - item 7: `npm run matrix:export -- --all --out <dir>` writes `manifest.json` (agents and states, owners, rooms with
+     name, members, `ai.mau.room` flag, room → conversation mappings, timeline and ledger event counts, orphan
+     accounts) and `report.json`, the final consistency report. Blocking checks: unpromoted media, Matrix timeline
+     messages without an ingress claim (outside `ai.mau.room` groups), agents with a timeline but no backfill record,
+     owners without a `cloudflare-access` identity, queued Matrix sends. Warnings: Matrix peer/group/delegation
+     sessions with inbound traffic in 30 days, and the `ai.mau.room` groups (not migrated, 15.1 #6). Exit code 1 unless
+     `ready`. This replaces the operator route `GET /web/debug/identity` of 19.4 item 3.
+   - item 14: `AGENT_MATRIX=off npm run matrix:forget -- --all [--dry-run]`.
+   The Go CLI does not wrap these commands (as for backfill).
+10. **Not done.** Media of `ai.mau.room` groups is not in any ledger, so it is not promoted; it stays in the
+    `media_store/` archive (item 8). The CLI edge mode does not cover the Matrix social commands (`find`, `lookup`,
+    `profile-set`).
+11. **CLI edge login.** `agent-router login --edge URL` verifies `GET /account` and saves `edge.json` (service URL and
+    owner only) in the profile; credentials are read per call: `--access-client-id-file`/`--access-client-secret-file`
+    or `CF_ACCESS_CLIENT_ID[_FILE]`/`CF_ACCESS_CLIENT_SECRET[_FILE]` (headers `CF-Access-Client-Id`/`-Secret`), then
+    `--access-token-file`/`CF_ACCESS_TOKEN[_FILE]`, then `cloudflared access token -app=<origin>` (header
+    `cf-access-token`). Owner commands (agents, channels, gateway) use it; `logout` removes the edge profile.

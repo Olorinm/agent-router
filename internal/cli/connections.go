@@ -48,7 +48,7 @@ func (a *app) connectionSession(requireAgent bool) (*agentSelection, error) {
 	if selected != nil && selected.Token != "" {
 		return nil, errors.New("owner_account_required: use an account profile")
 	}
-	p, err := a.ownerSession(s)
+	p, err := a.owner(s)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (a *app) connectionSession(requireAgent bool) (*agentSelection, error) {
 	if root == "" && selected != nil {
 		root = selected.ServiceURL
 	}
-	root, err = accountService(p, root, a.o.allowHTTP)
+	root, err = p.service(root, a.o.allowHTTP)
 	if err != nil {
 		return nil, err
 	}
@@ -64,9 +64,12 @@ func (a *app) connectionSession(requireAgent bool) (*agentSelection, error) {
 		return nil, errors.New("select_an_owned_agent_first: run agent-create NAME or agent-use NAME")
 	}
 	a.base = root
-	a.http, err = newHTTP(root, p.AccessToken)
+	a.http, err = p.client(root)
 	if err != nil {
 		return nil, err
+	}
+	if p.edge != nil {
+		return selected, nil
 	}
 	binding := selected
 	if binding == nil {

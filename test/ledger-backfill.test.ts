@@ -79,7 +79,7 @@ describe("ledger backfill", () => {
     const real = await backfill({ stateDir: f.stateDir, agentId: f.agent.id });
     const report = real.agents[0]!;
     expect(Object.fromEntries(report.rooms.map((room) => [room.room, [room.class, room.imported]]))).toEqual({
-      "!dm:example.test": ["owner_dm", 4], "!old:example.test": ["owner_dm", 1], "!peer:example.test": ["peer", 1], "!team:example.test": ["hub_room", 1], "!mixed:example.test": ["group", 1] });
+      "!dm:example.test": ["owner_dm", 4], "!old:example.test": ["owner_dm", 1], "!peer:example.test": ["peer", 1], "!team:example.test": ["mau_group", 0], "!mixed:example.test": ["group", 1] });
     expect(report.linked).toEqual({ turns: 1, deliveries: 1, cards: 0 }); expect(report.unmatched).toEqual({ inbox: 0, outbox: 1 });
     opened = f.open();
     const events = opened.ledger.events(session);
@@ -96,16 +96,17 @@ describe("ledger backfill", () => {
     expect(conversations.map((row) => row.role)).toEqual(["participant", "participant"]);
     expect(opened.ledger.session(legacySession(f.agent.id, key("matrix", "direct", "!peer:example.test", stranger)))).toMatchObject({ kind: "peer", lastSeq: 1 });
     expect(opened.ledger.session(legacySession(f.agent.id, key("matrix", "group", "!mixed:example.test", "group")))).toMatchObject({ kind: "group", lastSeq: 1 });
-    expect(opened.store.get("meta", "ledger_backfill")).toMatchObject({ counts: { imported: 8 } });
+    expect(opened.store.get("meta", "ledger_backfill")).toMatchObject({ counts: { imported: 7 } });
     opened.store.close();
 
     const again = await backfill({ stateDir: f.stateDir, agentId: f.agent.id });
     expect(again.agents[0]!.rooms.every((room) => room.imported === 0)).toBe(true);
     expect(again.agents[0]!.rooms.find((room) => room.room === "!dm:example.test")!.duplicate).toBe(4);
     opened = f.open(); expect(opened.ledger.session(session)).toMatchObject({ lastSeq: 5, generation: 1 }); opened.store.close();
+    // `ai.mau.room` groups are not migrated: their events are skipped and no hub room is created.
+    expect(real.agents[0]!.rooms.find((room) => room.room === "!team:example.test")).toMatchObject({ class: "mau_group", imported: 0, skipped: { mau_group: 1 } });
     const hub = new DurableStore(join(f.stateDir, "owners", `${digest(owner)}.sqlite`), owner); cleanup.push(() => hub.close());
-    expect(hub.db.prepare("SELECT title, matrix_room_id, last_seq FROM hub_rooms").all().map((row) => ({ ...row }))).toEqual([{ title: "Team", matrix_room_id: "!team:example.test", last_seq: 1 }]);
-    expect(hub.db.prepare("SELECT member_type, role FROM hub_room_members ORDER BY member_type").all().map((row) => [row.member_type, row.role])).toEqual([["agent", "agent"], ["agent", "agent"], ["person", "owner"]]);
+    expect(hub.db.prepare("SELECT COUNT(*) AS n FROM hub_rooms").get()!.n).toBe(0);
   });
   it("fills gaps from Synapse history and re-sequences a session that already had live events", async () => {
     const f = await fixture(), session = legacySession(f.agent.id, "owner-main");

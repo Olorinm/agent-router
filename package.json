@@ -42,7 +42,9 @@
     "feishu:setup": "node dist/services/feishu/setup.js",
     "channels:check": "node dist/service/check-cli.js",
     "ledger:backfill": "node dist/ledger/backfill-cli.js",
-    "ledger:import-rooms": "node dist/ledger/rooms-import-cli.js",
+    "ledger:promote-media": "node dist/matrix/removal-cli.js ledger promote-media",
+    "matrix:export": "node dist/matrix/removal-cli.js matrix export",
+    "matrix:forget": "node dist/matrix/removal-cli.js matrix forget",
     "prepack": "npm run build"
   },
   "dependencies": {

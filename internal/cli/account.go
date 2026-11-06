@@ -414,6 +414,31 @@ func (a *app) accountRun(command string, args []string) error {
 		}
 		return a.output(map[string]any{"homeserver": base, "loginFlows": flows})
 	}
+	if a.o.edge && command != "login" {
+		return errors.New("edge_applies_to_login_only")
+	}
+	if command == "login" && a.o.edge {
+		return a.edgeLogin(s, args)
+	}
+	// An edge login has no Matrix account: whoami asks the Router, logout forgets the edge profile.
+	if e, err := s.edgeProfile(); err != nil {
+		return err
+	} else if e != nil && (command == "whoami" || command == "logout") {
+		if command == "logout" {
+			if err = os.Remove(s.edgePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			return a.output(map[string]any{"loggedOut": e.Owner, "profile": s.name, "login": "edge",
+				"message": "Edge profile removed. Run cloudflared access logout to end the Access session."})
+		}
+		o, err := a.owner(s)
+		if err != nil {
+			return err
+		}
+		return a.output(map[string]any{"profile": s.name, "login": "edge", "userId": o.UserID, "serviceUrl": e.ServiceURL, "loggedIn": true})
+	} else if e != nil && (command == "find" || command == "lookup" || command == "profile-set") {
+		return errors.New("matrix_account_required: this profile uses an edge login")
+	}
 	if command == "whoami" || command == "find" || command == "lookup" || command == "profile-set" {
 		p, err := s.require()
 		if err != nil {

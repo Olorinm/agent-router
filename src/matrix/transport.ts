@@ -25,6 +25,8 @@ export interface MatrixDataTransport {
   read(room: string, eventId: string): Promise<void>;
 }
 export interface MatrixTransport {
+  /** ADR 0005 19.2: no homeserver behind this transport. The connector runs no sync loop and sends nothing. */
+  readonly dormant?: boolean;
   readonly data?: MatrixDataTransport;
   readonly media?: { read(url: string): Promise<Buffer>; upload(bytes: Buffer, name: string, mediaType: string): Promise<string> };
   typing?(room: string): Promise<void>;
@@ -98,4 +100,23 @@ export class SdkMatrixTransport implements MatrixTransport {
   async typing(room: string) { await this.client.sendTyping(room, true, 5000); }
   async redact(room: string, eventId: string) { await this.client.redactEvent(room, eventId); }
   stop(): void { this.client.http.abort(); this.client.stopClient(); }
+}
+
+/**
+ * The per-agent transport while Matrix is off for the deployment or the agent (ADR 0005 19.2). `identity()` returns
+ * the agent's runtime id (registered or not); every Matrix call fails with `matrix_disabled`, and nothing contacts a
+ * homeserver. The connector, its store and the CLI work queue keep working.
+ */
+export class DormantTransport implements MatrixTransport {
+  readonly dormant = true;
+  constructor(private readonly userId: string) {}
+  async identity(): Promise<string> { return this.userId; }
+  private disabled(): Promise<never> { return Promise.reject(new Error("matrix_disabled")); }
+  sync(): Promise<SyncBatch> { return this.disabled(); }
+  history(): Promise<{ events: RoomEvent[]; end?: string }> { return this.disabled(); }
+  createRoom(): Promise<string> { return this.disabled(); }
+  join(): Promise<void> { return this.disabled(); }
+  state(): Promise<RoomEvent[]> { return this.disabled(); }
+  send(): Promise<string> { return this.disabled(); }
+  stop(): void { /* Nothing runs. */ }
 }

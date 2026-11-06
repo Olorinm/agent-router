@@ -130,8 +130,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     attachments?: OwnerAttachments | undefined;
     /** The owner's hub rooms (ADR 0005 phase 5); registers the `room` connection. */
     rooms?: (() => HubRooms | undefined) | undefined;
-    /** Matrix rooms imported into hub rooms (registry `matrix_room_migrations`). */
-    roomMigrated?: ((room: string) => boolean) | undefined } = {}): Promise<ServiceExtension> {
+    /** False while Matrix is off for the deployment or this agent (ADR 0005 19.2); default true. */
+    matrix?: boolean | undefined } = {}): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   const accounts = new Map<string, FeishuAccount>(), personalTools = new Map<string, FeishuTools>();
@@ -143,13 +143,15 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   };
   const mailPairing = new Set<string>();
   if (options.identity) core.identity = identityHooks(options.identity, agent.owner, namespaces, mailPairing);
+  // Matrix connections stay configured but are not registered while Matrix is off; status shows them as disabled.
+  const disabled = options.matrix === false ? config.connections.filter((item) => item.kind === "matrix") : [];
   for (const definition of config.connections) {
+    if (definition.kind === "matrix" && options.matrix === false) continue;
     let adapter: ChannelAdapter;
     let ownerAddresses = definition.ownerAddresses;
     let namespace = definition.kind === "matrix" ? agent.owner.slice(agent.owner.indexOf(":") + 1) : definition.kind === "feishu" ? definition.appId ?? "" : "";
     switch (definition.kind) {
-      case "matrix": adapter = new MatrixChannel(connector, { trusted: member => member === agent.owner || Boolean(options.ownedAgent?.(member)),
-        ...(options.roomMigrated ? { migrated: options.roomMigrated } : {}) });
+      case "matrix": adapter = new MatrixChannel(connector, { trusted: member => member === agent.owner || Boolean(options.ownedAgent?.(member)) });
         if (!ownerAddresses.length) ownerAddresses = [agent.owner]; break;
       case "feishu": {
         if (definition.credentialsFile) {
@@ -194,8 +196,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   const web = AgentLedger.attached(connector.store)?.authoritative ? new WebChannel(core, agent.owner, options.attachments) : undefined;
   if (web) core.register({ id: WEB_CONNECTION, ownerAddresses: [owner] }, web);
   // Hub rooms (ADR 0005 phase 5). Only the owner's addressed room messages arrive here, through the fan-out worker.
-  const room = options.rooms ? new RoomChannel(core, agent.id, agent.owner, options.rooms,
-    config.connections.find((item) => item.kind === "matrix")?.id ?? "matrix") : undefined;
+  const room = options.rooms ? new RoomChannel(core, agent.id, agent.owner, options.rooms) : undefined;
   if (room) core.register({ id: ROOM_CONNECTION, ownerAddresses: [agent.owner] }, room);
   let worker: HostWorker | undefined;
   if (config.host) {
@@ -247,7 +248,11 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       ...(worker ? [loop(() => worker!.tick(), 1000)] : []),
       ...(accounts.size ? [loop(async () => { await Promise.allSettled([...accounts.values()].map((account) => account.pollAuthorization())); }, 5000)] : [])]; },
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },
-    status: () => ({ ...core.status(), host: worker?.status() ?? null }),
+    status: () => {
+      const status = core.status();
+      return { ...status, connections: [...status.connections, ...disabled.map((item) => ({ id: item.id, kind: item.kind, started: false,
+        capabilities: null, error: null, disabled: "matrix_off" }))], host: worker?.status() ?? null };
+    },
     communication: core, ...(web ? { web } : {}), ...(control ? { control } : {}), ...(room ? { room } : {}),
     ...(observation ? { observation } : {}),
     ...(sessions ? { sessions } : {}),

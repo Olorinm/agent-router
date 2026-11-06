@@ -5,14 +5,10 @@ import { join } from "node:path";
 import { ManagedService, createManagedApp, type ManagedAgent, type ServiceConfig, type ServiceExtension } from "../src/matrix/managed.js";
 import type { ApplicationInbox } from "../src/matrix/application-service.js";
 import type { MatrixTransport } from "../src/matrix/transport.js";
-import type { RoomEvent } from "../src/matrix/protocol.js";
 import { channelConfigSchema, createChannelRuntime } from "../src/service/channels.js";
 import type { HostPort, HostRun } from "../src/execution/host.js";
-import { DurableStore } from "../src/communication/store.js";
-import { digest, key as joinKey } from "../src/execution/protocol.js";
-import { AgentLedger, legacySession } from "../src/ledger/ledger.js";
+import { AgentLedger } from "../src/ledger/ledger.js";
 import { personId } from "../src/ledger/registry.js";
-import { MIGRATED_NOTICE, importRooms } from "../src/ledger/rooms-import.js";
 import { ROOM_LIMITS } from "../src/ledger/rooms.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -284,64 +280,4 @@ describe("native groups (ADR 0005 phase 5)", () => {
     expect(ids).not.toContain("room");
     expect(off.extension(off.agents[0]!.id).room).toBeUndefined();
   }, 20_000);
-});
-
-describe("importing ai.mau.room Matrix groups (17.6)", () => {
-  const event = (id: string, sender: string, ts: number, body: string): RoomEvent & { origin_server_ts: number } =>
-    ({ event_id: id, sender, type: "m.room.message", content: { msgtype: "m.text", body }, origin_server_ts: ts });
-  it("imports a private group with its history gap, keeps sessions, freezes the room and notices once", async () => {
-    const t = await setup(), [helper, writer] = t.agents;
-    // The helper's existing Matrix group session (live ingress before the import).
-    t.extension(helper!.id).communication!.receive("matrix", { externalId: "$live1", sender: owner, scope: "group", groupId: "!team:example.test",
-      mentions: { self: true, all: false }, privateGroup: true, threadId: "!team:example.test", text: "旧群里的问题", reply: { target: "!team:example.test", messageId: "$live1", data: {} } });
-    const sessionKey = legacySession(helper!.id, joinKey("matrix", "group", "!team:example.test", "group"));
-    await until(() => t.ledger(helper!.id).session(sessionKey)?.kind, (kind) => kind === "group");
-    await until(() => t.hosts.get(helper!.id)?.starts.length ?? 0, (n) => n === 1);
-    const matrixSession = t.hosts.get(helper!.id)!.starts[0]!.sessionId;
-    await stop();
-    for (const agent of [helper!, writer!]) {
-      const store = new DurableStore(join(t.stateDir, "agents", `${agent.id}.sqlite`), agent.matrixId);
-      store.set("rooms", "!team:example.test", { members: [owner, helper!.matrixId, writer!.matrixId], group: true });
-      store.set("room_info", "!team:example.test", { name: "老团队" });
-      store.set("rooms", "!mixed:example.test", { members: [owner, other, agent.matrixId], group: true });
-      if (agent === helper) store.set("timeline", joinKey("!team:example.test", "$t1"), { cursor: 1, room: "!team:example.test", event: event("$t1", owner, 1000, "第一条") });
-      store.close();
-    }
-    const synapse = [event("$s3", writer!.matrixId, 3000, "第三条"), event("$s2", owner, 2000, "第二条"), event("$t1", owner, 1000, "第一条")];
-    const sent: Array<{ room: string; body: unknown; txnId: string; agent: string }> = [];
-    const options = { stateDir: t.stateDir, ownerId: owner, history: () => async () => ({ events: synapse }),
-      notice: (agent: ManagedAgent) => async (room: string, _type: string, content: Record<string, unknown>, txnId: string) => { sent.push({ room, body: content.body, txnId, agent: agent.id }); return "$notice"; } };
-    const dry = await importRooms({ ...options, dryRun: true });
-    expect(dry.owners[0]!.rooms.map((room) => [room.matrixRoomId, room.decision])).toEqual(expect.arrayContaining([["!team:example.test", "import"], ["!mixed:example.test", "skip:has_outsiders"]]));
-    expect(sent).toEqual([]);
-    const report = await importRooms(options);
-    const team = report.owners[0]!.rooms.find((room) => room.matrixRoomId === "!team:example.test")!;
-    expect(team).toMatchObject({ decision: "import", title: "老团队", imported: 3, fromSynapse: 2, notice: "sent" });
-    expect(team.sessions!.find((item) => item.agentId === helper!.id)).toEqual({ agentId: helper!.id, sessionKey, existed: true });
-    const lowest = [helper!.id, writer!.id].sort()[0];
-    expect(sent).toEqual([{ room: "!team:example.test", body: MIGRATED_NOTICE, txnId: digest(["room-migrated", "!team:example.test"]), agent: lowest }]);
-    // A rerun imports nothing new and never sends the notice twice.
-    const again = await importRooms(options);
-    expect(again.owners[0]!.rooms.find((room) => room.matrixRoomId === "!team:example.test")).toMatchObject({ imported: 0, notice: "already_sent" });
-    expect(sent).toHaveLength(1);
-
-    const u = await setup({}, t.stateDir), chatId = `room:${team.roomId}`;
-    const history = await u.events(chatId);
-    expect(history.filter((item) => item.kind === "message").map((item) => [item.sender.type, item.text, item.channel.kind]))
-      .toEqual([["person", "第一条", "matrix"], ["person", "第二条", "matrix"], ["agent", "第三条", "matrix"]]);
-    expect((await u.api(`${root}/web/chats`)).data.data.find((chat: any) => chat.chatId === chatId)).toMatchObject({ title: "老团队", kind: "group" });
-    // The helper's room session is its old Matrix group session: same key, now a room session; the model session continues.
-    expect(u.ledger(helper!.id).session(sessionKey)).toMatchObject({ kind: "room", roomId: team.roomId });
-    await u.send(chatId, { idempotencyKey: key(1), text: "网页端继续", mentions: { agentIds: [helper!.id] } });
-    await until(() => u.hosts.get(helper!.id)?.starts.length ?? 0, (n) => n === 1);
-    expect(u.hosts.get(helper!.id)!.starts[0]!.sessionId).toBe(matrixSession);
-    expect(u.hosts.get(helper!.id)!.starts[0]!.input).toMatch(/^网页端继续/);
-    // A later Matrix message in the frozen room is claimed as ignored: no transcript event and no turn.
-    const record = u.extension(helper!.id).communication!.receive("matrix", { externalId: "$late", sender: owner, scope: "group", groupId: "!team:example.test",
-      mentions: { self: true, all: false }, privateGroup: true, threadId: "!team:example.test", text: "Element 里的新消息", reply: { target: "!team:example.test", messageId: "$late", data: {} } });
-    expect(record).toMatchObject({ state: "ignored", reason: "room_migrated" });
-    expect(u.ledger(helper!.id).claimFor("matrix", "$late")).toMatchObject({ state: "ignored", reason: "room_migrated", eventId: null });
-    // Groups with outsiders stay Matrix groups.
-    expect((await u.api(`${root}/web/chats`)).data.data.filter((chat: any) => chat.kind === "group")).toHaveLength(1);
-  }, 30_000);
 });
