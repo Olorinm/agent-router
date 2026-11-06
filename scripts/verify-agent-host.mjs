@@ -12,7 +12,7 @@ import { DurableStore } from "../dist/communication/store.js";
 import { CliWork } from "../dist/execution/work.js";
 import { HostWorker } from "../dist/execution/host-worker.js";
 import { HttpAgentHost } from "../dist/execution/host.js";
-import { ServiceHttp } from "../dist/channels/http.js";
+import { ServiceHttp } from "../dist/http.js";
 import { FeishuAccount, privateFile } from "../dist/services/feishu/cli.js";
 import { FeishuTools } from "../dist/services/feishu/tools.js";
 

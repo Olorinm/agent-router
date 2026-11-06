@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@larksuiteoapi/node-sdk";
-import { ServiceHttp } from "../src/channels/http.js";
+import { ServiceHttp } from "../src/http.js";
 import { checkChannels } from "../src/service/check.js";
 import { channelConfigSchema } from "../src/service/channels.js";
 import { FeishuAccount } from "../src/services/feishu/cli.js";

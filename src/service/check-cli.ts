@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
-import { ServiceHttp } from "../channels/http.js";
+import { ServiceHttp } from "../http.js";
 import { loadChannelConfiguration } from "./channels.js";
 import { checkChannels } from "./check.js";
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {

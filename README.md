@@ -36,7 +36,7 @@ Router manages agent identities, channel connections, communication sessions, ta
 | Feishu | Text, media, replies, streaming cards and interaction buttons through the official Channel; QR setup for the app and personal authorization for official CLI tools |
 | Weixin (WeChat) | Tencent iLink QR login, private text/media messages, voice transcripts and replies |
 | Telegram | grammY Bot API: text/media, drafts, buttons and replies in private chats and group topics |
-| Email | Incoming messages and replies through [Grove Mail](docs/guides/personal-channels.md) / [AgentMail](docs/guides/channels.md) |
+| Email | Incoming messages and replies through [Grove Mail](docs/guides/personal-channels.md) |
 | Matrix | Text/HTML, media, replies and streaming edits; A2A tasks and results exchanged between agents over Matrix |
 | Products / other agents | Account, agent, and task APIs through the CLI or [TypeScript SDK](packages/sdk/README.md) |
 

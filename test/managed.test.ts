@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SendMessageRequest, TaskState } from "@a2a-js/sdk";
-import { ManagedService, createManagedApp, type ManagedAgent, type ServiceConfig } from "../src/matrix/managed.js";
+import { LEGACY_CHANNEL_COLLECTIONS, ManagedService, createManagedApp, type ManagedAgent, type ServiceConfig } from "../src/matrix/managed.js";
 import { ApplicationInbox } from "../src/matrix/application-service.js";
 import { ConnectorStore } from "../src/matrix/store.js";
 import { CliWork } from "../src/matrix/cli-work.js";
@@ -51,51 +51,18 @@ const request = (text: string, contextId?: string) => SendMessageRequest.fromJSO
 });
 
 describe("managed accounts, Agents and instances", () => {
-  it("keeps channel approvals and visitor records under the Agent owner, never its worker or another account", async () => {
-    const { service, api } = await setup();
+  it("drops the removed visitor channel ledger once and no longer serves its routes", async () => {
+    const cfg = config();
+    const seed = new ConnectorStore(join(cfg.stateDir, "registry.sqlite"), cfg.serverName);
+    for (const collection of LEGACY_CHANNEL_COLLECTIONS) seed.set(collection, "legacy", { agentId: "x" });
+    seed.set("agents_unrelated", "kept", true); seed.close();
+    const { service, api } = await setup(cfg);
+    for (const collection of LEGACY_CHANNEL_COLLECTIONS) expect(service.store.entries(collection)).toEqual([]);
+    expect(service.store.get("agents_unrelated", "kept")).toBe(true);
+    expect(service.store.get("meta", "legacy_channels_removed")).toBe(1);
     const agent = await service.create(owner, "helper");
-    const instance = service.issue(agent.id, "worker");
-    const entry = { id: "email", kind: "agentmail", account: "helper@example.test", agentId: agent.id,
-      rules: [], enabled: true, accessMode: "read-only" as const };
-    service.channels.register(entry, { poll: async () => ({ messages: [], cursor: "", more: false }), reply: async () => "sent" });
-    const event = service.channels.ingest(entry, { id: "incoming-1", conversation: "mail-thread", subject: "guest@other.test",
-      text: "A private request", authentication: "provider-screened", receivedAt: new Date().toISOString() });
-    const path = `${root}/agents/${agent.id}/channels/email`;
-    expect((await api(`${path}/events`, "bob")).status).toBe(404);
-    expect((await api(`${path}/events`, instance.token)).status).toBe(401);
-    expect((await api(`${path}/events`)).data.data[0].state).toBe("pending");
-    expect((await api(`${path}/events/${event.id}/decision`, instance.token, "POST", { decision: "allow" })).status).toBe(401);
-    expect((await api(`${path}/events/${event.id}/decision`, "alice", "POST", { decision: "allow" })).status).toBe(204);
-    await service.channels.tick("email");
-    const claim = await api(`${root}/agents/${agent.id}/gateway/api/work/claim`, instance.token, "POST", { worker: "worker" });
-    expect(claim.data.from).toBe(`visitor:${event.visitorId}`);
-    expect(claim.data.execution).toEqual({ accessMode: "read-only" });
-  });
-  it("accepts a multi-megabyte file only from the claim owner and preserves it through mail delivery", async () => {
-    const { service, api } = await setup();
-    const agent = await service.create(owner, "mail");
-    const instance = service.issue(agent.id, "worker"), stranger = service.issue(agent.id, "other");
-    const entry = { id: "email", kind: "agentmail", account: "helper@example.test", agentId: agent.id,
-      rules: [], enabled: true, accessMode: "read-only" as const };
-    let delivered: unknown;
-    service.channels.register(entry, { poll: async () => ({ messages: [], cursor: "", more: false }),
-      reply: async (_message, _text, _id, files) => { delivered = files; return "sent"; } });
-    const event = service.channels.ingest(entry, { id: "incoming-picture", conversation: "mail-thread", subject: "alice@example.test",
-      text: "Draw a picture", authentication: "provider-screened", receivedAt: new Date().toISOString() });
-    service.channels.decide("email", event.id, "allow"); await service.channels.tick("email");
-    const gateway = `${root}/agents/${agent.id}/gateway`;
-    const claim = await api(`${gateway}/api/work/claim`, instance.token, "POST", { worker: "worker" });
-    const files = [{ filename: "mockup.png", contentType: "image/png", content: Buffer.alloc(1_660_000, 42).toString("base64") }];
-    const update = `${gateway}/api/work/${claim.data.claimId}/update`;
-    const body = { action: "reply", text: "Attached", attachments: files };
-    expect((await api(update, stranger.token, "POST", body)).status).toBe(403);
-    expect((await api(update, instance.token, "POST", { ...body, attachments: [{ ...files[0], filename: "../secret" }] })).status).toBe(400);
-    expect((await api(update, instance.token, "POST", body)).status).toBe(200);
-    expect((await api(update, instance.token, "POST", body)).status).toBe(200);
-    await service.channels.tick("email");
-    expect(delivered).toEqual(files);
-    expect(service.channels.events("email")[0]?.state).toBe("replied");
-    expect((await api(update, instance.token, "POST", { ...body, attachments: [] })).status).toBe(409);
+    expect((await api(`${root}/agents/${agent.id}/channels`)).status).toBe(404);
+    expect((await api(`${root}/agents/${agent.id}/channels/email/events`)).status).toBe(404);
   });
   it("limits the owner and worker gateway before auth and ignores untrusted forwarded IPs", async () => {
     const { service, api, cfg, base } = await setup();

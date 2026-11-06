@@ -28,8 +28,6 @@ agent-router connection-check
 
 每个 Agent 的配置由开通流程保存在私有 state 目录；以下字段说明用于理解配置结构。五渠道字段示例见 [连接配置](connections.zh-CN.md)。凭据不能写入代码或镜像。
 
-已有 AgentMail 的逐任务 `execution.accessMode` 仍交给支持该约束的专用 worker，普通个人对话通过 Host 执行。请使用不同的 Agent，避免执行实例竞争。
-
 ## 各渠道怎么连接
 
 | 渠道 | 复用实现 | 必填连接配置 | 已接入能力 |

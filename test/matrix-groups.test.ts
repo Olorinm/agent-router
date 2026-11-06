@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { MatrixChannel } from "../src/channels/matrix.js";
+import { MatrixChannel } from "../src/channels/matrix/index.js";
 import { CommunicationCore } from "../src/communication/core.js";
 import { DurableStore } from "../src/communication/store.js";
 import { CliWork } from "../src/execution/work.js";

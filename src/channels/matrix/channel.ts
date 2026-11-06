@@ -1,10 +1,8 @@
-import type { MatrixConnector } from "../matrix/connector.js";
-import type { RoomEvent } from "../matrix/protocol.js";
-import { bindAccount, ChannelSendError, splitText, type ChannelAdapter, type ChannelContext, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent } from "../communication/types.js";
+import type { MatrixConnector } from "../../matrix/connector.js";
+import type { RoomEvent } from "../../matrix/protocol.js";
+import { bindAccount, ChannelSendError, splitText, digest, mediaContent, type ChannelAdapter, type ChannelContext, type ReplyRoute, type AttachmentReference, type ChannelMessage, type ChannelContent } from "../api.js";
 
 /** Uses the existing authenticated Matrix reader and SDK transport; no second /sync client. */
-import { digest } from "../execution/protocol.js";
-import { mediaContent } from "../communication/media.js";
 
 // Room-wide mention words, as in OpenGrove rooms.
 const everyone = /(^|\s)@(all|everyone|所有人|全部)(?=\s|$|[,，。.!！?？:：])/i;

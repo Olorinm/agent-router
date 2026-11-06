@@ -5,7 +5,7 @@ import { CliWork } from "../src/execution/work.js";
 import { HostWorker } from "../src/execution/host-worker.js";
 import { WorkSessions } from "../src/execution/sessions.js";
 import { HttpAgentHost, type HostCall, type HostPort, type HostRun, type HostStartInput, type NativeSessionInput } from "../src/execution/host.js";
-import { ChannelHttpError, ServiceHttp } from "../src/channels/http.js";
+import { ChannelHttpError, ServiceHttp } from "../src/http.js";
 import type { HostTools } from "../src/execution/tools.js";
 
 const stores: DurableStore[] = [];

@@ -11,7 +11,7 @@ import { digest } from "../execution/protocol.js";
 import { WorkError } from "../execution/work.js";
 import { LIMITS, type HubSocket, type OwnerHubs } from "./hub.js";
 import { personId, type PersonRegistry } from "./registry.js";
-import type { WebChannel } from "../channels/web.js";
+import type { WebIngress } from "./surfaces.js";
 import type { LedgerControl } from "./control.js";
 import { isRoomChat } from "./rooms.js";
 import { mountRoomRoutes } from "./rooms-web.js";
@@ -43,7 +43,7 @@ export interface WebLedgerDependencies {
   /** ADR 0005 `send` (phase 3, `AGENT_LEDGER_SEND`): owner messages and redactions through the web channel. */
   send?: boolean | undefined;
   /** The agent's web channel; undefined when the agent has no channel runtime. */
-  channel?(agentId: string): Promise<WebChannel | undefined>;
+  channel?(agentId: string): Promise<WebIngress | undefined>;
   /** ADR 0005 `cards` and `reset` (phase 4); both need `send`. */
   cards?: boolean | undefined;
   reset?: boolean | undefined;

@@ -1,4 +1,4 @@
-import { ChannelHttpError } from "../channels/http.js";
+import { ChannelHttpError } from "../http.js";
 import type { InboxRecord, OutboxRecord } from "../communication/core.js";
 import type { DurableStore } from "../communication/store.js";
 import type { HostPort, HostRun } from "./host.js";

@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto";
 import type { LarkChannel } from "@larksuiteoapi/node-sdk";
-import type { ChannelContext, ReplyRoute } from "../communication/types.js";
-import { FEISHU_EMOJIS } from "./feishu-emojis.js";
+import type { ChannelContext, ReplyRoute } from "../api.js";
+import { FEISHU_EMOJIS } from "./emojis.js";
 
 interface ReactionState {
   emoji: string;

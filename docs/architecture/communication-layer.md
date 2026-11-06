@@ -199,7 +199,7 @@ Grove Mail 的 WebSocket 是实时通知，断线恢复仍需持久化事件 API
 | [Matrix Connector](../../src/matrix/connector.ts)、[Store](../../src/communication/store.ts) | 收发状态事务、稳定发送键、游标、SQLite 存储原语 | 通用 Store 已抽到通信目录，Matrix 保留兼容导出；普通聊天 hook 与原游标共用事务 |
 | [工作队列与认领](../../src/matrix/cli-work.ts) | 工作状态、修订、认领、结果收据、取消和上下文串行 | 输入来源改为渠道中立引用，执行绑定以逻辑会话为键 |
 | [Host worker](../../src/execution/host-worker.ts) | 从任务队列调用 Host、持久化会话绑定 | 通用 Agent 统一走 Host；专用任务消费者使用公开领取协议 |
-| [Grove Mail 适配器](../../src/channels/grove-mail.ts) | 事件回放、webhook、邮箱作用域、幂等发送、回复与不确定状态 | 新增 Router 邮件适配器，保存游标和邮箱到 Agent 的绑定 |
+| [Grove Mail 适配器](../../src/channels/grove-mail/channel.ts) | 事件回放、webhook、邮箱作用域、幂等发送、回复与不确定状态 | 新增 Router 邮件适配器，保存游标和邮箱到 Agent 的绑定 |
 | [Agent Host 公共边界](https://github.com/Olorinm/agent-host/blob/main/docs/scope.md)、[HTTP 服务](https://github.com/Olorinm/agent-host/blob/main/docs/http-service.md) | 内核集成、原生会话绑定、运行与输出、取消和恢复 | 新增执行桥和绑定账本；Host 不承担渠道与联系人业务 |
 
 当前已实现文字、媒体与原生交互闭环：显式配置的聊天入口进入统一队列，由固定 Host runtime 执行，最终结果回复原渠道。未配置个人聊天的 Agent 保持原 `say` / `send` 行为。协议测试通过不等于平台账号已经上线，真实联调仍需要渠道凭据和可用的 Host runtime。
@@ -217,7 +217,9 @@ Grove Mail 的 WebSocket 是实时通知，断线恢复仍需持久化事件 API
 
 ```text
 src/communication/    身份地址、统一消息、会话、Inbox/Outbox
-src/channels/         matrix、grove-mail、feishu、telegram、weixin
+src/channels/api.ts   适配器公开 API（适配器只经此访问 Router）
+src/channels/registry.ts  kind → 适配器模块（配置 schema + 工厂 + 访问检查）
+src/channels/<kind>/  matrix、grove-mail、feishu、telegram、weixin，以及内置的 web、room；新增见 docs/guides/adding-a-channel.md
 src/execution/        实例路由、工作投递与 Host 执行桥
 src/service/          HTTP/CLI 兼容入口、配置与服务装配
 src/services/feishu/  官方应用配置、个人授权和 CLI 工具桥

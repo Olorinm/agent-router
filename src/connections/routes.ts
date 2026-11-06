@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { ManagedService } from "../matrix/managed.js";
 import { WorkError } from "../matrix/cli-work.js";
-import { ServiceHttp } from "../channels/http.js";
+import { ServiceHttp } from "../http.js";
 import { privateFile } from "../services/feishu/cli.js";
 import { checkChannels } from "../service/check.js";
 import { ConnectionConfiguration } from "./configuration.js";

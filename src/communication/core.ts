@@ -105,7 +105,7 @@ export class CommunicationCore {
   }
   /** Web replies are delivered by being recorded; the legacy outbox row is settled at once for compatibility. */
   private settleWeb(outbox: OutboxRecord, eventId: string | undefined): void {
-    if (this.connections.get(outbox.route.connectionId)?.adapter.kind !== "web") return;
+    if (!this.connections.get(outbox.route.connectionId)?.adapter.ledgerDelivery) return;
     this.store.set("communication_outbox", outbox.id, { ...outbox, state: "accepted", externalId: eventId ?? outbox.id } satisfies OutboxRecord);
   }
 
@@ -169,7 +169,7 @@ export class CommunicationCore {
       if (existing.hash !== hash) throw new Error("channel_event_id_reused_with_different_payload");
       return existing;
     }
-    const pairing = adapter.kind !== "web" && !source.event && !source.action && !source.attachments?.length ? this.identity?.pair(connectionId, source) : undefined;
+    const pairing = !adapter.ledgerDelivery && !source.event && !source.action && !source.attachments?.length ? this.identity?.pair(connectionId, source) : undefined;
     if (pairing) return this.receivePairing(connectionId, id, hash, source, pairing.reply);
     const owner = this.isOwner(connectionId, source);
     if (owner && !definition.ownerAddresses.includes(source.sender)) { try { this.identity?.seen?.(connectionId, source); } catch { /* Bookkeeping only. */ } }
@@ -192,7 +192,7 @@ export class CommunicationCore {
         this.store.insert("communication_outbox", noticeId, { id: noticeId, taskId: null, route: record.replyRoute,
           text: "这条消息超过当前 24 KB 的文字输入上限，请缩短内容后再发送。", state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
       }
-      this.shadow((ledger) => shadowReceive(ledger, this.shadowContext, record, { owner, allowed, oversized, noticeId }), adapter.kind === "web");
+      this.shadow((ledger) => shadowReceive(ledger, this.shadowContext, record, { owner, allowed, oversized, noticeId }), adapter.ledgerDelivery === true);
       if (noticeId) this.settleWeb(this.store.get<OutboxRecord>("communication_outbox", noticeId)!, undefined);
     };
     // Matrix invokes receipt inside its existing transaction; other channels create their own.

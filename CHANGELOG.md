@@ -4,6 +4,19 @@ Notable changes to Agent Router, newest first. Pushing a `v*` tag publishes a Gi
 notes are this file's section for that version (`.github/workflows/release.yml`), so add the section
 in the version-bump commit before tagging.
 
+## [Unreleased]
+
+- Removed the legacy operator channel path: `ChannelRouter` with its allow/ask/deny visitor approvals,
+  the AgentMail adapter, `AGENT_CHANNELS_CONFIG_FILE` (`config.channelConfigFile`), the
+  `/agents/:agentId/channels*` routes and `createRouter().channelIds`. On first start Router deletes
+  the stored entries, visitors and events; they are not migrated. Agent deletion no longer checks for
+  channel entries. Mail goes through per-agent Grove Mail connections.
+- Channel-agnostic core. Each adapter lives in `src/channels/<kind>/` and exports a module (config
+  schema, factory, access check). Router builds adapters through `src/channels/registry.ts`, and
+  adapters use only the public `src/channels/api.ts`; a test enforces these import boundaries. The
+  connection configuration format, channel behavior and the `ServiceHttp`/`ChannelHttpError` exports
+  are unchanged. See `docs/guides/adding-a-channel.md`.
+
 ## [0.7.0-alpha.11] - 2026-11-06
 
 - Owner ledger, phases 3–7 of ADR 0005. Every feature has its own flag and is off by default.

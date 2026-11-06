@@ -12,7 +12,6 @@ import { ApplicationInbox, ApplicationTransport } from "./application-service.js
 import { digest, mxid } from "./protocol.js";
 import { WorkError } from "./cli-work.js";
 import { DormantTransport, type MatrixTransport } from "./transport.js";
-import { ChannelRouter } from "../channels/router.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { OwnerHubs } from "../ledger/hub.js";
 import { PersonRegistry, personId } from "../ledger/registry.js";
@@ -48,7 +47,7 @@ export interface ServiceConfig { serverName: string; publicUrl: string; stateDir
    * `serverName` stays required (it is the owner-id namespace).
    */
   matrix?: { enabled: boolean };
-  externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[]; channelConfigFile?: string;
+  externalIdentity?: ExternalIdentityConfig; trustedProxies?: string[];
   /** ADR 0005 `ledger_read`: serve the read-only web history API and event socket from the owner ledger. */
   ledgerRead?: boolean;
   /** ADR 0005 `send` (phase 3, needs `ledgerRead`): owner web messages through the web channel; dispatch and flush read the ledger. */
@@ -69,11 +68,11 @@ export interface ServiceExtension {
   sessions?: import("../execution/sessions.js").WorkSessions;
   /** The channel core and its web channel (ADR 0005 phase 3). */
   communication?: import("../communication/core.js").CommunicationCore;
-  web?: import("../channels/web.js").WebChannel;
+  web?: import("../ledger/surfaces.js").WebIngress;
   /** Phase 4 cards and control (ADR 0005 section 16). */
   control?: import("../ledger/control.js").LedgerControl;
   /** The hub room channel (ADR 0005 phase 5). */
-  room?: import("../channels/room.js").RoomChannel;
+  room?: import("../ledger/rooms.js").RoomDelivery;
   start(): Promise<void>; stop(): Promise<void>; status(): unknown;
   resolve(callId: string, result: unknown): Promise<void | "accepted" | "stale">;
   reconcile(claimId: string, runId: string): Promise<void>;
@@ -113,6 +112,8 @@ export interface ServiceDependencies {
   blobStore?: BlobStore;
 }
 // ---- end phase 4 ----
+/** Registry collections of the removed visitor channel ledger (`ChannelRouter`); deleted once by a migration. */
+export const LEGACY_CHANNEL_COLLECTIONS = ["channel_entries", "channel_visitors", "channel_events", "channel_contexts", "channel_reply_attachments"];
 const newToken = () => randomBytes(32).toString("base64url");
 function bearer(req: express.Request): string { return req.headers.authorization?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? ""; }
 function equal(a: string, b: string): boolean {
@@ -125,7 +126,6 @@ export class ManagedService {
   readonly store: ConnectorStore;
   readonly inbox: ApplicationInbox;
   readonly externalIdentity: ExternalIdentitySessions | undefined;
-  readonly channels: ChannelRouter;
   readonly persons: PersonRegistry;
   readonly hubs: OwnerHubs;
   readonly identity: Identities | undefined;
@@ -158,15 +158,8 @@ export class ManagedService {
     this.inbox = new ApplicationInbox(this.store, (user) => this.store.get<string>("matrix_agents", user),
       (agentId) => { const agent = this.store.get<ManagedAgent>("agents", agentId); return !agent || this.matrixState(agent) === "active"; });
     this.externalIdentity=config.externalIdentity?new ExternalIdentitySessions(this,config.externalIdentity):undefined;
-    this.channels = new ChannelRouter(this.store, async (agentId) => {
-      const { connector } = await this.runtime(agentId);
-      const work = connector.cli!;
-      return {
-        send: (request, source) => work.send(request, source), get: (id) => work.get(id), cancel: (id) => work.cancel(id),
-        outputAttachments: (taskId) => work.outputAttachments(taskId),
-        acknowledge: (taskId) => { for (const event of work.events()) if (event.value.id === taskId) work.ack(event.id); },
-      };
-    });
+    // The legacy visitor channel ledger (`ChannelRouter`, AgentMail entries) was removed; its records go with it.
+    this.store.migrate(1, `DELETE FROM documents WHERE collection IN (${LEGACY_CHANNEL_COLLECTIONS.map((name) => `'${name}'`).join(",")})`, "legacy_channels_removed");
     this.persons = new PersonRegistry(this.store);
     this.hubs = new OwnerHubs(config.stateDir, {
       owns: (owner, agentId) => this.store.get<ManagedAgent>("agents", agentId)?.owner === owner,
@@ -449,7 +442,6 @@ export class ManagedService {
   async delete(owner: string, id: string): Promise<void> {
     const agent = this.owned(id, owner);
     if (agent.status !== "deleting") {
-      if (this.channels.entries(id).length) throw new WorkError("agent_used_by_channel_configuration", 409);
       for (const guard of this.deleteGuards) guard(id);
       if (this.runtimes.has(id) && this.activeRun((await this.runtime(id)).connector)) throw new WorkError("agent_has_active_or_unknown_run", 409);
       // Product teardown may itself quiesce the runtime, so it runs before this method takes the Agent's lock.
@@ -512,7 +504,6 @@ export class ManagedService {
   }
   private purge(agent: ManagedAgent) {
     this.forgetLedger(agent);
-    const events = this.store.entries<{ id: string; agentId: string }>("channel_events").filter(({ value }) => value.agentId === agent.id);
     this.store.transaction(() => {
       for (const { id, value } of this.store.entries<Record<string, string>>("as_members")) {
         if (!(agent.id in value)) continue;
@@ -522,7 +513,6 @@ export class ManagedService {
       this.store.db.prepare("DELETE FROM documents WHERE collection=?").run(`as_queue:${agent.id}`);
       for (const { id, value } of this.store.entries<{ agentId: string }>("instances")) if (value.agentId === agent.id) this.store.delete("instances", id);
       for (const { id, value } of this.store.entries<{ agentId: string }>("connection_setup_jobs")) if (value.agentId === agent.id) this.store.delete("connection_setup_jobs", id);
-      for (const { id, value } of events) { this.store.delete("channel_events", id); this.store.delete("channel_reply_attachments", value.id); }
       this.store.delete("matrix_agents", agent.matrixId);
       this.store.delete("agents", agent.id);
     });
@@ -560,7 +550,6 @@ export class ManagedService {
   async close(): Promise<void> {
     await this.fanout?.stop();
     await Promise.allSettled(this.configurations.values());
-    await this.channels.close();
     for (const pending of this.runtimes.values()) {
       try { const { connector, extension } = await pending; await extension?.stop(); await connector.stop(); connector.store.close(); } catch { /* Failed initialization already closed its store. */ }
     }
@@ -763,24 +752,6 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     z.object({}).strict().parse(req.body);
     await (await extension(req.params.agentId)).closeUnknown(req.params.claimId); res.json({ status: "closed" });
   });
-  app.get(`${root}/agents/:agentId/channels`, (req, res) => res.json({ data: service.channels.entries(req.params.agentId) }));
-  const channelRoot = `${root}/agents/:agentId/channels/:entryId`;
-  app.use(channelRoot, (req, _res, next) => { service.channels.ownedEntry(String(req.params.entryId), String(req.params.agentId)); next(); });
-  app.get(`${channelRoot}/visitors`, (req, res) => res.json({ data: service.channels.visitors(req.params.entryId) }));
-  app.get(`${channelRoot}/events`, (req, res) => {
-    const limit = z.coerce.number().int().min(1).max(200).default(100).parse(req.query.limit);
-    const state = z.enum(["pending", "queued", "submitted", "delivering", "replied", "rejected", "delivery-failed"]).optional().parse(req.query.state);
-    res.json({ data: service.channels.events(req.params.entryId).filter(e => !state || e.state === state).slice(-limit) });
-  });
-  app.post(`${channelRoot}/events/:eventId/decision`, (req, res) => {
-    const { decision } = z.object({ decision: z.enum(["allow", "deny"]) }).strict().parse(req.body);
-    service.channels.decide(req.params.entryId, req.params.eventId, decision); res.status(204).end();
-  });
-  app.post(`${channelRoot}/visitors/:visitorId/decision`, (req, res) => {
-    const { decision } = z.object({ decision: z.enum(["inherit", "allow", "ask", "deny"]) }).strict().parse(req.body);
-    service.channels.decideVisitor(req.params.entryId, req.params.visitorId, decision); res.status(204).end();
-  });
-  app.post(`${channelRoot}/resume`, (req, res) => { service.channels.resume(req.params.entryId); res.status(204).end(); });
   app.get(`${root}/agents/:agentId/instances`, (req, res) => res.json({ data: service.instances(req.params.agentId) }));
   app.post(`${root}/agents/:agentId/instances`, (req, res) => {
     const { name } = z.object({ name: agentName }).strict().parse(req.body);

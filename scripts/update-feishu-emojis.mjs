@@ -8,6 +8,6 @@ const emojis = [...markdown.matchAll(/!\[[^\]]*\]\([^\n]*?\)\s*\|\s*([A-Za-z0-9_
 if (emojis.length < 100 || new Set(emojis).size !== emojis.length) throw new Error('unexpected_emoji_catalog');
 const lines = [];
 for (let offset = 0; offset < emojis.length; offset += 8) lines.push('  ' + emojis.slice(offset, offset + 8).map(JSON.stringify).join(', ') + ',');
-await writeFile(new URL('../src/channels/feishu-emojis.ts', import.meta.url),
+await writeFile(new URL('../src/channels/feishu/emojis.ts', import.meta.url),
   `// Complete official reaction catalog; regenerate with node scripts/update-feishu-emojis.mjs.\n// Source: ${source}\nexport const FEISHU_EMOJIS = [\n${lines.join('\n')}\n] as const;\n`);
 console.log(`Updated ${emojis.length} Feishu reaction types.`);

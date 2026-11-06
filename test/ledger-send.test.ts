@@ -6,7 +6,8 @@ import { HostWorker } from "../src/execution/host-worker.js";
 import type { HostPort, HostRun } from "../src/execution/host.js";
 import { AgentLedger, legacySession } from "../src/ledger/ledger.js";
 import { personId } from "../src/ledger/registry.js";
-import { WEB_CONNECTION, WebChannel } from "../src/channels/web.js";
+import { WebChannel } from "../src/channels/web/index.js";
+import { WEB_CONNECTION } from "../src/ledger/surfaces.js";
 import type { ChannelAdapter, ChannelContext, ChannelKind, ChannelMessage, ReplyRoute } from "../src/communication/types.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];

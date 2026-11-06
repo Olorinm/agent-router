@@ -1,4 +1,5 @@
-export type ChannelKind = "matrix" | "grove-mail" | "feishu" | "telegram" | "weixin" | "web" | "room";
+/** An adapter kind (`matrix`, `feishu`, `web`, …); the core treats it as an opaque label. */
+export type ChannelKind = string;
 
 /** Provider-specific reply data is frozen on receipt, never inferred from the latest chat. */
 export interface ReplyRoute {
@@ -56,6 +57,11 @@ export interface ChannelAdapter {
   readonly kind: ChannelKind;
   /** A stable send key can be safely resubmitted, including after a lost response. */
   readonly retrySafe: boolean;
+  /**
+   * The ledger event is the delivery (the owner's web surface, ADR 0005 phase 3): ingress is recorded in the ledger
+   * authoritatively, replies are settled once recorded and `/link` pairing does not apply.
+   */
+  readonly ledgerDelivery?: boolean;
   readonly capabilities?: ChannelCapabilities;
   capabilitiesFor?(route: ReplyRoute): ChannelCapabilities;
   /** Whether a shared conversation accepts all senders or uses the configured group/peer lists. */

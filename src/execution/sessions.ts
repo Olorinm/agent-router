@@ -3,7 +3,7 @@ import { z } from "zod";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { CommunicationCore, InboxRecord } from "../communication/core.js";
 import type { DurableStore } from "../communication/store.js";
-import { ChannelHttpError } from "../channels/http.js";
+import { ChannelHttpError } from "../http.js";
 import type { HostAdmission, HostPort, HostRun, HostStartInput, NativeSessionInput } from "./host.js";
 import { runtimeWorkingDirectory } from "./host.js";
 import type { ExecutionSession, RunBinding } from "./host-worker.js";

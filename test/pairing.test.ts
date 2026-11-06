@@ -7,7 +7,8 @@ import { OwnerHubs } from "../src/ledger/hub.js";
 import { Identities, PAIRING, REPLIES, normalizeCode, pairingCommand } from "../src/ledger/identity.js";
 import { PersonRegistry, personId, type IdentityProvider } from "../src/ledger/registry.js";
 import { identityHooks } from "../src/service/channels.js";
-import { WEB_CONNECTION, WebChannel } from "../src/channels/web.js";
+import { WebChannel } from "../src/channels/web/index.js";
+import { WEB_CONNECTION } from "../src/ledger/surfaces.js";
 import type { ChannelAdapter, ChannelContext, ChannelKind, ChannelMessage, ReplyRoute } from "../src/communication/types.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];

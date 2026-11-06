@@ -15,7 +15,6 @@ export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): Service
     // ADR 0005 19.1: with `AGENT_MATRIX=off` the homeserver URL and Application Service tokens are optional and unused.
     matrix: { enabled: matrix },
     ...(matrix ? { homeserver: required("MATRIX_HOMESERVER_URL").replace(/\/$/, ""), asToken: token("MATRIX_AS_TOKEN_FILE"), hsToken: token("MATRIX_HS_TOKEN_FILE") } : {}),
-    ...(env.AGENT_CHANNELS_CONFIG_FILE ? { channelConfigFile: env.AGENT_CHANNELS_CONFIG_FILE } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_READ ?? "") ? { ledgerRead: true } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_SEND ?? "") ? { ledgerSend: true } : {}),
     ...(["1", "true"].includes(env.AGENT_LEDGER_CARDS ?? "") ? { ledgerCards: true } : {}),

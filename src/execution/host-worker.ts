@@ -2,7 +2,7 @@ import { interaction } from "../communication/interaction.js";
 import { archiveRun } from "./run-archive.js";
 import type { CommunicationCore, InboxRecord } from "../communication/core.js";
 import { Message } from "@a2a-js/sdk";
-import { ChannelHttpError } from "../channels/http.js";
+import { ChannelHttpError } from "../http.js";
 import { DurableStore } from "../communication/store.js";
 import { digest, key } from "./protocol.js";
 import { CliWork, WorkError } from "./work.js";

@@ -11,7 +11,7 @@ import {
 import type { ManagedAgent, ManagedService } from "../matrix/managed.js";
 import type { MatrixConnector } from "../matrix/connector.js";
 import type { HostPort } from "../execution/host.js";
-import type { ServiceHttp } from "../channels/http.js";
+import type { ServiceHttp } from "../http.js";
 import { WorkError } from "../matrix/cli-work.js";
 export interface HostBindingProvider {
   assertReady(agentId: string, binding: string): void;
