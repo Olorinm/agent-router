@@ -41,6 +41,7 @@ export interface WorkDependencyWait {
 /** One agent's authenticated embedding boundary. Callers must authenticate the owner before
  * obtaining this object. Model text and channel ingress never have access to this port. */
 export class WorkSessions {
+  private channelForks: Promise<void> = Promise.resolve();
   constructor(readonly agentId: string, readonly owner: string, readonly runtimeId: string,
     readonly instanceId: string, readonly store: DurableStore, readonly work: CliWork,
     readonly host: HostPort, readonly communication: CommunicationCore,
@@ -233,6 +234,35 @@ export class WorkSessions {
       this.store.set("work_sessions", targetSessionId, { createdAt: new Date().toISOString(), parentSessionId: sessionId });
     });
     return { ...this.getSession(targetSessionId), native: result };
+  }
+  /** Internal channel dispatch only. Parent scope is derived by CommunicationCore, never supplied by model text. */
+  prepareChannelSession(contextId: string, taskId: string): Promise<void> {
+    if (!this.communication.input(taskId)?.forkFromContextId || this.store.get("execution_sessions", contextId)) return Promise.resolve();
+    // Host serializes management operations on the source. Do not race first messages from sibling topics.
+    const next = this.channelForks.then(() => this.prepareChannelFork(contextId, taskId));
+    this.channelForks = next.catch(() => {});
+    return next;
+  }
+  private async prepareChannelFork(contextId: string, taskId: string): Promise<void> {
+    this.validate();
+    const input = this.communication.input(taskId);
+    // Later reset windows deliberately start fresh. Existing topic bindings are always resumed.
+    if (!input?.forkFromContextId || input.source.scope !== "group" || contextId !== input.conversationId ||
+      this.store.get("execution_sessions", contextId)) return;
+    const parent = input.forkFromContextId;
+    const previous = this.store.get("channel_session_forks", contextId);
+    if (previous) throw new WorkError("channel_session_fork_unconfirmed", 409);
+    if (!this.store.get("execution_sessions", parent)) return; // No previous native group context exists to inherit.
+    // Host fork is not retry-idempotent. Persist intent before the request; an interrupted/uncertain fork must
+    // be reconciled explicitly, rather than silently starting empty or forking twice with a different target.
+    this.store.set("channel_session_forks", contextId, { parentSessionId: parent, state: "submitting" });
+    try {
+      await this.fork(parent, contextId);
+      this.store.set("channel_session_forks", contextId, { parentSessionId: parent, state: "completed" });
+    } catch (error) {
+      this.store.set("channel_session_forks", contextId, { parentSessionId: parent, state: "unconfirmed" });
+      throw error;
+    }
   }
   async discover() {
     this.validate();

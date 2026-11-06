@@ -49,17 +49,18 @@ it("uses Feishu's official stream producer and completes the same card", async (
   expect((await channel.progress(route, "你好", "run", true)).externalId).toBe("stream-card");
   expect(native.stream).toHaveBeenCalledTimes(1); expect(setContent.mock.calls).toEqual([["你"], ["你好"]]);
 });
-it("recovers an uncached Feishu callback from its source message and chat", async () => {
+it.each([undefined, "topic"])("recovers an uncached Feishu callback without treating reply ancestry as a topic (%s)", async threadId => {
   const c = context(), handlers = new Map<string, any>();
   const channel = new FeishuChannel({ appId: "fixture", appSecret: "fixture" }, {
     on: (name: string, fn: any) => { handlers.set(name, fn); return () => {}; }, connect: async () => {}, disconnect: async () => {},
     botIdentity: { openId: "bot" }, getChatInfo: async () => ({ chatType: "group" }),
-    rawClient: { im: { v1: { message: { get: async () => ({ data: { items: [{ chat_id: "group", root_id: "root" }] } }) } } } },
+    rawClient: { im: { v1: { message: { get: async () => ({ data: { items: [{ chat_id: "group", root_id: "root", thread_id: threadId }] } }) } } } },
   } as unknown as LarkChannel);
   await channel.start(c.value);
   await handlers.get("cardAction")({ messageId: "old-card", chatId: "group", operator: { openId: "owner" }, action: { value: { selection: "native" }, tag: "select_static" } });
   expect(c.messages[0]!.event!.type).toBe("card-action");
-  expect(c.messages[0]!.groupId).toBe("group"); expect(c.messages[0]!.threadId).toBe("group:root");
+  expect(c.messages[0]!.groupId).toBe("group"); expect(c.messages[0]!.threadId).toBe(threadId ? "group:topic" : "group");
+  expect(c.messages[0]!.reply.data.inThread).toBe(String(Boolean(threadId)));
 });
 it("Feishu document comments stay in a shared thread and reply to that document", async () => {
   const c = context(), handlers = new Map<string, any>();

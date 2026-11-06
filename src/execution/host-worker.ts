@@ -33,6 +33,8 @@ export class HostWorker {
   lastError = "";
   /** Phase 4 card and control ledger (ADR 0005 section 16); absent without an agent ledger. */
   control?: LedgerControl | undefined;
+  /** Trusted session initialization (for example, a provider topic's native fork), before any run is reserved. */
+  prepareSession?: (contextId: string, taskId: string) => Promise<void>;
   constructor(readonly agentId: string, readonly instanceId: string, readonly store: DurableStore, readonly work: CliWork,
     readonly host: HostPort, readonly runtimeId: string, readonly instructions = "", private readonly validate: () => void = () => {},
     private readonly saveResult: (taskId: string, answer: string) => boolean = () => false, readonly tools?: HostTools, readonly communication?: CommunicationCore,
@@ -204,6 +206,12 @@ export class HostWorker {
         if (!input.trim() && !authored?.inputItems?.length && authored?.mode !== "compact") { this.work.update(claim.claimId, "fail", "此执行入口目前需要文字输入。", undefined, this.instanceId); return; }
         const blocked = this.store.entries<RunBinding>("communication_runs").some(({ value }) => value.contextId === claim.contextId && value.phase === "unknown");
         if (blocked) { this.work.update(claim.claimId, "fail", "上一轮执行结果尚未确认，请先检查运行状态。", undefined, this.instanceId); return; }
+        try { await this.prepareSession?.(claim.contextId, claim.id); }
+        catch (error) {
+          await this.recordFailure(error);
+          this.work.update(claim.claimId, "fail", "话题上下文继承失败，请检查运行状态后重试。", undefined, this.instanceId);
+          return; // Never replace a failed native fork with an empty conversation.
+        }
         const { sessionId, runtimeId } = this.session(claim.contextId);
         binding = { claimId: claim.claimId, taskId: claim.id, contextId: claim.contextId, sessionId, input, phase: "submitting", requestKey: `router-${digest(key(this.agentId, claim.claimId))}` };
         this.store.set("communication_runs", claim.claimId, binding);
