@@ -55,7 +55,7 @@
     "ipaddr.js": "^2.5.0",
     "jose": "^6.2.15",
     "matrix-js-sdk": "^42.3.0",
-    "undici": "^8.10.2",
+    "undici": "^8.12.2",
     "zod": "^4.6.5",
     "@larksuite/cli": "1.0.97",
     "@larksuiteoapi/node-sdk": "1.74.0",
