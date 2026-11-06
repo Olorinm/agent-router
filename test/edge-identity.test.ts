@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair, type JWK } from "jose";
+import { WebSocket as NodeSocket } from "ws";
 import { CloudflareAccessAuthenticator, edgeIdentityConfigSchema, loadEdgeIdentityConfig, type EdgeIdentityConfig } from "../src/auth/edge-identity.js";
 import { ManagedService, createManagedApp, type ManagedAgent, type ServiceConfig } from "../src/matrix/managed.js";
 import type { ApplicationInbox } from "../src/matrix/application-service.js";
@@ -153,9 +154,9 @@ async function service(edge: Partial<EdgeIdentityConfig> | undefined, overrides:
   await new Promise<void>((r) => server.once("listening", r));
   cleanup.push(() => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }));
   const port = (server.address() as { port: number }).port;
-  const api = async (path: string, headers: Record<string, string>, method = "GET", body?: unknown) => {
+  const api = async (path: string, headers: Record<string, string>, method = "GET", body?: unknown, raw?: string) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { "Content-Type": "application/json", ...headers },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      ...(raw !== undefined ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, data: await response.json() as any };
   };
   return { managed, api, signer, port, sign: (claims: Record<string, unknown> = {}, options = {}) => sign(signer, claims, options) };
@@ -205,13 +206,53 @@ describe("owner API with edge identity", () => {
 
   it("issues socket tickets to edge principals and closes the socket with 4401 at exp", async () => {
     const t = await service({});
-    const jwt = { "cf-access-jwt-assertion": await t.sign({}, { exp: now() + 2 }) };
+    const jwt = { "cf-access-jwt-assertion": await t.sign({}, { exp: now() + 2 }), Origin: "https://example.test" };
     const { ticket } = (await t.api(`${root}/web/socket-tickets`, jwt, "POST", {})).data;
-    const socket = new WebSocket(`ws://127.0.0.1:${t.port}${root}/web/socket?ticket=${ticket}`);
-    cleanup.push(() => socket.close());
-    const hello = new Promise((resolve) => socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data)))));
-    const closed = new Promise<number>((resolve) => socket.addEventListener("close", (event) => resolve(event.code)));
+    const socket = new NodeSocket(`ws://127.0.0.1:${t.port}${root}/web/socket?ticket=${ticket}`, { origin: `http://127.0.0.1:${t.port}` });
+    cleanup.push(() => socket.terminate());
+    const hello = new Promise((resolve) => socket.once("message", (data) => resolve(JSON.parse(String(data)))));
+    const closed = new Promise<number>((resolve) => socket.once("close", (code) => resolve(code)));
     expect(await hello).toMatchObject({ event: "hello" });
     expect(await closed).toBe(4401);
+  });
+
+  it("guards unsafe edge requests against cross-site use (Origin and simple content types) and checks the socket Origin", async () => {
+    const t = await service({});
+    const jwt = { "cf-access-jwt-assertion": await t.sign() }, self = `http://127.0.0.1:${t.port}`;
+    // A cross-site form or fetch from another site: Cloudflare would add the JWT from the Access cookie.
+    for (const path of [`${root}/agents`, `${root}/web/socket-tickets`]) {
+      expect(await t.api(path, { ...jwt, Origin: "https://evil.example.test" }, "POST", { name: "evil" }))
+        .toEqual({ status: 403, data: { error: "origin_not_allowed" } });
+      expect(await t.api(path, jwt, "POST", { name: "evil" })).toEqual({ status: 403, data: { error: "origin_not_allowed" } });
+      expect(await t.api(path, { ...jwt, Origin: "null" }, "POST", { name: "evil" })).toEqual({ status: 403, data: { error: "origin_not_allowed" } });
+      expect(await t.api(path, { ...jwt, Origin: "https://example.test", "Content-Type": "text/plain" }, "POST", undefined, '{"name":"evil"}'))
+        .toEqual({ status: 415, data: { error: "content_type_not_allowed" } });
+    }
+    expect(t.managed.agents(owner)).toEqual([]);
+    // The configured public origin and the request's own host are allowed; reads need no Origin.
+    expect((await t.api(`${root}/agents`, { ...jwt, Origin: "https://example.test" }, "POST", { name: "helper" })).status).toBe(201);
+    expect((await t.api(`${root}/web/socket-tickets`, { ...jwt, Origin: self }, "POST", {})).status).toBe(200);
+    expect((await t.api(`${root}/agents`, jwt)).status).toBe(200);
+    // A matching bearer cannot be sent cross-site, so CLIs behind Access need no Origin.
+    expect((await t.api(`${root}/web/socket-tickets`, { ...jwt, Authorization: "Bearer owner" }, "POST", {})).status).toBe(200);
+    // Bearer-only callers are unchanged.
+    expect((await t.api(`${root}/web/socket-tickets`, { Authorization: "Bearer owner" }, "POST", {})).status).toBe(200);
+    const upgrade = async (origin: string | undefined) => {
+      const { ticket } = (await t.api(`${root}/web/socket-tickets`, { ...jwt, Origin: self }, "POST", {})).data;
+      const socket = new NodeSocket(`ws://127.0.0.1:${t.port}${root}/web/socket?ticket=${ticket}`, origin ? { origin } : {});
+      cleanup.push(() => socket.terminate());
+      return new Promise<number | "open">((resolve) => {
+        socket.once("open", () => resolve("open"));
+        socket.once("unexpected-response", (_req, res) => resolve(res.statusCode ?? 0));
+        socket.once("error", () => undefined);
+      });
+    };
+    expect(await upgrade("https://evil.example.test")).toBe(403);
+    expect(await upgrade(undefined)).toBe(403);
+    expect(await upgrade(self)).toBe("open");
+    const configured = await service({ origins: ["https://mau.example.test"] });
+    const edge = { "cf-access-jwt-assertion": await configured.sign() };
+    expect((await configured.api(`${root}/agents`, { ...edge, Origin: "https://mau.example.test" }, "POST", { name: "helper" })).status).toBe(201);
+    expect((await configured.api(`${root}/agents`, { ...edge, Origin: "https://example.test" }, "POST", { name: "other" })).status).toBe(403);
   });
 });

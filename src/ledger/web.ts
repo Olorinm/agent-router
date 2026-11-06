@@ -322,6 +322,11 @@ export function createWebLedger(dependencies: WebLedgerDependencies) {
     if (url.pathname !== "/_agent-router/v1/web/socket") return false;
     const ticket = tickets.consume(url.searchParams.get("ticket") ?? "");
     if (!ticket) { socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return true; }
+    // Browsers always send Origin on an upgrade; an edge ticket needs an allowed one, and no ticket accepts a foreign one.
+    const origin = { headers: req.headers };
+    if ((ticket.principal.via !== "bearer" || req.headers.origin !== undefined) && authenticator.allowsOrigin && !authenticator.allowsOrigin(origin)) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return true;
+    }
     sockets.handleUpgrade(req, socket, head, (ws) => connect(ws, ticket.principal, ticket.credentials));
     return true;
   };

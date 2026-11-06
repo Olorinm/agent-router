@@ -127,7 +127,7 @@ export class ManagedService {
       channel: async (agentId) => this.agent(agentId).status === "active" ? (await this.runtime(agentId)).extension?.room : undefined,
     }) : undefined;
     if (config.edgeIdentity) assertEdgeOwners(config.edgeIdentity, config.serverName);
-    this.edgeIdentity = config.edgeIdentity ? new CloudflareAccessAuthenticator(config.edgeIdentity, { persons: this.persons,
+    this.edgeIdentity = config.edgeIdentity ? new CloudflareAccessAuthenticator(config.edgeIdentity, { persons: this.persons, origins: [new URL(config.publicUrl).origin],
       ...(dependencies.edgeIdentityCerts ? { certsUrl: dependencies.edgeIdentityCerts } : {}) }) : undefined;
     this.owners = new CompositeAuthenticator(async (token) => {
       const ownerId = await this.authenticate(token);

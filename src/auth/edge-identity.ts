@@ -14,8 +14,13 @@ export interface OwnerPrincipal {
   /** Epoch milliseconds; set for edge principals (the JWT `exp`). */
   expiresAt?: number;
 }
-export interface OwnerRequest { headers: IncomingHttpHeaders }
-export interface OwnerAuthenticator { authenticate(request: OwnerRequest): Promise<OwnerPrincipal> }
+/** `method` is set for HTTP requests; a request without it (socket re-checks) is treated as safe. */
+export interface OwnerRequest { headers: IncomingHttpHeaders; method?: string | undefined }
+export interface OwnerAuthenticator {
+  authenticate(request: OwnerRequest): Promise<OwnerPrincipal>;
+  /** Cross-site check for a browser WebSocket upgrade made with an edge principal's ticket. */
+  allowsOrigin?(request: OwnerRequest): boolean;
+}
 
 /** A WorkError whose extra fields are part of the JSON error body (for example `email`). */
 export class IdentityError extends WorkError {
@@ -36,6 +41,8 @@ export const edgeIdentityConfigSchema = z.object({
   bearer: z.enum(["allow", "deny"]).default("allow"),
   owners: z.record(email, z.union([ownerId, z.object({ owner: ownerId, sub: z.string().min(1).max(256) }).strict()])).default({}),
   serviceTokens: z.record(z.string().min(1).max(256), ownerId).default({}),
+  /** Browser origins allowed for unsafe edge requests. Default: the origin of the service's public URL. */
+  origins: z.array(z.string().url().refine((value) => new URL(value).origin === value, "origin_required")).min(1).max(10).optional(),
 }).strict();
 export type EdgeIdentityConfig = z.input<typeof edgeIdentityConfigSchema>;
 type ParsedConfig = z.output<typeof edgeIdentityConfigSchema>;
@@ -53,6 +60,9 @@ export function assertEdgeOwners(config: EdgeIdentityConfig, serverName: string)
 
 export const EDGE_HEADER = "cf-access-jwt-assertion";
 const MAX_ASSERTION = 8 * 1024;
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+/** Content types a cross-site form or no-cors fetch can send without a CORS preflight. */
+const SIMPLE_TYPES = new Set(["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"]);
 const unavailable = (error: unknown) => !(error instanceof errors.JOSEError) || error instanceof errors.JWKSTimeout ||
   error instanceof errors.JWKSInvalid || error.code === "ERR_JOSE_GENERIC";
 
@@ -65,11 +75,15 @@ export class CloudflareAccessAuthenticator implements OwnerAuthenticator {
   readonly namespace: string;
   private readonly jwks: ReturnType<typeof createRemoteJWKSet>;
   private readonly cache = new Map<string, { principal: OwnerPrincipal; until: number }>();
+  private readonly origins: Set<string>;
   constructor(config: EdgeIdentityConfig, private readonly options: { persons?: PersonRegistry; now?: () => number;
+    /** Allowed browser origins when the config names none (the service's public origin). */
+    origins?: string[];
     /** Test override for `<teamDomain>/cdn-cgi/access/certs`. */
     certsUrl?: URL } = {}) {
     this.config = edgeIdentityConfigSchema.parse(config);
     this.namespace = new URL(this.config.teamDomain).host;
+    this.origins = new Set(this.config.origins ?? options.origins ?? []);
     this.jwks = createRemoteJWKSet(options.certsUrl ?? new URL("/cdn-cgi/access/certs", this.config.teamDomain),
       { timeoutDuration: 5000, cooldownDuration: 30_000, cacheMaxAge: 3_600_000 });
   }
@@ -80,6 +94,26 @@ export class CloudflareAccessAuthenticator implements OwnerAuthenticator {
     if (value === undefined || value === "") return undefined;
     if (typeof value !== "string" || value.length > MAX_ASSERTION) throw new WorkError("edge_identity_invalid", 401);
     return value;
+  }
+  /**
+   * Cloudflare adds the JWT to every proxied request that carries the Access cookie, including cross-site ones, so an
+   * edge principal is ambient authority. A browser always sends `Origin` on a cross-site or same-origin unsafe request
+   * and on a WebSocket upgrade; it must be a configured origin or this request's own host.
+   */
+  allowsOrigin(request: OwnerRequest): boolean {
+    const origin = request.headers.origin;
+    if (typeof origin !== "string" || !origin || origin === "null") return false;
+    if (this.origins.has(origin)) return true;
+    try { return ["http:", "https:"].includes(new URL(origin).protocol) && new URL(origin).host === request.headers.host; } catch { return false; }
+  }
+  /** CSRF guard for edge principals: unsafe methods need an allowed `Origin` and a body type a form cannot send. */
+  guard(request: OwnerRequest) {
+    if (request.method === undefined || SAFE_METHODS.has(request.method.toUpperCase())) return;
+    if (!this.allowsOrigin(request)) throw new WorkError("origin_not_allowed", 403);
+    const length = request.headers["content-length"], chunked = request.headers["transfer-encoding"] !== undefined;
+    if (!chunked && (length === undefined || length === "0")) return;
+    const type = request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() ?? "";
+    if (!type || SIMPLE_TYPES.has(type)) throw new WorkError("content_type_not_allowed", 415);
   }
   async authenticate(request: OwnerRequest): Promise<OwnerPrincipal> {
     const token = CloudflareAccessAuthenticator.assertion(request);
@@ -155,7 +189,10 @@ export class CompositeAuthenticator implements OwnerAuthenticator {
         if (token && !deny) {
           const other = await this.bearer(token).catch(() => undefined);
           if (other?.ownerId !== principal.ownerId) throw new WorkError("principal_conflict", 401);
+          // A matching bearer cannot be sent cross-site without a CORS preflight: no CSRF guard needed.
+          return principal;
         }
+        this.edge.guard(request);
         return principal;
       }
       if (deny) throw new WorkError("edge_identity_required", 401);
@@ -163,4 +200,5 @@ export class CompositeAuthenticator implements OwnerAuthenticator {
     if (!token) throw new WorkError("account_login_required", 401);
     return this.bearer(token);
   }
+  allowsOrigin(request: OwnerRequest): boolean { return this.edge?.allowsOrigin(request) ?? true; }
 }
