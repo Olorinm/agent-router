@@ -21,6 +21,7 @@ import { FeishuAccount, loadFeishuCredentials } from "../services/feishu/cli.js"
 import { ChannelTools } from "../communication/tools.js";
 import { FeishuTools } from "../services/feishu/tools.js";
 import { personId, type IdentityProvider, type PersonRegistry } from "../ledger/registry.js";
+import { AgentLedger } from "../ledger/ledger.js";
 import { WEB_CONNECTION, WebChannel } from "../channels/web.js";
 
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
@@ -144,9 +145,10 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     // Install the synchronous Matrix receipt hook before its first /sync transaction.
     if (adapter.kind === "matrix") await adapter.start(core.context(definition.id));
   }
-  // Owner web messages (ADR 0005 phase 3). Inert until the web API submits; replies to it are recorded, not sent.
-  const web = new WebChannel(core, agent.owner);
-  core.register({ id: WEB_CONNECTION, ownerAddresses: [owner] }, web);
+  // Owner web messages (ADR 0005 phase 3, `ledgerSend`): replies to it are recorded, not sent. Without the flag the
+  // connection is not registered, so channel status and dispatch are unchanged.
+  const web = AgentLedger.attached(connector.store)?.authoritative ? new WebChannel(core, agent.owner) : undefined;
+  if (web) core.register({ id: WEB_CONNECTION, ownerAddresses: [owner] }, web);
   let worker: HostWorker | undefined;
   if (config.host) {
     const instance = issue(config.host.instanceName);
@@ -193,7 +195,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       ...(accounts.size ? [loop(async () => { await Promise.allSettled([...accounts.values()].map((account) => account.pollAuthorization())); }, 5000)] : [])]; },
     stop: async () => { controller.abort(); await core.stop(); await Promise.allSettled(loops); },
     status: () => ({ ...core.status(), host: worker?.status() ?? null }),
-    communication: core, web,
+    communication: core, ...(web ? { web } : {}),
     ...(observation ? { observation } : {}),
     ...(sessions ? { sessions } : {}),
     resolve: async (callId, result) => { if (!worker) throw new Error("host_not_configured"); await worker.resolve(callId, result); },

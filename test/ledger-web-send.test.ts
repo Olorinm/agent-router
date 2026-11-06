@@ -180,6 +180,9 @@ describe("owner send via Router (web channel)", () => {
     expect((await t.send({ idempotencyKey: key, text: "x" })).status).toBe(404);
     expect((await t.api(`${root}/web/chats/${enc(t.chatId)}/messages/ev_x/redact`, "alice", "POST", { idempotencyKey: key })).status).toBe(404);
     expect(t.ledger.authoritative).toBe(false);
+    // No web connection without the flag: channel status and dispatch are exactly the phase 2 ones.
+    expect(t.extension().web).toBeUndefined();
+    expect((t.extension().status() as { connections: Array<{ id: string }> }).connections.map((item) => item.id)).toEqual(["matrix"]);
     expect((await t.api(`${root}/web/chats/dm`, "alice", "POST", { agentId: t.agent.id })).data).toMatchObject({ chatId: t.chatId });
   });
 });
