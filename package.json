@@ -42,6 +42,7 @@
     "feishu:setup": "node dist/services/feishu/setup.js",
     "channels:check": "node dist/service/check-cli.js",
     "ledger:backfill": "node dist/ledger/backfill-cli.js",
+    "ledger:import-rooms": "node dist/ledger/rooms-import-cli.js",
     "prepack": "npm run build"
   },
   "dependencies": {

@@ -159,16 +159,16 @@ export class CommunicationCore {
     const allowed = source.scope === "direct" ? owner || Boolean(definition.peerAddresses?.includes(source.sender)) :
       addressed || adapter.groupPolicy?.(source) === "open" ||
         Boolean(definition.groupIds?.includes(source.groupId ?? source.threadId)) && (owner || Boolean(definition.peerAddresses?.includes(source.sender)));
-    const oversized = Buffer.byteLength(source.text) > 24_000;
+    const oversized = Buffer.byteLength(source.text) > 24_000, ignored = adapter.ignored?.(source);
     const conversationId = `c-${digest(key(this.agentId, source.scope === "direct" && owner ? "owner-main" :
-      key(connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`;
+      key(adapter.sessionConnection?.(source) ?? connectionId, source.scope, source.threadId, source.scope === "direct" ? source.sender : "group"))).slice(0, 40)}`;
     const record: InboxRecord = { id, connectionId, source, conversationId, hash, receivedAt: new Date().toISOString(),
-      replyRoute: { connectionId, ...source.reply }, state: allowed && (source.text.trim() || source.attachments?.length || source.action || source.event) && !oversized ? "received" : "ignored",
-      ...(oversized ? { reason: "input_too_large" } : {}) };
+      replyRoute: { connectionId, ...source.reply }, state: allowed && !ignored && (source.text.trim() || source.attachments?.length || source.action || source.event) && !oversized ? "received" : "ignored",
+      ...(ignored ? { reason: ignored } : oversized ? { reason: "input_too_large" } : {}) };
     const commit = () => {
       this.store.set("communication_inbox", id, record);
       this.store.set("communication_threads", key(connectionId, source.scope, source.threadId, source.sender), conversationId);
-      const noticeId = allowed && oversized ? digest(key(id, "input-too-large")) : undefined;
+      const noticeId = allowed && oversized && !ignored ? digest(key(id, "input-too-large")) : undefined;
       if (noticeId) {
         this.store.insert("communication_outbox", noticeId, { id: noticeId, taskId: null, route: record.replyRoute,
           text: "这条消息超过当前 24 KB 的文字输入上限，请缩短内容后再发送。", state: "queued", attempts: 0, nextAt: 0 } satisfies OutboxRecord);
@@ -228,7 +228,8 @@ export class CommunicationCore {
           try { quote = original?.source.text ?? await this.connection(value.connectionId).adapter.readQuote?.(value.source); }
           catch { this.connection(value.connectionId).lastError = "quoted_message_unavailable"; }
         }
-        let text = [quote ? `引用消息：${quote}` : value.source.quoted?.messageId ? `引用消息 ID：${value.source.quoted.messageId}` : "", value.source.text,
+        const prepared = this.connection(value.connectionId).adapter.turnContext?.(value.source);
+        let text = [prepared?.text ?? "", quote ? `引用消息：${quote}` : value.source.quoted?.messageId ? `引用消息 ID：${value.source.quoted.messageId}` : "", value.source.text,
           value.source.event ? JSON.stringify(value.source.event) : "",
           ...(value.source.attachments ?? []).map((item) => `附件：${item.name} (${item.mediaType})`)].filter(Boolean).join("\n");
         if (Buffer.byteLength(text) > 24_000) text = Buffer.from(text).subarray(0, 23_500).toString("utf8") + "\n[消息上下文已截短；原始消息可通过 channel message 工具读取。]";
@@ -249,6 +250,7 @@ export class CommunicationCore {
           this.store.set("communication_inbox", id, { ...value, state: "submitted", taskId: task.id });
           this.shadow((ledger) => shadowStart(ledger, this.shadowContext, value, task.id, this.isOwnerInput(value)));
         });
+        prepared?.commit();
       }
       this.publishResults();
       this.lastError = "";

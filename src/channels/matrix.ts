@@ -16,7 +16,12 @@ export class MatrixChannel implements ChannelAdapter {
     nativeArguments: { reaction: "emoji, optional messageId", edit: "text, optional messageId", redact: "optional messageId", typing: "no args" } };
   private context!: ChannelContext;
   /** `trusted` identifies the owner and the owner's own agents, so a group of only them is private. */
-  constructor(readonly connector: MatrixConnector, private readonly options: { trusted?(userId: string): boolean } = {}) {}
+  constructor(readonly connector: MatrixConnector, private readonly options: { trusted?(userId: string): boolean;
+    /** Rooms imported into hub rooms (ADR 0005 17.6): their new messages are claimed as ignored. */
+    migrated?(room: string): boolean } = {}) {}
+  ignored(message: ChannelMessage): string | undefined {
+    return message.scope === "group" && message.groupId && this.options.migrated?.(message.groupId) ? "room_migrated" : undefined;
+  }
   async start(context: ChannelContext): Promise<void> {
     this.context = context; bindAccount(context, this.connector.userId);
     if (!context.checkpoint("activation")) context.checkpoint("activation", Date.now());

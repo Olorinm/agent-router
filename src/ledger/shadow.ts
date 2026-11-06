@@ -16,9 +16,11 @@ function sender(ctx: ShadowContext, record: InboxRecord, owner: boolean): Pick<E
   const person = owner ? ctx.ownerPersonId ?? ctx.person?.(record.connectionId, record.source.sender) : ctx.person?.(record.connectionId, record.source.sender);
   return person ? { senderType: "person", senderId: person } : { senderType: "external", senderId: record.source.sender };
 }
-function sessionOf(record: InboxRecord, channel: string, owner: boolean): { kind: SessionKind; label: string } {
+function sessionOf(record: InboxRecord, channel: string, owner: boolean): { kind: SessionKind; label: string; roomId?: string } {
   const source = record.source;
   if (source.scope === "direct") return owner ? { kind: "owner_main", label: "owner-main" } : { kind: "peer", label: `${channel}:direct:${source.sender}` };
+  // Hub rooms (phase 5): the agent's side of a native group.
+  if (channel === "room" && source.reply.data.roomId) return { kind: "room", label: `room:${source.reply.data.roomId}`, roomId: source.reply.data.roomId };
   return { kind: "group", label: `${channel}:group:${source.threadId}` };
 }
 /** Section 5 keying, derived generically from the fields every adapter already emits. */
@@ -51,7 +53,7 @@ export function shadowReceive(ledger: AgentLedger, ctx: ShadowContext, record: I
   if (!facts.allowed) { ledger.settleClaim(connectionId, source.externalId, "ignored", { reason: "sender_not_allowed" }); return; }
   const channel = ctx.channel(connectionId), who = sender(ctx, record, facts.owner);
   const session = sessionOf(record, channel, facts.owner);
-  ledger.ensureSession(record.conversationId, session.kind, session.label, at);
+  ledger.ensureSession(record.conversationId, session.kind, session.label, at, session.roomId);
   const conversationId = ledger.ensureConversation(conversationOf(ctx, record, who.senderType === "person" ? who.senderId : undefined, at),
     session.kind === "owner_main" && channel !== "web" ? "participant" : "primary");
   if (record.state === "ignored") {

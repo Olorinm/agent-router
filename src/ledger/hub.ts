@@ -6,6 +6,7 @@ import { WorkError } from "../execution/work.js";
 import { cardSource, conversationKey, legacySession, ulid, type AgentLedger, type LedgerEvent, type LedgerSession } from "./ledger.js";
 import { WEB_CONNECTION, webAccount, webTarget } from "../channels/web.js";
 import { OWNER_HUB_V1 } from "./schema.js";
+import { HubRooms, isRoomChat } from "./rooms.js";
 
 export interface Actor { type: "person" | "agent" | "system" | "external"; id: string; name: string }
 export interface ChatSummary {
@@ -28,6 +29,8 @@ export interface HubDirectory {
   agentName(agentId: string): string;
   ledger(agentId: string): AgentLedger | undefined;
   personName(personId: string): string | undefined;
+  /** ADR 0005 `groups` (phase 5): room commands are accepted; without it room chats are read-only. */
+  groups?: boolean | undefined;
 }
 /** A connected event socket as the hub sees it: a send function and per-chat cursors. */
 export interface HubSocket {
@@ -61,11 +64,15 @@ export class OwnerHub {
   readonly store: DurableStore;
   readonly sockets = new Set<HubSocket>();
   private readonly streams = new Map<string, { at: number; timer?: ReturnType<typeof setTimeout>; text: string }>();
+  /** Native groups (phase 5, `rooms.ts`). */
+  readonly rooms: HubRooms;
   constructor(readonly ownerId: string, path: string, private readonly directory: HubDirectory) {
     this.store = new DurableStore(path, ownerId);
     this.store.migrate(1, OWNER_HUB_V1);
+    this.rooms = new HubRooms(this, directory);
   }
-  chatId(agentId: string, session: Pick<LedgerSession, "kind" | "sessionKey">) {
+  chatId(agentId: string, session: Pick<LedgerSession, "kind" | "sessionKey"> & Partial<Pick<LedgerSession, "roomId">>) {
+    if (session.kind === "room" && session.roomId) return `room:${session.roomId}`;
     return session.kind === "owner_main" ? `dm:${agentId}` : `obs:${agentId}:${session.sessionKey}`;
   }
   /** Resolve an owner-scoped chat id to its agent ledger and session. Unknown or foreign chats are not found. */
@@ -117,6 +124,8 @@ export class OwnerHub {
     const ledger = this.directory.ledger(agentId);
     const session = ledger?.session(sessionKey);
     if (!ledger || !session || !this.directory.owns(this.ownerId, agentId)) return;
+    // A room session is not a chat of its own: its turns, cards and replies are mirrored into the room.
+    if (session.kind === "room" && session.roomId) { this.rooms.mirror(agentId, ledger, session); ledger.markPublished(sessionKey, session.lastSeq); return; }
     const chatId = this.chatId(agentId, session);
     const prior = this.store.db.prepare("SELECT generation FROM hub_chats WHERE chat_id=?").get(chatId);
     const last = ledger.latestVisible(sessionKey);
@@ -159,6 +168,7 @@ export class OwnerHub {
   sync(agentId: string): void {
     const ledger = this.directory.ledger(agentId); if (!ledger) return;
     for (const session of ledger.sessions()) {
+      if (session.kind === "room") { if (session.lastSeq > session.publishedSeq) this.publish(agentId, session.sessionKey); continue; }
       const indexed = this.store.db.prepare("SELECT last_seq, generation FROM hub_chats WHERE chat_id=?").get(this.chatId(agentId, session));
       if (session.lastSeq > session.publishedSeq || !indexed || Number(indexed.last_seq) !== session.lastSeq || Number(indexed.generation) !== session.generation)
         this.publish(agentId, session.sessionKey);
@@ -173,8 +183,10 @@ export class OwnerHub {
       }
     });
     for (const socket of this.sockets) for (const chatId of chats) socket.subscriptions.delete(chatId);
+    this.rooms.forgetAgent(agentId);
   }
   private replay(socket: HubSocket, chatId: string, cursor: number): void {
+    if (isRoomChat(chatId)) { this.rooms.replay(socket, chatId, cursor); return; }
     const { agentId, sessionKey, ledger } = this.resolve(chatId);
     const session = ledger.session(sessionKey); if (!session || session.lastSeq <= cursor) return;
     if (session.lastSeq - cursor > LIMITS.socketReplayEvents) {
@@ -201,13 +213,12 @@ export class OwnerHub {
     if (new Set([...socket.subscriptions.keys(), ...chats.map((chat) => chat.chatId)]).size > LIMITS.subscriptions) throw new WorkError("too_many_subscriptions", 429);
     const errors: Array<{ chatId: string; code: string }> = [], resolved = [];
     for (const chat of chats) {
-      try { resolved.push({ chat, ...this.resolve(chat.chatId) }); }
+      try { resolved.push({ chat, position: isRoomChat(chat.chatId) ? this.rooms.position(chat.chatId) : this.position(chat.chatId) }); }
       catch (error) { socket.subscriptions.delete(chat.chatId); errors.push({ chatId: chat.chatId, code: error instanceof WorkError ? error.message : "operation_failed" }); }
     }
     if (index !== undefined) socket.index = index;
     const after: Array<() => void> = [];
-    const result = resolved.map(({ chat, sessionKey, ledger }) => {
-      const session = ledger.session(sessionKey), lastSeq = session?.lastSeq ?? 0, generation = session?.generation ?? 1;
+    const result = resolved.map(({ chat, position: { lastSeq, generation } }) => {
       if (chat.afterSeq === undefined) { socket.subscriptions.set(chat.chatId, { cursor: lastSeq, generation }); return { chatId: chat.chatId, mode: "live", lastSeq, generation }; }
       const reason = chat.generation !== undefined && chat.generation !== generation ? "generation_changed" :
         chat.afterSeq > lastSeq ? "not_found" : lastSeq - chat.afterSeq > LIMITS.socketReplayEvents ? "gap_too_large" : undefined;
@@ -221,6 +232,10 @@ export class OwnerHub {
       return { chatId: chat.chatId, mode: "delta", lastSeq, generation };
     });
     return { result: { chats: result, errors }, then: () => { for (const send of after) send(); } };
+  }
+  private position(chatId: string): { lastSeq: number; generation: number } {
+    const { sessionKey, ledger } = this.resolve(chatId), session = ledger.session(sessionKey);
+    return { lastSeq: session?.lastSeq ?? 0, generation: session?.generation ?? 1 };
   }
   unsubscribe(socket: HubSocket, chatIds: string[]) { for (const chatId of chatIds) socket.subscriptions.delete(chatId); }
   /**
@@ -249,6 +264,7 @@ export class OwnerHub {
     return Number(this.store.db.prepare("SELECT read_seq FROM hub_read_markers WHERE chat_id=? AND person_id=?").get(chatId, personId)?.read_seq ?? 0);
   }
   summary(chatId: string, personId: string): ChatSummary | undefined {
+    if (isRoomChat(chatId)) return this.rooms.summary(chatId, personId);
     let target; try { target = this.resolve(chatId); } catch { return undefined; }
     const row = this.store.db.prepare("SELECT * FROM hub_chats WHERE chat_id=?").get(chatId);
     const session = target.ledger.session(target.sessionKey);
@@ -262,14 +278,15 @@ export class OwnerHub {
   }
   chats(personId: string, options: { archived?: boolean; cursor?: string | undefined; limit?: number } = {}): { data: ChatSummary[]; next: string | null } {
     const offset = Number(options.cursor ?? 0), limit = options.limit ?? 50;
-    const rows = this.store.db.prepare("SELECT chat_id, agent_id FROM hub_chats WHERE archived=? ORDER BY updated_at DESC, chat_id LIMIT ? OFFSET ?")
+    const rows = this.store.db.prepare("SELECT chat_id, kind, agent_id FROM hub_chats WHERE archived=? ORDER BY updated_at DESC, chat_id LIMIT ? OFFSET ?")
       .all(options.archived ? 1 : 0, limit + 1, offset);
-    const data = rows.slice(0, limit).filter((row) => this.directory.owns(this.ownerId, String(row.agent_id)))
+    const data = rows.slice(0, limit).filter((row) => row.kind === "group" || this.directory.owns(this.ownerId, String(row.agent_id)))
       .map((row) => this.summary(String(row.chat_id), personId)).filter((item): item is ChatSummary => Boolean(item));
     return { data, next: rows.length > limit ? String(offset + limit) : null };
   }
   /** History paging (ADR 8.3): latest page, `before=` for older pages, `after=`+`generation=` for catch-up. */
   page(chatId: string, query: HistoryQuery): EventPage {
+    if (isRoomChat(chatId)) return this.rooms.page(chatId, query);
     const { agentId, sessionKey, ledger } = this.resolve(chatId);
     const session = ledger.session(sessionKey);
     const generation = session?.generation ?? 1, lastSeq = session?.lastSeq ?? 0, limit = Math.min(query.limit ?? 50, LIMITS.pageEvents);
@@ -304,7 +321,7 @@ export class OwnerHub {
       inflight: query.before === undefined ? this.inflight(agentId, sessionKey, ledger, lastSeq) : [] };
   }
   /** In-flight text of running turns comes from the Host run cache, never from stored partials. */
-  private inflight(agentId: string, sessionKey: string, ledger: AgentLedger, afterSeq: number): Inflight[] {
+  inflight(agentId: string, sessionKey: string, ledger: AgentLedger, afterSeq: number): Inflight[] {
     if (!ledger.activeTurns(sessionKey)) return [];
     return runBindings(ledger, { phase: "running" })
       .filter((run) => run.runId && (ledger.sessionForContext(run.contextId) ?? run.contextId) === sessionKey)
@@ -315,6 +332,7 @@ export class OwnerHub {
   }
   /** Monotonic read marker; other tabs of the same person get `chat.read`. */
   read(chatId: string, personId: string, seq: number): { readSeq: number; unread: number } {
+    if (isRoomChat(chatId)) return this.rooms.read(chatId, personId, seq);
     const { sessionKey, ledger } = this.resolve(chatId);
     const lastSeq = ledger.session(sessionKey)?.lastSeq ?? 0;
     this.store.db.prepare(`INSERT INTO hub_read_markers(chat_id,person_id,read_seq,updated_at) VALUES(?,?,?,?)
@@ -325,11 +343,14 @@ export class OwnerHub {
     return { readSeq, unread: ledger.unread(sessionKey, readSeq, personId) };
   }
   turn(chatId: string, turnId: string) {
+    if (isRoomChat(chatId)) return this.rooms.turn(chatId, turnId);
     const { agentId, sessionKey, ledger } = this.resolve(chatId);
     const turn = ledger.turn(turnId);
     if (!turn || turn.sessionKey !== sessionKey) throw new WorkError("turn_not_found", 404);
-    return { turnId, chatId, agentId, state: turn.state, admission: turn.admission, inputEventIds: ledger.turnInputs(turnId),
-      finalEventId: turn.finalEventId, cardIds: ledger.cardsForTurn(turnId),
+    return { turnId, chatId, agentId, state: turn.state, admission: turn.admission, ...this.turnDetail(ledger, turnId) };
+  }
+  turnDetail(ledger: AgentLedger, turnId: string) {
+    return { inputEventIds: ledger.turnInputs(turnId), finalEventId: ledger.turn(turnId)?.finalEventId ?? null, cardIds: ledger.cardsForTurn(turnId),
       runs: runBindings(ledger, { taskId: turnId }).map((run) => ({ claimId: run.claimId, runId: run.runId ?? null, phase: run.phase, error: run.error ?? null })) };
   }
   /** Imported `ai.mau.room` groups (backfill). Served from phase 5; the id is derived so every agent imports the same room. */
