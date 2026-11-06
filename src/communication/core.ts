@@ -2,7 +2,7 @@ import { Message, SendMessageRequest, TaskState } from "@a2a-js/sdk";
 import { z } from "zod";
 import { digest, key, terminal } from "../execution/protocol.js";
 import { CliWork } from "../execution/work.js";
-import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent } from "./types.js";
+import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent, type AttachmentReference, type RecordedAttachment } from "./types.js";
 import { DurableStore } from "./store.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { shadowControl, shadowDelivery, shadowOutbox, shadowReceive, shadowStart, type ShadowContext } from "../ledger/shadow.js";
@@ -499,7 +499,19 @@ export class CommunicationCore {
     if (this.connection(input.connectionId).definition.ownerAddresses.includes(input.source.sender)) return true;
     return input.conversationId === `c-${digest(key(this.agentId, "owner-main")).slice(0, 40)}` && this.isOwner(input.connectionId, input.source);
   }
-  queueContent(taskId: string, content: ChannelContent, sendKey: string, options: { notice?: string } = {}): string {
+  /**
+   * `queueContent` for the channel tool. On a transcript channel (web) the media is stored first (ADR 0005 16.5) and the
+   * content event carries it as attachments; a retry with the same send key stores nothing again.
+   */
+  async submitContent(taskId: string, content: ChannelContent, sendKey: string): Promise<string> {
+    const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
+    const recorded = this.connection(input.connectionId).adapter.recordedMedia;
+    if (!content.media?.length || !recorded || this.store.get("communication_outbox", digest(key(taskId, "content", sendKey)))) return this.queueContent(taskId, content, sendKey);
+    const items = await recorded.store(content.media);
+    try { return this.queueContent(taskId, content, sendKey, { attachments: items }); }
+    catch (error) { recorded.release(items); throw error; }
+  }
+  queueContent(taskId: string, content: ChannelContent, sendKey: string, options: { notice?: string; attachments?: RecordedAttachment[] } = {}): string {
     const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
     const adapter = this.connection(input.connectionId).adapter;
     if ((content.html || content.media?.length || content.card || content.buttons?.length) && !adapter.sendContent) throw new Error("channel_content_unsupported");
@@ -508,15 +520,24 @@ export class CommunicationCore {
     if (content.media?.length && !capabilities?.send.some((kind) => ["file", "image", "audio", "video"].includes(kind))) throw new Error("channel_media_unsupported");
     if (!content.text && !content.html && !content.media?.length && !content.card && !content.buttons?.length) throw new Error("channel_content_empty");
     if (content.card && !capabilities?.send.includes("card")) throw new Error("channel_card_unsupported");
-    const id = digest(key(taskId, "content", sendKey));
+    const id = digest(key(taskId, "content", sendKey)), recorded = options.attachments?.length ? options.attachments : undefined;
+    // Recorded media lives in the blob store; the outbox row keeps no copy of its bytes.
+    const { media: _media, ...rest } = content;
     const outbox: OutboxRecord = { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
-      content, state: "queued", attempts: 0, nextAt: 0 };
+      content: recorded ? rest : content, state: "queued", attempts: 0, nextAt: 0 };
+    let bound = false;
     this.atomic(() => {
-      if (this.store.insert("communication_outbox", id, outbox)) this.settleWeb(outbox, this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
-        options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
-          : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
-            ...(content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } })));
+      if (this.store.insert("communication_outbox", id, outbox)) this.settleWeb(outbox, this.shadow((ledger) => {
+        const eventId = shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
+          options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
+            : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
+              ...(recorded ? { attachments: recorded } : content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } });
+        if (recorded && eventId) { adapter.recordedMedia!.bind(ledger, eventId, recorded); bound = true; }
+        return eventId;
+      }));
     });
+    // Not recorded (a concurrent duplicate, or a ledger error rolled back): its stored media has no event.
+    if (recorded && !bound) adapter.recordedMedia?.release(recorded);
     return id;
   }
   delivery(taskId: string, id: string) {
@@ -529,6 +550,21 @@ export class CommunicationCore {
     const adapter = this.connection(input.connectionId).adapter;
     if (!adapter.native || !this.capabilities(taskId)?.native.includes(operation)) throw new Error("channel_native_operation_unsupported");
     return adapter.native(input.replyRoute, operation, args);
+  }
+  /**
+   * One attachment of a stored inbound message, for lazy promotion into the blob store (ADR 0005 16.5). Reuses the
+   * model's media cache when the input was already read, so an expired platform resource can still be promoted.
+   */
+  async readStoredAttachment(inputId: string, reference: AttachmentReference): Promise<MediaContent> {
+    const input = this.store.get<InboxRecord>("communication_inbox", inputId); if (!input) throw new Error("channel_input_not_found");
+    const adapter = this.connection(input.connectionId).adapter;
+    const read = (input.source.attachments ?? []).filter((item) => !(item.kind === "sticker" && adapter.capabilities?.receive.includes("sticker-reference")));
+    const index = read.findIndex((item) => item.id === reference.id), cached = this.store.get<MediaContent[]>("communication_media", inputId);
+    if (index >= 0 && cached?.[index]) return cached[index]!;
+    const attachment = (input.source.attachments ?? []).find((item) => item.id === reference.id);
+    if (!attachment) throw new Error("channel_attachment_not_found");
+    if (!adapter.readAttachment) throw new Error("channel_attachment_read_unsupported");
+    return adapter.readAttachment(input.source, attachment);
   }
   private connection(id: string): Connection {
     const connection = this.connections.get(id);

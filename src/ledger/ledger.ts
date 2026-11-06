@@ -472,11 +472,13 @@ export class AgentLedger {
    * of its conversations (a redelivered channel message does not come back), bump the generation and open a new window.
    * Execution records (runs, archives, Host sessions) are kept.
    */
-  purge(sessionKey: string, at = Date.now()): { generation: number; purgedEvents: number; window: number; inputIds: string[] } {
+  purge(sessionKey: string, at = Date.now()): { generation: number; purgedEvents: number; window: number; inputIds: string[]; attachmentIds: string[] } {
     const session = this.session(sessionKey); if (!session) throw new Error("ledger_session_not_found");
     const events = `SELECT event_id FROM ledger_events WHERE session_key=?`;
     const purgedEvents = Number(this.row("SELECT COUNT(*) AS n FROM ledger_events WHERE session_key=?", sessionKey)!.n);
     this.run(`DELETE FROM ledger_platform_messages WHERE event_id IN (${events})`, sessionKey);
+    // The caller releases their blob references (ADR 16.4) after the transaction.
+    const attachmentIds = this.rows(`SELECT attachment_id FROM ledger_attachments WHERE event_id IN (${events})`, sessionKey).map((row) => row.attachment_id as string);
     this.run(`DELETE FROM ledger_attachments WHERE event_id IN (${events})`, sessionKey);
     this.run(`DELETE FROM ledger_deliveries WHERE event_id IN (${events}) AND status<>'queued' AND status<>'sending'`, sessionKey);
     this.run(`UPDATE ledger_deliveries SET event_id=NULL WHERE event_id IN (${events})`, sessionKey);
@@ -489,7 +491,7 @@ export class AgentLedger {
     this.run("UPDATE ledger_pending_inputs SET state='dropped', reason='purged', updated_at=? WHERE session_key=? AND state='queued'", at, sessionKey);
     this.run("UPDATE ledger_sessions SET last_seq=0, published_seq=0, generation=generation+1, updated_at=MAX(updated_at,?) WHERE session_key=?", at, sessionKey);
     const { window } = this.reset(sessionKey, "reset", at);
-    return { generation: this.session(sessionKey)!.generation, purgedEvents, window, inputIds };
+    return { generation: this.session(sessionKey)!.generation, purgedEvents, window, inputIds, attachmentIds };
   }
 
   addAttachment(input: { eventId: string | null; name: string; contentType: string; size?: number | null; locator: unknown; at?: number }): string {
@@ -497,6 +499,12 @@ export class AgentLedger {
     this.run(`INSERT INTO ledger_attachments(attachment_id,event_id,name,content_type,size,locator,created_at) VALUES(?,?,?,?,?,?,?)`,
       id, input.eventId, input.name, input.contentType, input.size ?? null, JSON.stringify(input.locator), input.at ?? Date.now());
     return id;
+  }
+  /** Redaction (ADR 16.4): the event's attachment rows lose their `event_id`; returns their ids. */
+  detachAttachments(eventId: string): string[] {
+    const ids = this.rows("SELECT attachment_id FROM ledger_attachments WHERE event_id=?", eventId).map((row) => row.attachment_id as string);
+    if (ids.length) this.run("UPDATE ledger_attachments SET event_id=NULL WHERE event_id=?", eventId);
+    return ids;
   }
   attachEvent(attachmentIds: string[], eventId: string): void {
     for (const id of attachmentIds) this.run("UPDATE ledger_attachments SET event_id=? WHERE attachment_id=?", eventId, id);

@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { OWNER_HUB_V2 } from "./schema.js";
 import { DurableStore } from "../communication/store.js";
 import { digest } from "../execution/protocol.js";
 import type { RunBinding } from "../execution/host-worker.js";
@@ -69,6 +70,7 @@ export class OwnerHub {
   constructor(readonly ownerId: string, path: string, private readonly directory: HubDirectory) {
     this.store = new DurableStore(path, ownerId);
     this.store.migrate(1, OWNER_HUB_V1);
+    this.store.migrate(2, OWNER_HUB_V2);
     this.rooms = new HubRooms(this, directory);
   }
   chatId(agentId: string, session: Pick<LedgerSession, "kind" | "sessionKey"> & Partial<Pick<LedgerSession, "roomId">>) {
@@ -404,6 +406,8 @@ export class OwnerHubs {
     if (!hub) { hub = new OwnerHub(ownerId, this.stateDir === ":memory:" ? ":memory:" : join(this.stateDir, "owners", `${digest(ownerId)}.sqlite`), this.directory); this.hubs.set(ownerId, hub); }
     return hub;
   }
+  /** Hubs opened by this process (every owner with a started agent); the attachment sweeper walks these. */
+  open(): OwnerHub[] { return [...this.hubs.values()]; }
   sockets(): number { return [...this.hubs.values()].reduce((total, hub) => total + hub.sockets.size, 0); }
   close(): void { for (const hub of this.hubs.values()) hub.close(); this.hubs.clear(); }
 }

@@ -27,6 +27,7 @@ import { WEB_CONNECTION, WebChannel } from "../channels/web.js";
 import { LedgerControl } from "../ledger/control.js";
 import { ROOM_CONNECTION, RoomChannel } from "../channels/room.js";
 import type { HubRooms } from "../ledger/rooms.js";
+import type { OwnerAttachments } from "../ledger/blobs-hub.js";
 
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 const file = z.string().min(1);
@@ -126,6 +127,7 @@ export function identityHooks(identity: Identities, ownerId: string, namespaces:
 export async function createChannelRuntime(agent: ManagedAgent, connector: MatrixConnector, config: AgentChannelConfig,
   directory: string, issue: (name: string) => { id: string; validate: () => void; wake?: () => void }, suppliedHost?: HostPort,
   options: { ownedAgent?(matrixId: string): boolean; persons?: PersonRegistry | undefined; identity?: Identities | undefined;
+    attachments?: OwnerAttachments | undefined;
     /** The owner's hub rooms (ADR 0005 phase 5); registers the `room` connection. */
     rooms?: (() => HubRooms | undefined) | undefined;
     /** Matrix rooms imported into hub rooms (registry `matrix_room_migrations`). */
@@ -189,7 +191,7 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   }
   // Owner web messages (ADR 0005 phase 3, `ledgerSend`): replies to it are recorded, not sent. Without the flag the
   // connection is not registered, so channel status and dispatch are unchanged.
-  const web = AgentLedger.attached(connector.store)?.authoritative ? new WebChannel(core, agent.owner) : undefined;
+  const web = AgentLedger.attached(connector.store)?.authoritative ? new WebChannel(core, agent.owner, options.attachments) : undefined;
   if (web) core.register({ id: WEB_CONNECTION, ownerAddresses: [owner] }, web);
   // Hub rooms (ADR 0005 phase 5). Only the owner's addressed room messages arrive here, through the fan-out worker.
   const room = options.rooms ? new RoomChannel(core, agent.id, agent.owner, options.rooms,
@@ -226,7 +228,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
   const observation = worker ? new RunObservation(connector.store, connector.cli, worker.host) : undefined;
   // Phase 4 (ADR 0005 section 16): one card record for every answer surface, and owner control over the session.
   const control = core.ledger ? new LedgerControl({ agentId: agent.id, ownerPersonId: owner, store: connector.store, ledger: core.ledger, core,
-    work: connector.cli, observation, host: worker?.host, ...(worker ? { closeUnknown: (claimId: string) => worker!.closeUnknown(claimId) } : {}) }) : undefined;
+    work: connector.cli, observation, host: worker?.host, ...(worker ? { closeUnknown: (claimId: string) => worker!.closeUnknown(claimId) } : {}),
+    ...(options.attachments ? { releaseAttachments: (ids: string[]) => options.attachments!.releaseAgent(agent.owner, agent.id, ids) } : {}) }) : undefined;
   if (worker) worker.control = control;
   if (worker || control) core.control = async (input) => Boolean(await control?.command(input)) || Boolean(await worker?.handleInput(input));
   const sessions = worker ? new WorkSessions(agent.id, agent.owner, config.host!.runtimeId, worker.instanceId,
@@ -263,5 +266,6 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
       if (action === "complete") return account.complete();
       return account.status(true);
     },
+    readAttachment: (inputId, reference) => core.readStoredAttachment(inputId, reference),
   };
 }

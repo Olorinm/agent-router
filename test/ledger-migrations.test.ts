@@ -67,7 +67,7 @@ describe("ledger migrations", () => {
       expect(a[name].get("meta", "probe"), name).toBe(name);
     }
     expect(versions(a.agent)).toEqual({ ledger_schema_version: 4 });
-    expect(versions(a.hub)).toEqual({ ledger_schema_version: 1, hub_rooms_schema_version: 1, hub_identity_schema_version: 1 });
+    expect(versions(a.hub)).toEqual({ ledger_schema_version: 2, hub_rooms_schema_version: 1, hub_identity_schema_version: 1 });
     expect(versions(a.registry)).toEqual({ registry_schema_version: 2 });
   });
   it("is idempotent when the stores are opened again", () => {

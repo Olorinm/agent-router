@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { externalIdentityConfigSchema } from "../matrix/external-identity.js";
 import { loadEdgeIdentityConfig } from "../auth/edge-identity.js";
 import type { ServiceConfig } from "../matrix/managed.js";
+import { blobConfigFromEnv } from "../ledger/blobs.js";
 
 /** Operator configuration shared by the standalone Router and embedding products. */
 export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig {
@@ -23,5 +24,7 @@ export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): Service
     ...(env.AGENT_IDENTITY_CONFIG_FILE ? { externalIdentity: externalIdentityConfigSchema.parse({
       providers: JSON.parse(readFileSync(env.AGENT_IDENTITY_CONFIG_FILE, "utf8")), adminToken: token("MATRIX_ADMIN_TOKEN_FILE"),
     }) } : {}),
+    // ADR 0005 16.5: attachments and the blob store (R2 key files are read when the service starts).
+    ...blobConfigFromEnv(env),
   };
 }

@@ -50,6 +50,8 @@ export interface ControlDependencies {
   observation?: RunObservation | undefined; host?: HostPort | undefined;
   /** Close an unknown run after the owner decided (HostWorker.closeUnknown). */
   closeUnknown?: ((claimId: string) => Promise<void>) | undefined;
+  /** Drop the blob references of purged ledger attachments (`OwnerAttachments.releaseAgent`); set with `attachments`. */
+  releaseAttachments?: ((attachmentIds: string[]) => void) | undefined;
 }
 
 /**
@@ -354,7 +356,7 @@ export class LedgerControl {
   async purge(sessionKey: string, options: { cancelActive?: boolean } = {}): Promise<{ generation: number; purgedEvents: number; window: number }> {
     if (!this.ledger.session(sessionKey)) throw new WorkError("chat_not_found", 404);
     await this.clear(sessionKey, "purge", Boolean(options.cancelActive));
-    return this.tx(() => {
+    const result = this.tx(() => {
       const purged = this.ledger.purge(sessionKey);
       const store = this.deps.store, tasks = new Set<string>();
       for (const { id, value } of store.entries<InboxRecord>("communication_inbox")) {
@@ -369,8 +371,12 @@ export class LedgerControl {
         const { content: _content, ...rest } = value;
         store.set("communication_outbox", id, { ...rest, text: "" } satisfies OutboxRecord);
       }
-      return { generation: purged.generation, purgedEvents: purged.purgedEvents, window: purged.window };
+      return { generation: purged.generation, purgedEvents: purged.purgedEvents, window: purged.window, attachmentIds: purged.attachmentIds };
     });
+    // ADR 16.4: the purged rows' blob references go too (the hub is another file, so after the agent transaction; the
+    // blob itself is swept after its grace period).
+    if (result.attachmentIds.length) this.deps.releaseAttachments?.(result.attachmentIds);
+    return { generation: result.generation, purgedEvents: result.purgedEvents, window: result.window };
   }
 
   /**

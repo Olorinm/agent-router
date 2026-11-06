@@ -93,12 +93,18 @@ export function shadowReceive(ledger: AgentLedger, ctx: ShadowContext, record: I
       ...(source.event ? { event: { type: source.event.type, data: source.event.data } } : {}),
       ...(source.mentions ? { mentions: source.mentions } : {}), ...(source.privateGroup ? { privateGroup: true } : {}) } };
   }
-  const attachments = input.kind === "message" ? (source.attachments ?? []).map((item) => ({ name: item.name, contentType: item.mediaType,
-    attachmentId: ledger.addAttachment({ eventId: null, name: item.name, contentType: item.mediaType, locator: { channel: { connectionId, ...item } }, at }) })) : [];
+  // Web attachments are already blobs (ADR 16.5 send binding): the body carries their upload ids, and the web channel
+  // writes their `ledger_attachments` rows in the same transaction. Other channels get lazily promoted channel locators.
+  const web = channel === "web";
+  const attachments = input.kind !== "message" ? [] : web
+    ? (source.attachments ?? []).map((item) => ({ attachmentId: item.id, name: item.name, contentType: item.mediaType,
+      size: typeof item.data?.size === "number" ? item.data.size : null, sha256: typeof item.data?.sha256 === "string" ? item.data.sha256 : null }))
+    : (source.attachments ?? []).map((item) => ({ name: item.name, contentType: item.mediaType,
+      attachmentId: ledger.addAttachment({ eventId: null, name: item.name, contentType: item.mediaType, locator: { channel: { connectionId, ...item } }, at }), size: null, sha256: null }));
   const { event } = ledger.append(record.conversationId, { ...input, role: "user", ...who, conversationId, createdAt: at,
     idempotencyKey: `${connectionId}:${source.externalId}`,
-    body: { ...input.body, channel, ...(attachments.length ? { attachments: attachments.map((item) => ({ ...item, size: null, sha256: null })) } : {}) } });
-  ledger.attachEvent(attachments.map((item) => item.attachmentId), event.eventId);
+    body: { ...input.body, channel, ...(attachments.length ? { attachments } : {}) } });
+  if (!web) ledger.attachEvent(attachments.map((item) => item.attachmentId), event.eventId);
   ledger.indexPlatform(connectionId, [source.externalId], event.eventId);
   if (!type || !lifecycle.has(type)) ledger.queueInput(record.id, record.conversationId, event.eventId, at);
   ledger.settleClaim(connectionId, source.externalId, "accepted", { eventId: event.eventId, conversationId });

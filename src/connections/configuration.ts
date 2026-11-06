@@ -117,7 +117,7 @@ export class ConnectionConfiguration {
         : undefined,
       // Groups of only the owner and the owner's agents are private for Matrix admission.
       { ownedAgent: (matrixId) => this.service.agents(agent.owner).some((owned) => owned.matrixId === matrixId), persons: this.service.persons,
-        identity: this.service.identity, ...this.service.roomOptions(agent) },
+        identity: this.service.identity, attachments: this.service.attachments, ...this.service.roomOptions(agent) },
     );
   }
   factory = async (agent: ManagedAgent, connector: MatrixConnector) =>

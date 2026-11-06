@@ -9,6 +9,17 @@ export interface ReplyRoute {
 }
 export interface AttachmentReference { id: string; name: string; mediaType: string; kind?: "image" | "audio" | "video" | "file" | "sticker" | undefined; data?: Record<string, unknown> | undefined; }
 export interface MediaContent { name: string; mediaType: string; data: string; }
+/** A blob-backed attachment recorded on a transcript event (web channel, ADR 0005 16.5). */
+export interface RecordedAttachment { attachmentId: string; name: string; contentType: string; size: number; sha256: string; }
+/**
+ * Channels whose transcript is the delivery (web): outbound media is stored before its event is recorded, bound to the
+ * event inside the recording transaction, and released if it was never recorded.
+ */
+export interface RecordedMedia {
+  store(media: MediaContent[]): Promise<RecordedAttachment[]>;
+  bind(ledger: import("../ledger/ledger.js").AgentLedger, eventId: string, items: RecordedAttachment[]): void;
+  release(items: RecordedAttachment[]): void;
+}
 export interface ChannelCapabilities {
   receive: string[]; send: string[]; stream: boolean; buttons: boolean; native: string[];
   nativeArguments?: Record<string, string>;
@@ -55,6 +66,7 @@ export interface ChannelAdapter {
   stop(): Promise<void>;
   send(route: ReplyRoute, text: string, sendKey: string): Promise<SendReceipt>;
   readAttachment?(message: ChannelMessage, attachment: AttachmentReference): Promise<MediaContent>;
+  readonly recordedMedia?: RecordedMedia | undefined;
   readQuote?(message: ChannelMessage): Promise<string | undefined>;
   sendContent?(route: ReplyRoute, content: ChannelContent, sendKey: string): Promise<SendReceipt>;
   progress?(route: ReplyRoute, text: string, streamKey: string, final: boolean): Promise<SendReceipt>;
