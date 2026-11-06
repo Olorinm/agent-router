@@ -279,6 +279,10 @@ describe("native groups (ADR 0005 phase 5)", () => {
     expect(await off.send(chatId, { idempotencyKey: key(3), text: "x" })).toEqual({ status: 403, data: { error: "feature_disabled" } });
     expect((await off.api(`${root}/web/groups/${chatId.slice(5)}/members/${off.agents[0]!.id}`, "alice", "DELETE")).status).toBe(403);
     expect(off.service.fanout).toBeUndefined();
+    // Without the flag the room connection is not registered: channel status and dispatch are unchanged.
+    const ids = (off.extension(off.agents[0]!.id).status() as { connections: Array<{ id: string }> }).connections.map((item) => item.id);
+    expect(ids).not.toContain("room");
+    expect(off.extension(off.agents[0]!.id).room).toBeUndefined();
   }, 20_000);
 });
 

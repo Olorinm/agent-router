@@ -2205,7 +2205,7 @@ and `src/ledger/rooms-import.ts` (Matrix import). These choices fill gaps in sec
    idempotent without a key; more than 20 agents is 422 `too_many_members`. Member events: `add` per agent at creation, `rename`,
    `remove` (sender `system` when the agent is deleted).
 8. **Not yet.** Room reset (17.5), card answers from a room chat and media in rooms are not implemented: the phase 4 card and
-   control routes accept only `dm:` chats (`chat_read_only` for a room chat), and media waits for the blob store.
+   control routes resolve only `dm:`/`obs:` chats (404 `chat_not_found` for a room chat), and media waits for the blob store.
    `RoomChannel` sends text and HTML only (`channel_content_unsupported` otherwise).
 9. **Import.** `npm run ledger:import-rooms -- (--owner <ownerId> | --all) [--dry-run] [--state <dir>]` (`import-groups` is an
    alias). It runs with the Router service **stopped** and Synapse running, like the backfill: the agent stores are leased, so a
