@@ -107,7 +107,7 @@ describe("Router with AGENT_MATRIX=off (ADR 0005 phase 7)", () => {
     const stateDir = mkdtempSync(join(tmpdir(), "matrix-off-"));
     cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
     const t = await boot(stateDir);
-    expect((await fetch(`${t.base}/health/live`).then((r) => r.json()))).toMatchObject({ status: "ok", matrix: false });
+    expect((await fetch(`${t.base}/health/live`).then((r) => r.json()))).toEqual({ status: "ok", component: "agent-service" });
     const me = (await t.api(`${root}/web/me`)).data;
     expect(me).toMatchObject({ ownerId: owner, auth: { via: "edge", email: "owner@example.test" } });
     expect(me.limits.features).toEqual({ history: true, send: true, cards: true, attachments: true, reset: true, groups: true, identity: true, matrix: false });

@@ -596,7 +596,7 @@ export function createManagedApp(service: ManagedService, setup?: express.Router
     else if (req.method === "POST" && req.path === "/_agent-router/v1/web/attachments") next();
     else jsonBody(req, res, next);
   });
-  app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service", matrix: service.matrixOn }));
+  app.get("/health/live", (_req, res) => res.json({ status: "ok", component: "agent-service" }));
   // ADR 0005 19.2: the Application Service routes exist only while Matrix is on (otherwise the generic 404 below).
   if (service.matrixOn) mountApplicationService(app, service);
   const root = "/_agent-router/v1";

@@ -2358,8 +2358,8 @@ Phase 7 is implemented in `src/matrix/managed.ts` (switches, gated paths, toggle
 1. **Switch.** `AGENT_MATRIX=on|off` (also `1/0`, `true/false`; anything else fails the start) sets
    `ServiceConfig.matrix.enabled`. Off: `homeserver`, `asToken`, `hsToken` and the external identity `adminToken` are
    optional and never read, even when present. Off with `ledgerRead` but without `ledgerSend` fails the start
-   (`matrix_off_requires_ledger_send`, 15.3). `GET /health/live` reports `matrix`, `GET /web/me` always reports
-   `features.matrix`.
+   (`matrix_off_requires_ledger_send`, 15.3). `GET /web/me` always reports `features.matrix`, `GET /account`
+   reports `matrix`.
 2. **State.** `ManagedAgent.matrix` stores `active | dormant | none` (missing = `active`). The API reports the
    effective state: with the deployment off an `active` agent is shown as `dormant`; the stored value is unchanged, so
    rollback (`AGENT_MATRIX=on`) needs no migration. `ManagedService.matrixEnabled(agentId)` is the check for embedders

@@ -277,7 +277,7 @@ export class ConnectionConfiguration {
   summary(agent: ManagedAgent) {
     const config = this.configuration(agent);
     return {
-      agent,
+      agent: this.service.publicAgent(agent),
       host: config?.host
         ? { runtimeId: config.host.runtimeId }
         : null,
