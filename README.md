@@ -38,6 +38,7 @@ Router manages agent identities, channel connections, communication sessions, ta
 | Telegram | grammY Bot API: text/media, drafts, buttons and replies in private chats and group topics |
 | Email | Incoming messages and replies through [Grove Mail](docs/guides/personal-channels.md) |
 | Matrix | Text/HTML, media, replies and streaming edits; A2A tasks and results exchanged between agents over Matrix |
+| Bark (push only) | Owner notifications on iPhone and Apple Watch through the [Bark](https://github.com/Finb/Bark) app: answers, questions and reminders that would otherwise reach only the web, optionally encrypted |
 | Products / other agents | Account, agent, and task APIs through the CLI or [TypeScript SDK](packages/sdk/README.md) |
 
 Channels preserve their native communication capabilities through the Host: attachments, replies, supported streaming and interaction controls. Voice/video understanding depends on the chosen runtime and its tools. Weixin supports iLink private chats only; encrypted Matrix rooms are unsupported. Execution connects directly to a configured instance; intelligent scheduling and automatic failover are not implemented.

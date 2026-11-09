@@ -2,7 +2,8 @@ import { Message, SendMessageRequest, TaskState } from "@a2a-js/sdk";
 import { z } from "zod";
 import { digest, key, terminal } from "../execution/protocol.js";
 import { CliWork } from "../execution/work.js";
-import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent, type AttachmentReference, type RecordedAttachment } from "./types.js";
+import { ChannelSendError, type ChannelAdapter, type ChannelContext, type ChannelMessage, type ReplyRoute, type ChannelContent, type MediaContent, type AttachmentReference, type RecordedAttachment,
+  type NotifyPolicy, type NotifyPurpose } from "./types.js";
 import { DurableStore } from "./store.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { shadowControl, shadowDelivery, shadowOutbox, shadowReceive, shadowStart, type ShadowContext } from "../ledger/shadow.js";
@@ -28,6 +29,8 @@ export interface ConnectionDefinition {
   /** Additional peers and groups have isolated conversations. */
   peerAddresses?: string[];
   groupIds?: string[];
+  /** The connection notifies the owner (a one-way push channel such as Bark). */
+  notify?: NotifyPolicy;
 }
 export interface InboxRecord {
   id: string; connectionId: string; source: ChannelMessage; conversationId: string; replyRoute: ReplyRoute;
@@ -75,6 +78,8 @@ export class CommunicationCore {
   ownerPersonId: string | undefined;
   persons: ((connectionId: string, sender: string) => string | undefined) | undefined;
   identity: CoreIdentity | undefined;
+  /** A browser has the session's chat open (owner presence); such a chat needs no push. */
+  watching: ((sessionKey: string) => boolean) | undefined;
   constructor(readonly agentId: string, readonly store: DurableStore, readonly work: CliWork, private readonly validate: () => void = () => {}) {
     this.ledger = AgentLedger.attached(store);
   }
@@ -355,6 +360,7 @@ export class CommunicationCore {
             ledger.turnState(task.id, state, { agentId: this.agentId, ...(finalEventId ? { finalEventId } : {}), ...(state === "failed" ? { error: (answer || fallback).slice(0, 500) } : {}) });
             return finalEventId;
           }));
+          if (task.status?.state !== TaskState.TASK_STATE_CANCELED) this.notifyOwner("reply", input, outbox.text, `turn:${task.id}`);
           for (const { id, value } of this.store.entries<InboxRecord>("communication_inbox")) if (value.taskId === task.id)
             this.store.set("communication_inbox", id, { ...value, state: "done" });
         }
@@ -480,6 +486,7 @@ export class CommunicationCore {
       if (!this.store.insert("communication_outbox", id, notice)) return;
       this.settleWeb(notice, suffix.startsWith("question:") ? undefined : this.shadow((ledger) => shadowOutbox(ledger, this.shadowContext, input, notice, "notice",
         { kind: "notice", role: "system", senderType: "system", senderId: "router", idempotencyKey: `notice:${id}`, body: { text, level: "info" } })));
+      if (suffix.startsWith("question:")) this.notifyOwner("question", input, text, `notice:${id}`);
     });
     return id;
   }
@@ -552,7 +559,8 @@ export class CommunicationCore {
       content: recorded ? rest : content, attempts: 0, nextAt: 0, ...(!adapter && this.authoritative ? { state: "accepted", externalId: id } : { state: "queued" }) };
     let bound = false;
     this.atomic(() => {
-      if (this.store.insert("communication_outbox", id, outbox)) this.settleWeb(outbox, this.shadow((ledger) => {
+      if (!this.store.insert("communication_outbox", id, outbox)) return;
+      this.settleWeb(outbox, this.shadow((ledger) => {
         const eventId = shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
           options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
             : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
@@ -560,10 +568,33 @@ export class CommunicationCore {
         if (recorded && eventId) { adapter!.recordedMedia!.bind(ledger, eventId, recorded); bound = true; }
         return eventId;
       }));
+      if (options.notice) this.notifyOwner("schedule", input, content.text, options.notice);
     });
     // Not recorded (a concurrent duplicate, or a ledger error rolled back): its stored media has no event.
     if (recorded && !bound) adapter?.recordedMedia?.release(recorded);
     return id;
+  }
+  /**
+   * Owner notifications (one-way push channels). An answer, a question or a schedule notice that reaches the owner only
+   * through a transcript surface (web), or through no live connection at all, is queued as plain text to every
+   * connection whose notify policy covers its purpose. Other channels deliver to the owner's own app, which notifies
+   * by itself, and a chat open in a browser needs no push. The rows reuse the outbox (retries, `uncertain` sends) and
+   * have no transcript event: they repeat an event that is already recorded.
+   */
+  private notifyOwner(purpose: NotifyPurpose, input: InboxRecord, text: string, ref: string, now = Date.now()): void {
+    if (!text.trim() || !this.isOwnerInput(input)) return;
+    const origin = this.connections.get(input.connectionId);
+    if (origin && !origin.adapter.ledgerDelivery) return;
+    const covers = (policy: NotifyPolicy) => purpose === "reply" ? policy.replies && now - Date.parse(input.receivedAt) >= policy.replyAfterSeconds * 1000
+      : purpose === "question" ? policy.questions : policy.schedules;
+    const targets = [...this.connections].filter(([, connection]) => connection.definition.notify && covers(connection.definition.notify));
+    if (!targets.length) return;
+    try { if (this.watching?.(input.conversationId)) return; } catch { /* Presence is a hint: an unknown state notifies. */ }
+    for (const [connectionId] of targets) {
+      const id = digest(key(ref, connectionId, "notify"));
+      this.store.insert("communication_outbox", id, { id, taskId: null, text, state: "queued", attempts: 0, nextAt: 0,
+        route: { connectionId, target: "owner", messageId: "", data: { purpose, sessionKey: input.conversationId } } } satisfies OutboxRecord);
+    }
   }
   delivery(taskId: string, id: string) {
     const row = this.store.get<OutboxRecord>("communication_outbox", id);

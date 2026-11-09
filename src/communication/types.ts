@@ -55,6 +55,19 @@ export interface ChannelContext {
   disconnected?(code: string): void;
 }
 export interface SendReceipt { externalId: string; }
+/** Why the owner is notified: a turn's answer, a question waiting for the owner, or a schedule notice. */
+export type NotifyPurpose = "reply" | "question" | "schedule";
+/**
+ * A connection that notifies the owner (a one-way push channel such as Bark). It receives a plain-text copy of what
+ * reached the owner only through a transcript surface (web); see `CommunicationCore.notifyOwner`.
+ */
+export interface NotifyPolicy {
+  replies: boolean;
+  /** A reply is pushed only when its turn took at least this long; quick answers are read where they were asked. */
+  replyAfterSeconds: number;
+  questions: boolean;
+  schedules: boolean;
+}
 export interface ChannelAdapter {
   readonly kind: ChannelKind;
   /** A stable send key can be safely resubmitted, including after a lost response. */

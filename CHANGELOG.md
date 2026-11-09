@@ -4,6 +4,20 @@ Notable changes to Agent Router, newest first. Pushing a `v*` tag publishes a Gi
 notes are this file's section for that version (`.github/workflows/release.yml`), so add the section
 in the version-bump commit before tagging.
 
+## [0.7.0-alpha.14] - 2026-11-09
+
+- Bark channel (`kind: "bark"`): a send-only connection that pushes owner notifications to the Bark iOS app through a
+  Bark server. Optional push encryption (AES-CBC with a fresh IV per push; level and group stay readable), Basic
+  authentication, title, tap URL, body preview and length. Rejected pushes fail, overload and unsent requests retry,
+  and a request whose outcome is unknown becomes `uncertain`. `channels:check` calls `/ping`.
+- Owner notifications in the channel core. A connection with a `notify` policy receives a plain-text copy of an
+  owner's web turn answer (after `replyAfterSeconds`, default 30; not for canceled turns), of a question waiting for
+  the owner, and of a schedule notice that reaches only the web. Channels that deliver to the owner's own app are not
+  duplicated, and nothing is pushed while a browser has the chat open (an event socket subscribed to it). The pushes
+  reuse the outbox and add no transcript events. Adapters get `notifyPolicy`, `ChannelInstance.notify`,
+  `NotifyPolicy` and `NotifyPurpose` from the public API; `createChannelRuntime` accepts a `watching` hook, and
+  `OwnerHub.watching` reports whether a chat is open.
+
 ## [0.7.0-alpha.13] - 2026-11-06
 
 - Keep ordinary Feishu quote replies in their existing conversation and reply normally. Only an explicit

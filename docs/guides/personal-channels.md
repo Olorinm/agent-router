@@ -88,6 +88,28 @@ npm run weixin:login -- /absolute/path/weixin.json
 
 邮件已有 Grove Mail inbox 和 API key 直接使用。只消费新到达的 `message.received` 快照，跳过发送事件和已有历史；游标按邮箱保存。服务返回 `410` 时停止收信并报告，不清空游标。需要重新确定起点时，先从 Grove Mail 确认有效游标，再配置新的连接 ID 和 `initialCursor`；已有连接的持久化游标优先于该初始值。当前没有个人 Gmail / Outlook OAuth 和 IMAP 接入。
 
+### Bark 推送（只发不收）
+
+Bark 连接不收消息，只给所有者推送通知，配合 iOS 上的 [Bark](https://github.com/Finb/Bark) App 使用（Apple Watch 跟随 iPhone 镜像通知）。它补的是网页的缺口：飞书、Telegram 等渠道的回复由各自 App 提醒，只出现在网页上的内容才推送。规则是通用的（`notify` 策略），由渠道核心判断：
+
+- 所有者在网页私聊里的回合结束，且用时不少于 `replyAfterSeconds`（默认 30 秒），推送回答；取消的回合不推。
+- 网页私聊里出现等待所有者回答的提问（审批、选项），推送提问，级别为 `timeSensitive`。
+- 定时任务的提醒只落到网页（或会话已没有在线连接）时，推送提醒。
+- 浏览器正打开这个聊天（事件 socket 已订阅）时不推；访客、群聊不推。
+
+```json
+{ "id": "bark", "kind": "bark", "server": "https://bark.example.com", "deviceKeyFile": "bark/device-key",
+  "encryptionKeyFile": "bark/encryption-key", "basicAuthFile": "bark/basic-auth", "title": "Agent",
+  "openUrl": "https://console.example.com/", "notify": { "replyAfterSeconds": 30 } }
+```
+
+- `server` 必须是 HTTPS（本机 `127.0.0.1` 可用 HTTP），建议自建 [bark-server](https://github.com/Finb/bark-server) 或其 Workers 实现，不经过公共服务器。设备在 App 里改用该服务器注册后，取得 device key 写入文件。
+- `encryptionKeyFile`：Bark App「推送加密」选 AES-CBC，填 16、24 或 32 个字符的 KEY；每条推送用随机 IV。标题、正文、链接在密文里，`level`、`group` 保持明文，系统才能按级别提醒和分组。
+- `basicAuthFile` 内容为 `user:password`，用于服务器开了 Basic Auth 的情况。`preview: false` 时正文只写“有新的回复”这类提示，不带内容；`maxLength` 控制正文长度（默认 300 字符）。
+- `notify` 可单独关闭 `replies`、`questions`、`schedules`。所有者、访客、群组地址不适用，配置了会报 `bark_is_send_only`。
+- 发送失败：服务器拒绝（4xx）记为失败；429/5xx、请求未发出时重试；请求可能已到达却没收到结果时记为 `uncertain`，不盲目重发（Bark 不去重）。推送不写聊天记录，状态在渠道状态的 outbox 里。
+- `channels:check` 只请求 `/ping`；设备能否收到要发一条测试通知确认。
+
 Matrix 复用托管节点的 Application Service 身份和原同步进程；所有者仍用原 Matrix 登录，不额外创建一份个人授权。当前服务启动沿用托管 Matrix 节点，即使只配置其他渠道也需保留它的基础配置。
 
 ## 地址、群聊和状态

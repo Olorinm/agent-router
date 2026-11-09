@@ -77,6 +77,14 @@ export class OwnerHub {
     if (session.kind === "room" && session.roomId) return `room:${session.roomId}`;
     return session.kind === "owner_main" ? `dm:${agentId}` : `obs:${agentId}:${session.sessionKey}`;
   }
+  /** A socket is subscribed to the session's chat: the owner has it open in a browser. */
+  watching(agentId: string, sessionKey: string): boolean {
+    const session = this.directory.ledger(agentId)?.session(sessionKey);
+    if (!session) return false;
+    const chatId = this.chatId(agentId, session);
+    for (const socket of this.sockets) if (socket.subscriptions.has(chatId)) return true;
+    return false;
+  }
   /** Resolve an owner-scoped chat id to its agent ledger and session. Unknown or foreign chats are not found. */
   resolve(chatId: string): { agentId: string; kind: "dm" | "observed"; sessionKey: string; ledger: AgentLedger } {
     const match = /^(dm|obs):([^:]+)(?::(.+))?$/.exec(chatId);

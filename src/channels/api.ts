@@ -13,7 +13,7 @@ import type { HostTool, HostToolResult } from "../execution/tools.js";
 
 export type {
   AttachmentReference, ChannelAdapter, ChannelCapabilities, ChannelContent, ChannelContext, ChannelMessage, MediaContent,
-  RecordedAttachment, RecordedMedia, ReplyRoute, SendReceipt,
+  NotifyPolicy, NotifyPurpose, RecordedAttachment, RecordedMedia, ReplyRoute, SendReceipt,
 } from "../communication/types.js";
 export { bindAccount, ChannelSendError, sendChunks, splitText } from "../communication/types.js";
 export { download, mediaContent, readBytes, MAX_MEDIA_BYTES } from "../communication/media.js";
@@ -30,6 +30,14 @@ export const connectionFields = {
 };
 /** A credential or file path in the connection config, relative to the config file's directory. */
 export const configFile = z.string().min(1);
+/**
+ * The notification policy of a connection that pushes to the owner (`ChannelInstance.notify`). Its sends carry
+ * `route.data.purpose` (`reply`, `question` or `schedule`) and `route.target` `owner`.
+ */
+export const notifyPolicy = z.object({
+  replies: z.boolean().default(true), replyAfterSeconds: z.number().int().min(0).max(86_400).default(30),
+  questions: z.boolean().default(true), schedules: z.boolean().default(true),
+}).strict();
 // Module shapes differ; the registry keeps each module's exact type.
 export type ConnectionSchema = z.ZodObject<any>;
 
@@ -68,6 +76,8 @@ export interface ChannelInstance {
   eager?: boolean;
   /** `/link` pairing codes are accepted over this mail connection from provider-verified senders. */
   mailPairing?: boolean;
+  /** The connection notifies the owner (a one-way push channel); see `notifyPolicy`. */
+  notify?: z.infer<typeof notifyPolicy>;
 }
 export type CheckStatus = "verified" | "needs_action" | "not_verified" | "disabled";
 export interface ChannelCheckResult { status: CheckStatus; detail: string; }

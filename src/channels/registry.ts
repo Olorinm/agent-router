@@ -10,12 +10,13 @@ import { feishuChannel } from "./feishu/index.js";
 import { telegramChannel } from "./telegram/index.js";
 import { groveMailChannel } from "./grove-mail/index.js";
 import { weixinChannel } from "./weixin/index.js";
+import { barkChannel } from "./bark/index.js";
 
 /** Configurable connection kinds, in configuration order. */
-export const channelModules = [matrixChannel, feishuChannel, telegramChannel, groveMailChannel, weixinChannel] as const;
+export const channelModules = [matrixChannel, feishuChannel, telegramChannel, groveMailChannel, weixinChannel, barkChannel] as const;
 /** One connection entry of the operator's channel configuration. */
 export const connectionSchema = z.discriminatedUnion("kind", [matrixChannel.schema, feishuChannel.schema, telegramChannel.schema,
-  groveMailChannel.schema, weixinChannel.schema]);
+  groveMailChannel.schema, weixinChannel.schema, barkChannel.schema]);
 export type ConnectionConfig = z.infer<typeof connectionSchema>;
 
 const modules = new Map<string, ChannelModule>(channelModules.map((module) => [module.kind, module as ChannelModule]));

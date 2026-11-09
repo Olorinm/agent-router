@@ -66,6 +66,14 @@ export const exampleChannel = defineChannel({
 Register it in `src/channels/registry.ts`: add the import, the module to `channelModules` and its schema to
 `connectionSchema`. Nothing else in Router changes.
 
+## Send-only notification channels
+
+A push service (Bark) receives nothing; it notifies the owner of what reached them only through the web. Such a module
+returns `notify` (parsed with `notifyPolicy` from the API) from `create`, declares `receive: []`, and rejects owner, peer
+and group addresses in `validate`. The core queues its sends with `route.target` `owner` and `route.data.purpose`
+(`reply`, `question` or `schedule`); retries and `uncertain` sends work as for every outbox row. `src/channels/bark/` is
+the reference.
+
 ## Checklist
 
 - [ ] `src/channels/<kind>/index.ts` exports a `defineChannel(...)` module; the directory name equals `kind`.
