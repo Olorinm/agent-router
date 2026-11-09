@@ -132,10 +132,12 @@ export function shadowTurn(ledger: AgentLedger, agentId: string, taskId: string,
 
 /**
  * Outbound (ADR 6.3/6.4): record first, then the delivery. `event` is null for activity reactions and for
- * deliveries whose event was written elsewhere (`eventId`).
+ * deliveries whose event was written elsewhere (`eventId`). `delivery` false records the event only (a notice whose
+ * channel delivery was not requested, ADR 16.6).
  */
 export function shadowOutbox(ledger: AgentLedger, ctx: ShadowContext, input: InboxRecord, outbox: OutboxRecord, purpose: DeliveryPurpose,
-  event: (Omit<EventInput, "role" | "senderType" | "senderId"> & Partial<Pick<EventInput, "role" | "senderType" | "senderId">>) | null, eventId?: string, at = Date.now()): string | undefined {
+  event: (Omit<EventInput, "role" | "senderType" | "senderId"> & Partial<Pick<EventInput, "role" | "senderType" | "senderId">>) | null, eventId?: string, at = Date.now(),
+  delivery = true): string | undefined {
   const claim = ledger.claimByInput(input.id);
   if (!claim?.conversationId || !ledger.session(input.conversationId) || ledger.delivery(outbox.id)) return eventId;
   const channel = ctx.channel(input.connectionId);
@@ -146,7 +148,7 @@ export function shadowOutbox(ledger: AgentLedger, ctx: ShadowContext, input: Inb
       conversationId: claim.conversationId, createdAt: at, ...event, turnId, body: { ...event.body, channel } }).event.eventId;
   }
   // Web needs no delivery row: the transcript is its delivery (ADR 2.4).
-  if (channel !== "web") ledger.createDelivery({ deliveryId: outbox.id, eventId: id, conversationId: claim.conversationId, connectionId: input.connectionId,
+  if (channel !== "web" && delivery) ledger.createDelivery({ deliveryId: outbox.id, eventId: id, conversationId: claim.conversationId, connectionId: input.connectionId,
     route: { ...outbox.route, channel }, purpose, ...(outbox.content ? { content: outbox.content } : {}), at });
   return id ?? undefined;
 }

@@ -517,6 +517,8 @@ export class CommunicationCore {
     const adapter = this.connections.get(input.connectionId)?.adapter; return adapter?.capabilitiesFor?.(input.replyRoute) ?? adapter?.capabilities; }
   /** True while the connection is registered. Records of a removed connection (Matrix off) stay readable but have no route. */
   connected(connectionId: string): boolean { return this.connections.has(connectionId); }
+  /** Registered connection ids. */
+  connectionIds(): string[] { return [...this.connections.keys()]; }
   /**
    * An owner's direct input. A sender that became the owner by pairing is the owner only in owner-main; its earlier
    * peer conversations keep their peer rights (ADR 0005 18.1: a conversation never moves).
@@ -542,7 +544,12 @@ export class CommunicationCore {
     try { return this.queueContent(taskId, content, sendKey, { attachments: items }); }
     catch (error) { recorded.release(items); throw error; }
   }
-  queueContent(taskId: string, content: ChannelContent, sendKey: string, options: { notice?: string; attachments?: RecordedAttachment[] } = {}): string {
+  /**
+   * `transcript`: the notice is recorded on the session and delivered to no channel (ADR 16.6 `web`). `push`: the
+   * notice is also sent to that notify connection, whether or not a browser has the chat open.
+   */
+  queueContent(taskId: string, content: ChannelContent, sendKey: string,
+    options: { notice?: string; attachments?: RecordedAttachment[]; transcript?: boolean; push?: string } = {}): string {
     const input = this.input(taskId); if (!input) throw new Error("channel_task_not_found");
     // A schedule notice whose session only has a removed connection (Matrix off): the transcript is its delivery.
     const adapter = options.notice ? this.connections.get(input.connectionId)?.adapter : this.connection(input.connectionId).adapter;
@@ -556,7 +563,8 @@ export class CommunicationCore {
     // Recorded media lives in the blob store; the outbox row keeps no copy of its bytes.
     const { media: _media, ...rest } = content;
     const outbox: OutboxRecord = { id, taskId: null, originTaskId: taskId, route: input.replyRoute, text: content.text,
-      content: recorded ? rest : content, attempts: 0, nextAt: 0, ...(!adapter && this.authoritative ? { state: "accepted", externalId: id } : { state: "queued" }) };
+      content: recorded ? rest : content, attempts: 0, nextAt: 0,
+      ...(options.transcript || !adapter && this.authoritative ? { state: "accepted", externalId: id } : { state: "queued" }) };
     let bound = false;
     this.atomic(() => {
       if (!this.store.insert("communication_outbox", id, outbox)) return;
@@ -564,11 +572,13 @@ export class CommunicationCore {
         const eventId = shadowOutbox(ledger, this.shadowContext, input, outbox, "content",
           options.notice ? { kind: "notice", turnId: null, idempotencyKey: options.notice, body: { text: content.text, level: "info", origin: "schedule" } }
             : { kind: "message", turnId: taskId, idempotencyKey: `content:${id}`, body: { text: content.text, ...(content.html ? { html: content.html } : {}),
-              ...(recorded ? { attachments: recorded } : content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } });
+              ...(recorded ? { attachments: recorded } : content.media?.length ? { media: content.media.map((item) => ({ name: item.name, contentType: item.mediaType })) } : {}) } },
+          undefined, Date.now(), !options.transcript);
         if (recorded && eventId) { adapter!.recordedMedia!.bind(ledger, eventId, recorded); bound = true; }
         return eventId;
       }));
-      if (options.notice) this.notifyOwner("schedule", input, content.text, options.notice);
+      if (options.notice && options.push) this.queueNotification(options.push, "schedule", input, content.text, options.notice);
+      else if (options.notice) this.notifyOwner("schedule", input, content.text, options.notice, { webOnly: options.transcript });
     });
     // Not recorded (a concurrent duplicate, or a ledger error rolled back): its stored media has no event.
     if (recorded && !bound) adapter?.recordedMedia?.release(recorded);
@@ -581,20 +591,31 @@ export class CommunicationCore {
    * by itself, and a chat open in a browser needs no push. The rows reuse the outbox (retries, `uncertain` sends) and
    * have no transcript event: they repeat an event that is already recorded.
    */
-  private notifyOwner(purpose: NotifyPurpose, input: InboxRecord, text: string, ref: string, now = Date.now()): void {
+  private notifyOwner(purpose: NotifyPurpose, input: InboxRecord, text: string, ref: string, options: { webOnly?: boolean | undefined } = {}, now = Date.now()): void {
     if (!text.trim() || !this.isOwnerInput(input)) return;
     const origin = this.connections.get(input.connectionId);
-    if (origin && !origin.adapter.ledgerDelivery) return;
+    if (!options.webOnly && origin && !origin.adapter.ledgerDelivery) return;
     const covers = (policy: NotifyPolicy) => purpose === "reply" ? policy.replies && now - Date.parse(input.receivedAt) >= policy.replyAfterSeconds * 1000
       : purpose === "question" ? policy.questions : policy.schedules;
     const targets = [...this.connections].filter(([, connection]) => connection.definition.notify && covers(connection.definition.notify));
     if (!targets.length) return;
     try { if (this.watching?.(input.conversationId)) return; } catch { /* Presence is a hint: an unknown state notifies. */ }
-    for (const [connectionId] of targets) {
-      const id = digest(key(ref, connectionId, "notify"));
-      this.store.insert("communication_outbox", id, { id, taskId: null, text, state: "queued", attempts: 0, nextAt: 0,
-        route: { connectionId, target: "owner", messageId: "", data: { purpose, sessionKey: input.conversationId } } } satisfies OutboxRecord);
-    }
+    for (const [connectionId] of targets) this.queueNotification(connectionId, purpose, input, text, ref);
+  }
+  private queueNotification(connectionId: string, purpose: NotifyPurpose, input: InboxRecord, text: string, ref: string): string {
+    if (!this.notifies(connectionId)) throw new Error("notify_connection_not_found");
+    const id = digest(key(ref, connectionId, "notify"));
+    this.store.insert("communication_outbox", id, { id, taskId: null, text, state: "queued", attempts: 0, nextAt: 0,
+      route: { connectionId, target: "owner", messageId: "", data: { purpose, sessionKey: input.conversationId } } } satisfies OutboxRecord);
+    return id;
+  }
+  /** A registered connection that notifies the owner (a one-way push channel). */
+  notifies(connectionId: string): boolean { return Boolean(this.connections.get(connectionId)?.definition.notify); }
+  /** The state of an owner notification. */
+  notification(id: string) {
+    const row = this.store.get<OutboxRecord>("communication_outbox", id);
+    if (!row || row.route.target !== "owner" || row.taskId !== null || row.originTaskId) throw new Error("channel_delivery_not_found");
+    return { id, state: row.state, externalId: row.externalId ?? null, error: row.error ?? null };
   }
   delivery(taskId: string, id: string) {
     const row = this.store.get<OutboxRecord>("communication_outbox", id);

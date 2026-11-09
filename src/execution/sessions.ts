@@ -11,6 +11,7 @@ import { digest, key } from "./protocol.js";
 import { CliWork, WorkError } from "./work.js";
 import { AgentLedger } from "../ledger/ledger.js";
 import { personId } from "../ledger/registry.js";
+import { WEB_CONNECTION } from "../ledger/surfaces.js";
 
 const identifier = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/);
 const admissionSchema = z.object({ kind: z.enum(["owner", "delegation", "schedule"]), owner: z.string().min(1), agentId: z.string().min(1), reference: z.string().min(1),
@@ -301,22 +302,49 @@ export class WorkSessions {
     const binding = await this.nativeBinding(sessionId);
     return this.nativeRequest("thread/memory/read", { threadId: binding.nativeSessionId }, binding.runtimeId);
   }
-  deliver(input: { eventId: string; targetSessionId: string; text: string }) {
+  /**
+   * A schedule notice (ADR 16.6). It is always recorded on the target session, which is its web delivery. `connectionId`:
+   * - omitted: delivered on the newest owner conversation whose connection still exists (follows the owner);
+   * - `web`: recorded only (channels that notify the owner may still push it, as for every web-only notice);
+   * - a notify connection (push): recorded and pushed there, whether or not a browser has the chat open;
+   * - another connection: delivered on its newest owner conversation, or recorded only with the receipt
+   *   `suppressed` / `no_conversation_on_connection` when the owner has none there.
+   */
+  deliver(input: { eventId: string; targetSessionId: string; text: string; connectionId?: string | undefined }) {
     this.validate(); identifier.parse(input.eventId); this.validateTarget(input.targetSessionId);
-    const hash = digest(input), prior = this.store.get<{ hash: string; taskId: string; deliveryId: string }>("work_session_deliveries", input.eventId);
+    const target = input.connectionId;
+    if (target !== undefined && target !== WEB_CONNECTION && !this.communication.connected(target)) throw new WorkError("delivery_connection_not_found", 404);
+    const hash = digest(input), prior = this.store.get<{ hash: string }>("work_session_deliveries", input.eventId);
     if (prior && prior.hash !== hash) throw new WorkError("delivery_event_id_reused", 409);
     if (!prior) this.store.transaction(() => {
       // The newest route that still exists: an owner-main session outlives the channels it came through (Matrix off).
       const inputs = this.ownerInputs(input.targetSessionId);
-      const taskId = (inputs.find(item => this.communication.connected(item.connectionId)) ?? inputs[0]!).taskId!;
-      const deliveryId = this.communication.queueContent(taskId, { text: input.text }, `work-event:${input.eventId}`, { notice: `schedule:${input.eventId}` });
-      this.store.set("work_session_deliveries", input.eventId, { hash, taskId, deliveryId });
+      const push = target !== undefined && this.communication.notifies(target);
+      const chosen = target === undefined ? inputs.find(item => this.communication.connected(item.connectionId)) ?? inputs[0]!
+        : inputs.find(item => item.connectionId === (push ? WEB_CONNECTION : target));
+      const record = chosen ?? inputs[0]!, transcript = target !== undefined && (!chosen || target === WEB_CONNECTION);
+      const options = { notice: `schedule:${input.eventId}`, ...(transcript ? { transcript: true } : {}), ...(push ? { push: target } : {}) };
+      const deliveryId = this.communication.queueContent(record.taskId!, { text: input.text }, `work-event:${input.eventId}`, options);
+      const receipt = push ? { push: digest(key(`schedule:${input.eventId}`, target, "notify")) }
+        : target === WEB_CONNECTION ? { state: "web" } : transcript ? { state: "suppressed", error: "no_conversation_on_connection" } : {};
+      this.store.set("work_session_deliveries", input.eventId, { hash, taskId: record.taskId!, deliveryId, ...receipt });
     });
     return this.lookupDelivery(input.eventId)!;
   }
+  /** Connections a schedule notice can name (`deliver` `connectionId`): `web` and every registered connection. */
+  deliveryConnections(): string[] { return [...new Set([WEB_CONNECTION, ...this.communication.connectionIds()])]; }
+  /** The connection `deliver` without `connectionId` would use now (`web` when the session has no live route). */
+  deliveryConnection(sessionId: string): string {
+    this.validate(); this.validateTarget(sessionId);
+    return this.ownerInputs(sessionId).find(item => this.communication.connected(item.connectionId))?.connectionId ?? WEB_CONNECTION;
+  }
   lookupDelivery(eventId: string) {
     this.validate();
-    const prior = this.store.get<{ taskId: string; deliveryId: string }>("work_session_deliveries", eventId);
-    return prior ? this.communication.delivery(prior.taskId, prior.deliveryId) : null;
+    const prior = this.store.get<{ taskId: string; deliveryId: string; push?: string; state?: string; error?: string }>("work_session_deliveries", eventId);
+    if (!prior) return null;
+    if (prior.push) return this.communication.notification(prior.push);
+    if (prior.state) return { id: prior.deliveryId, state: prior.state, externalId: null, error: prior.error ?? null };
+    return this.communication.delivery(prior.taskId, prior.deliveryId);
   }
+
 }

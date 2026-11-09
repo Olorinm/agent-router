@@ -51,3 +51,37 @@ it("a web turn's answer is pushed to Bark, encrypted, unless the owner has the c
   await new Promise((resolve) => setTimeout(resolve, 500));
   expect(push.pushes).toHaveLength(1);
 });
+
+it("schedule notices go where the rule says (ADR 16.6): web only, an explicit push, or a channel without a conversation", async () => {
+  const push = await bark();
+  const t = await setup(cleanup, {}, [{ id: "matrix", kind: "matrix" }, { ...push.connection, notify: { replies: false } }]);
+  await t.send({ idempotencyKey: ik("w"), text: "你好" });
+  await until(t.events, (items) => items.some((event) => event.kind === "message" && event.text === "回答-1"));
+  const sessions = t.extension().sessions!, session = t.extension().communication!.status().inbox[0]!.conversationId;
+  expect(sessions.deliveryConnections()).toEqual(["web", "matrix", "bark"]);
+  expect(sessions.deliveryConnection(session)).toBe("web");
+  expect(() => sessions.deliver({ eventId: "e0", targetSessionId: session, text: "x", connectionId: "nope" })).toThrow("delivery_connection_not_found");
+
+  // `web`: recorded on the session, delivered to no channel; a web-only notice is pushed while no browser has the chat open.
+  expect(sessions.deliver({ eventId: "e1", targetSessionId: session, text: "九点开会", connectionId: "web" })).toMatchObject({ state: "web" });
+  await until(() => push.pushes, (items) => items.length === 1);
+  expect(push.read(push.pushes[0]!.fields)).toMatchObject({ body: "九点开会" });
+
+  const { ticket } = (await t.api(`${root}/web/socket-tickets`, "alice", "POST", {})).data;
+  const socket = new WebSocket(`ws://127.0.0.1:${t.port}${root}/web/socket?ticket=${ticket}`); cleanup.push(() => socket.close());
+  const frames: any[] = []; socket.addEventListener("message", (event) => frames.push(JSON.parse(String(event.data))));
+  await new Promise((resolve) => socket.addEventListener("open", resolve));
+  socket.send(JSON.stringify({ type: "req", id: "1", method: "subscribe", params: { chats: [{ chatId: t.chatId }] } }));
+  await until(() => frames, (items) => items.some((frame) => frame.type === "res"));
+
+  // A channel the owner never used here: recorded only, with a suppressed receipt; the open chat is not pushed.
+  expect(sessions.deliver({ eventId: "e2", targetSessionId: session, text: "十点复盘", connectionId: "matrix" }))
+    .toMatchObject({ state: "suppressed", error: "no_conversation_on_connection" });
+  // An explicit push target is pushed even with the chat open; its receipt is the push's.
+  sessions.deliver({ eventId: "e3", targetSessionId: session, text: "十一点出发", connectionId: "bark" });
+  await until(() => sessions.lookupDelivery("e3"), (receipt) => receipt?.state === "accepted");
+  expect(push.pushes.map((item) => push.read(item.fields).body)).toEqual(["九点开会", "十一点出发"]);
+  expect(sessions.deliver({ eventId: "e3", targetSessionId: session, text: "十一点出发", connectionId: "bark" })).toMatchObject({ state: "accepted" });
+  const notices = (await t.events()).filter((event) => event.kind === "notice").map((event) => event.text);
+  expect(notices).toEqual(["九点开会", "十点复盘", "十一点出发"]);
+});

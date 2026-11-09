@@ -17,6 +17,12 @@ in the version-bump commit before tagging.
   reuse the outbox and add no transcript events. Adapters get `notifyPolicy`, `ChannelInstance.notify`,
   `NotifyPolicy` and `NotifyPurpose` from the public API; `createChannelRuntime` accepts a `watching` hook, and
   `OwnerHub.watching` reports whether a chat is open.
+- Schedule notice targets (ADR 0005 16.6). `WorkSessions.deliver` takes an optional `connectionId`: `web` records the
+  notice only (receipt state `web`); a notify connection records it and pushes it there even while the chat is open
+  (the receipt is the push's); another connection delivers on its newest owner conversation, or records only with a
+  `suppressed` / `no_conversation_on_connection` receipt; an unregistered id fails with `delivery_connection_not_found`.
+  Without `connectionId` the notice still follows the newest owner conversation. New `deliveryConnections()` and
+  `deliveryConnection(sessionId)` list the valid targets and the one an omitted target uses.
 
 ## [0.7.0-alpha.13] - 2026-11-06
 
