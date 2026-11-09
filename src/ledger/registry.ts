@@ -2,7 +2,7 @@ import type { DurableStore } from "../communication/store.js";
 import { digest, key } from "../execution/protocol.js";
 import { REGISTRY_V1, REGISTRY_V2 } from "./schema.js";
 
-export type IdentityProvider = "matrix" | "web" | "oidc" | "feishu" | "feishu-union" | "grove-mail" | "agentmail" | "telegram" | "weixin" | "cloudflare-access";
+export type IdentityProvider = "matrix" | "web" | "oidc" | "feishu" | "feishu-union" | "grove-mail" | "agentmail" | "telegram" | "weixin" | "bark" | "cloudflare-access";
 export type VerifiedBy = "login" | "config" | "pairing" | "admin";
 export interface Identity { identityId: string; personId: string; provider: string; namespace: string; subject: string; verifiedBy: string; createdAt: string; lastSeenAt: string | null }
 /** Today an owner is identified by the owner's Matrix id; the person id is derived from it (ADR 0005 15.2.4). */

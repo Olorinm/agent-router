@@ -119,7 +119,8 @@ export class ConnectionConfiguration {
       { ownedAgent: (matrixId) => this.service.agents(agent.owner).some((owned) => owned.matrixId === matrixId), persons: this.service.persons,
         identity: this.service.identity, attachments: this.service.attachments, ...this.service.roomOptions(agent),
         // ADR 0005 19.2: Matrix connections are kept but not registered while Matrix is off for this agent.
-        matrix: this.service.matrixEnabled(agent.id) },
+        matrix: this.service.matrixEnabled(agent.id),
+        watching: (sessionKey) => this.service.hubs.hub(agent.owner).watching(agent.id, sessionKey) },
     );
   }
   factory = async (agent: ManagedAgent, connector: MatrixConnector) =>

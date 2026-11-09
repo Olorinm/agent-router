@@ -1262,6 +1262,9 @@ Router's `WorkSessions.deliver` gains `connectionId?: string`:
   web still has the notice.
 - The receipt Mau stores (`status`, `externalId`) is the channel delivery's, or `{status:"web"}` when
   there is none.
+- As built (0.7.0-alpha.14): `connectionId: "web"` records only; a notify connection (a push channel such as Bark)
+  records and pushes; an omitted `connectionId` follows the newest owner conversation (used by native relays). A
+  web-only notice is also pushed by connections whose notify policy covers schedules, unless a browser has the chat open.
 
 ### 16.7 Console (Mau `web/`)
 

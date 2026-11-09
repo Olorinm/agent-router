@@ -98,12 +98,15 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     /** The owner's hub rooms (ADR 0005 phase 5); registers the `room` connection. */
     rooms?: (() => HubRooms | undefined) | undefined;
     /** False while Matrix is off for the deployment or this agent (ADR 0005 19.2); default true. */
-    matrix?: boolean | undefined } = {}): Promise<ServiceExtension> {
+    matrix?: boolean | undefined;
+    /** A browser has the session's chat open (owner notifications are skipped). */
+    watching?: ((sessionKey: string) => boolean) | undefined } = {}): Promise<ServiceExtension> {
   if (!connector.cli) throw new Error("channels_require_durable_work_queue");
   const core = new CommunicationCore(agent.id, connector.store, connector.cli, () => connector.assertLease());
   // Ledger identity (ADR 0005 section 9): who is speaking, scoped by provider and namespace. Routing is unchanged.
   const owner = personId(agent.owner), namespaces = new Map<string, { provider: IdentityProvider; namespace: string }>();
   core.ownerPersonId = owner;
+  core.watching = options.watching;
   if (options.persons) core.persons = (connectionId, sender) => {
     const scope = namespaces.get(connectionId); return scope ? options.persons!.resolve(scope.provider, scope.namespace, sender) : undefined;
   };
@@ -121,8 +124,8 @@ export async function createChannelRuntime(agent: ManagedAgent, connector: Matri
     if (channel.mailPairing) mailPairing.add(definition.id);
     // Identity seeding is shadow data: a registry error never blocks the channel.
     try { for (const address of ownerAddresses) options.persons?.link(owner, definition.kind, namespace, address, "config"); } catch { /* Seeded again on the next start. */ }
-    core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds }, adapter,
-      channel.reload ?? (() => adapter));
+    core.register({ id: definition.id, ownerAddresses, peerAddresses: definition.peerAddresses, groupIds: definition.groupIds,
+      ...(channel.notify ? { notify: channel.notify } : {}) }, adapter, channel.reload ?? (() => adapter));
     if (channel.eager) await adapter.start(core.context(definition.id));
   }
   // Owner web messages (ADR 0005 phase 3, `ledgerSend`): replies to it are recorded, not sent. Without the flag the

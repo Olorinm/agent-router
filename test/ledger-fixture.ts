@@ -81,7 +81,7 @@ export async function setup(cleanup: Array<() => void | Promise<void>>, override
       const extension = await createChannelRuntime(agent, connector, config, stateDir, (name) => {
         const issued = service.issue(agent.id, name);
         return { id: issued.instance.id, validate: () => { service.instance(issued.token, agent.id); } };
-      }, host, { persons: service.persons });
+      }, host, { persons: service.persons, watching: (sessionKey) => service.hubs.hub(agent.owner).watching(agent.id, sessionKey) });
       if (extension.control) extension.control.replanGraceMs = 0;
       extensions.set(agent.id, extension);
       return extension;
