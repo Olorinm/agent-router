@@ -1,5 +1,7 @@
 # Agent Router
 
+> **Moved.** This package now lives in [Olorinm/agent-kit](https://github.com/Olorinm/agent-kit) under `packages/router`, with its history. This repository is archived and no longer updated.
+
 **English** | [简体中文](README.zh-CN.md)
 
 Cloud Agent provisioning is provided by the separate [Mau product](https://github.com/Olorinm/mau).

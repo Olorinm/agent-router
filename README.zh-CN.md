@@ -1,5 +1,7 @@
 # Agent Router
 
+> **Moved.** This package now lives in [Olorinm/agent-kit](https://github.com/Olorinm/agent-kit) under `packages/router`, with its history. This repository is archived and no longer updated.
+
 [English](README.md) | **简体中文**
 
 云端 Agent 开通与环境管理由独立产品 [Mau](https://github.com/Olorinm/mau) 提供。
